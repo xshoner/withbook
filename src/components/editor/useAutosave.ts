@@ -1,0 +1,80 @@
+﻿"use client";
+
+import { get, set, update } from "idb-keyval";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AutosaveQueue, type Draft, type Patch, type SaveResult, type SaveState } from "@/lib/autosave-queue";
+export type { Patch, SaveState } from "@/lib/autosave-queue";
+
+const key = (id: string) => `bookk-pending:${id}`;
+const queues = new Map<string, AutosaveQueue>();
+function queue(id: string) {
+  let q = queues.get(id);
+  if (!q) {
+    q = new AutosaveQueue({
+      async save(patch) {
+        const res = await fetch(`/api/sections/${id}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch), signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `저장 실패 (${res.status})`);
+        return res.json();
+      },
+      persist: (draft) => set(key(id), draft),
+      acknowledge: (token) => update<Draft | undefined>(key(id), (value) => value?.token === token ? undefined : value),
+      offline: () => !navigator.onLine,
+    });
+    queues.set(id, q);
+  }
+  return q;
+}
+
+export async function flushAllPending() {
+  return (await Promise.all([...queues.values()].map((q) => q.flush()))).every(Boolean);
+}
+
+export async function settleSection(id: string) {
+  await queues.get(id)?.flush();
+}
+
+export function useAutosave(sectionId: string | null, onSaved?: (result: SaveResult) => void) {
+  const [state, setState] = useState<SaveState>({ kind: "idle" });
+  const callback = useRef(onSaved);
+  callback.current = onSaved;
+  const q = sectionId ? queue(sectionId) : null;
+  const flush = useCallback(() => q?.flush() ?? Promise.resolve(true), [q]);
+  const markDirty = useCallback((patch: Patch) => q?.mark(patch), [q]);
+  useEffect(() => {
+    if (!q) return;
+    const unsubscribe = q.subscribe((state, result) => {
+      setState(state);
+      if (result) callback.current?.(result);
+    });
+    const hidden = () => { if (document.visibilityState === "hidden") void q.flush(); };
+    const online = () => void q.flush();
+    const unload = (event: BeforeUnloadEvent) => {
+      if (!q.draft) return;
+      // A second beacon can overtake a PUT. Keep the local recovery copy instead.
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", unload);
+    window.addEventListener("online", online);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("beforeunload", unload);
+      window.removeEventListener("online", online);
+      document.removeEventListener("visibilitychange", hidden);
+      q.stopTimer();
+      void q.flush();
+    };
+  }, [q]);
+  return { state, markDirty, flush };
+}
+
+export async function recoverPending(sectionId: string, _serverUpdatedAt: string): Promise<Draft | null> {
+  // Server and browser clocks cannot establish whether a draft was acknowledged.
+  const active = queues.get(sectionId);
+  if (active?.draft) return active.draft;
+  try { return (await get<Draft>(key(sectionId))) ?? null; } catch { return null; }
+}

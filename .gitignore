@@ -1,0 +1,25 @@
+# 비밀 값
+.env
+.env.local
+.env.*
+!.env.example
+
+# 작가 데이터·원고·문체 자료 (공개 저장소에 올리지 않는다 — 웹 배포는 Supabase에 보관)
+data/
+style reference/
+instruction.md
+*.hwp
+public/fonts/*.ttf
+public/fonts/*.otf
+
+# 빌드·테스트 산출물
+node_modules/
+.next/
+test-results/
+next-env.d.ts
+*.tsbuildinfo
+.vercel
+
+# 개인 도구 설정
+.bkit/
+.claude/

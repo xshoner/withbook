@@ -1,0 +1,328 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: BookBody;
+  src: url(/api/fonts/KoPubBatangLight.ttf) format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: BookBody;
+  src: url(/api/fonts/KoPubBatangBold.ttf) format("truetype");
+  font-weight: 700;
+}
+@font-face {
+  font-family: BookHeading;
+  src: url(/api/fonts/KoPubDotumMedium.ttf) format("truetype");
+}
+
+@theme {
+  --font-sans: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-book: BookBody, serif;
+  --font-bookhead: BookHeading, sans-serif;
+  --color-ink: #1c1917;
+  --color-paper: #fffdf8;
+  --color-accent: #b45309;
+  --color-accent-soft: #fef3c7;
+}
+
+html,
+body {
+  height: 100%;
+}
+body {
+  @apply bg-stone-100 text-stone-900 antialiased;
+  font-family: var(--font-sans);
+}
+
+/* ---------- 버튼 ---------- */
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 shadow-sm transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-stone-900 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-accent {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-amber-700 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-1 rounded-md px-2 py-1 text-sm text-stone-600 transition hover:bg-stone-200/70 disabled:opacity-40;
+}
+.input {
+  @apply w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-stone-500 focus:ring-2 focus:ring-stone-200;
+}
+.label {
+  @apply mb-1 block text-xs font-semibold text-stone-600;
+}
+.card {
+  @apply rounded-xl border border-stone-200 bg-white shadow-sm;
+}
+
+/* ---------- 편집기 (실제 조판과 같은 글꼴·크기·폭) ---------- */
+.book-editor {
+  font-family: BookBody, serif;
+  font-size: var(--body-pt, 10pt);
+  line-height: var(--body-lh, 1.6);
+  text-align: justify;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  color: #000;
+}
+.book-editor .ProseMirror {
+  outline: none;
+  counter-reset: fn;
+}
+
+/* ---------- 편집 화면 쪽 나눔 (PageBreaks) ---------- */
+.editor-desk {
+  background: #d6d3d1;
+}
+.pg-gap {
+  user-select: none;
+}
+.pg-box {
+  display: inline-block;
+  width: 100%;
+  vertical-align: top;
+  text-indent: 0;
+}
+.pg-start .pg-box,
+.pg-block .pg-box {
+  display: block;
+}
+.pg-indent {
+  display: inline-block;
+  height: 1px;
+}
+.pg-band {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+  z-index: 1;
+  font-family: var(--font-sans);
+  font-size: 8px;
+  line-height: 1;
+  color: #a8a29e;
+  text-indent: 0;
+  text-align: center;
+}
+.pg-fill {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  box-sizing: border-box;
+}
+/* 쪽 아래 각주 (인쇄와 같은 모양) */
+.pg-notes {
+  display: block;
+  margin-top: 3mm;
+  padding-top: 1.5mm;
+  border-top: 0.2mm solid #44403c;
+  font-family: BookBody, serif;
+  font-size: 8pt;
+  line-height: 1.45;
+  color: #1c1917;
+  text-align: justify;
+  text-indent: 0;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+.pg-note {
+  display: block;
+}
+.pg-note-no {
+  margin-right: 1.2mm;
+}
+.pg-measure {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flow-root;
+  visibility: hidden;
+  pointer-events: none;
+}
+.pg-foot,
+.pg-head {
+  display: flex;
+  justify-content: center;
+}
+.pg-foot {
+  align-items: flex-end;
+}
+.pg-foot > span {
+  margin-bottom: 12mm;
+}
+.pg-head {
+  align-items: flex-start;
+}
+.pg-head > span {
+  margin-top: 9mm;
+}
+.pg-space {
+  display: block;
+  margin: 0 -16px;
+  background: #d6d3d1;
+  box-shadow:
+    inset 0 7px 6px -6px rgba(0, 0, 0, 0.18),
+    inset 0 -7px 6px -6px rgba(0, 0, 0, 0.12);
+}
+
+/* ---------- 각주 ---------- */
+.book-editor .fn-ref {
+  counter-increment: fn;
+  font-family: var(--font-sans);
+  font-size: 0.62em;
+  font-weight: 600;
+  line-height: 0;
+  vertical-align: super;
+  color: #b45309;
+  padding: 0 0.1em;
+  cursor: pointer;
+  border-radius: 2px;
+  text-indent: 0;
+}
+.book-editor .fn-ref::after {
+  content: counter(fn);
+}
+.book-editor .fn-ref.fn-auto {
+  color: #7c3aed;
+}
+.book-editor .fn-ref.fn-empty {
+  color: #dc2626;
+}
+.book-editor .fn-ref.ProseMirror-selectednode {
+  outline: 1.5px solid currentColor;
+  background: #fef3c7;
+}
+.book-editor p {
+  margin: 0;
+  text-indent: 1em;
+}
+.book-editor p + p {
+  margin-top: var(--para-gap, 0mm);
+}
+.book-editor h3 {
+  font-family: BookHeading, sans-serif;
+  font-size: 10.5pt;
+  font-weight: 500;
+  margin: 6mm 0 2.5mm;
+  text-align: left;
+}
+.book-editor blockquote {
+  margin: 3mm 0 3mm 4mm;
+  padding-left: 4mm;
+  border-left: 0.3mm solid #000;
+}
+.book-editor blockquote p,
+.book-editor li p {
+  text-indent: 0;
+}
+.book-editor ul {
+  list-style: disc;
+  margin: 2mm 0 2mm 5mm;
+  padding-left: 3mm;
+}
+.book-editor ol {
+  list-style: decimal;
+  margin: 2mm 0 2mm 5mm;
+  padding-left: 3mm;
+}
+.book-editor hr {
+  border: 0;
+  text-align: center;
+  margin: 4mm 0;
+}
+.book-editor hr::after {
+  content: "* * *";
+  font-size: 9pt;
+}
+.book-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #a8a29e;
+  pointer-events: none;
+  height: 0;
+  text-indent: 0;
+}
+.book-editor .flag-mark {
+  background: #fef08a;
+}
+.book-editor .proof-hl {
+  background: #bbf7d0;
+  transition: background 1.5s;
+}
+.book-editor .ProseMirror-selectednode figure {
+  outline: 2px solid #b45309;
+}
+/* ---------- 집필 중 진행 창 ---------- */
+.writing-pen {
+  display: inline-flex;
+  height: 44px;
+  width: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: #fef3c7;
+  color: #b45309;
+  font-size: 22px;
+  animation: pen-write 1.4s ease-in-out infinite;
+}
+@keyframes pen-write {
+  0%,
+  100% {
+    transform: translate(-3px, 1px) rotate(-8deg);
+  }
+  50% {
+    transform: translate(3px, -1px) rotate(6deg);
+  }
+}
+.writing-title {
+  background: linear-gradient(90deg, #44403c 0%, #44403c 40%, #d97706 50%, #44403c 60%, #44403c 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: title-shine 2.4s linear infinite;
+}
+@keyframes title-shine {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+.writing-roll {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 45%);
+}
+.writing-indeterminate {
+  animation: indeterminate 1.3s ease-in-out infinite;
+}
+@keyframes indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+/* 메뉴 줄 — 편집 지면(흰색)과 구분되게 */
+.menubar-dark .btn-ghost {
+  color: #e7e5e4;
+}
+.menubar-dark .btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.streaming-caret::after {
+  content: "▍";
+  animation: blink 1s steps(2) infinite;
+  color: #b45309;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}

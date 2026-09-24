@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Supabase Postgres — 앱 표는 Data API로 노출되지 않는 withbook 스키마에 둔다 (URL의 ?schema=withbook)
+// DATABASE_URL: 풀러(6543, pgbouncer) · DIRECT_URL: 직접 연결(5432, 스키마 반영용)
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Project {
+  id           String      @id @default(cuid())
+  title        String
+  subtitle     String      @default("")
+  author       String      @default("")
+  topic        String      @default("")
+  intent       String      @default("")
+  audience     String      @default("")
+  keyMessage   String      @default("")
+  tone         String      @default("")
+  references   String      @default("")
+  targetPages  Int         @default(200)
+  extra        String      @default("")
+  styleProfile String? // JSON (prompts B-2 스키마)
+  styleSamples String? // 문체 샘플 원문 발췌
+  layout       String      @default("{}") // JSON: 번호 형식, 장 시작 위치, 판권면 등
+  charsPerPage Float       @default(700)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  deletedAt    DateTime?
+  chapters     Chapter[]
+  tocReports   TocReport[]
+  assets       Asset[]
+  glossary     Glossary[]
+}
+
+model TocReport {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  json      String
+  createdAt DateTime @default(now())
+}
+
+model Chapter {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  order       Int
+  title       String
+  kind        String    @default("body") // front | body | back
+  promise     String    @default("")
+  summary     String?
+  summaryHash String?
+  sections    Section[]
+}
+
+model Section {
+  id          String    @id @default(cuid())
+  chapterId   String
+  chapter     Chapter   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  order       Int
+  title       String
+  gist        String    @default("")
+  hook        String    @default("")
+  targetPages Float     @default(3)
+  status      String    @default("empty") // empty | sketch | ai_draft | editing | proofread
+  sketch      String    @default("")
+  content     String    @default("") // Tiptap JSON
+  charCount   Int       @default(0)
+  summary     String?
+  summaryHash String?
+  updatedAt   DateTime  @updatedAt
+  versions    Version[]
+}
+
+model Version {
+  id        String   @id @default(cuid())
+  sectionId String
+  section   Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  reason    String // ai_write | proofread | manual | restore | length_adjust | rewrite
+  content   String
+  charCount Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model Asset {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filename  String
+  mime      String
+  widthPx   Int
+  heightPx  Int
+  path      String
+  createdAt DateTime @default(now())
+}
+
+model Glossary {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  term      String
+  preferred String
+  note      String  @default("")
+}
+
+model AiLog {
+  id                  String   @id @default(cuid())
+  projectId           String?
+  purpose             String
+  promptTokens        Int      @default(0)
+  completionTokens    Int      @default(0)
+  cost                Float    @default(0)
+  ms                  Int      @default(0)
+  status              String // ok | error | aborted
+  error               String?
+  instructionIncluded Boolean  @default(false)
+  createdAt           DateTime @default(now())
+}
+
+/** 앱 전역 설정 (AI 연결, instruction.md, 기본 문체 프로필 등) — key별 JSON 문자열 */
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+/** 로그인 허용 사용자 (Supabase Auth 계정과 이메일로 연결). role: superadmin | editor */
+model AppUser {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  role      String   @default("editor")
+  authId    String?  @unique
+  createdAt DateTime @default(now())
+}
