@@ -25,7 +25,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   if (form.get("useReference") === "1") docs.push(...(await loadReferenceDocs()));
   const pasted = String(form.get("samples") ?? "").trim();
   if (pasted) docs.push({ name: "붙여넣은 글", kind: "sns", text: pasted, chars: pasted.length });
-  for (const f of await readUploads(form, "files", 60 * 1024 * 1024)) {
+  for (const f of await readUploads(form, "files", 50 * 1024 * 1024)) {
     const text = await extractText(f.name, f.buffer);
     if (text.trim()) docs.push({ name: f.name, kind: "book", text, chars: text.length });
   }

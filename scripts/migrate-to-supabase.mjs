@@ -44,7 +44,7 @@ const BUCKETS = { assets: false, 'style-reference': false, exports: false, incom
 const existing = new Set(DB_ONLY ? Object.keys(BUCKETS) : ((await sb.storage.listBuckets()).data ?? []).map((b) => b.name));
 for (const [name, isPublic] of Object.entries(BUCKETS)) {
   if (existing.has(name)) continue;
-  const { error } = await sb.storage.createBucket(name, { public: isPublic, fileSizeLimit: name === 'fonts' ? '30MB' : '60MB' });
+  const { error } = await sb.storage.createBucket(name, { public: isPublic, fileSizeLimit: '50MB' });
   if (error) throw new Error(`버킷 ${name}: ${error.message}`);
   log('버킷 생성', name, isPublic ? '(공개)' : '(비공개)');
 }

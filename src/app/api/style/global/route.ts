@@ -25,7 +25,7 @@ export const POST = handle(async () => {
 /** 학습 자료 추가 (multipart files) */
 export const PUT = handle(async (req: Request) => {
   const form = await req.formData();
-  const files = await readUploads(form, "files", 60 * 1024 * 1024);
+  const files = await readUploads(form, "files", 50 * 1024 * 1024);
   if (!files.length) return fail("올릴 파일이 없습니다.");
   for (const f of files) await addReferenceFile(f.name, f.buffer);
   return ok({ added: files.map((f) => f.name), ...(await listReferenceFiles()) });
