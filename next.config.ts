@@ -10,7 +10,8 @@ const nextConfig: NextConfig = {
     "/*": ["./prompts/**/*.md", "./instruction.md"],
     "/pagedjs": ["./node_modules/pagedjs/dist/paged.polyfill.js"],
     // Vercel에서 PDF를 만드는 서버용 Chromium
-    "/api/projects/[id]/export/pdf": ["./node_modules/@sparticuz/chromium/bin/**"],
+    // playwright-core는 browsers.json 등을 실행 중에 읽으므로 패키지 전체를 넣는다
+    "/api/projects/[id]/export/pdf": ["./node_modules/@sparticuz/chromium/bin/**", "./node_modules/playwright-core/**"],
   },
   outputFileTracingExcludes: { "/*": ["./data/**/*", "./style reference/**/*", "./.env*", "./test-results/**/*", "./public/fonts/**/*"] },
   async headers() {
