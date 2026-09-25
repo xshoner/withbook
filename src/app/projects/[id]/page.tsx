@@ -10,6 +10,7 @@ import SectionEditor from "@/components/editor/SectionEditor";
 import type { SaveState } from "@/components/editor/useAutosave";
 import { flushAllPending } from "@/components/editor/useAutosave";
 import { stopBatch, stopJob, useAiJobs } from "@/components/editor/aiJobs";
+import { useProofJobs } from "@/components/editor/proofJobs";
 import type { PagedInfo, ProjectTree, SectionPageInfo, TreeSection } from "@/components/types";
 import { api, fmtTime } from "@/lib/client";
 import { toast, toastError } from "@/components/ui/feedback";
@@ -224,14 +225,16 @@ export default function Workspace() {
   // AI 집필은 편집기 밖에서 돈다 — 끝나면(작업 수가 줄면) 목차 상태·글자 수를 새로 받는다
   const jobs = useAiJobs();
   const running = jobs.filter((j) => j.state === "running");
+  const proofing = useProofJobs().filter((j) => j.state === "running");
   const runningCount = useRef(0);
+  const busyCount = running.length + proofing.length;
   useEffect(() => {
-    if (running.length < runningCount.current) {
+    if (busyCount < runningCount.current) {
       load();
       setMeasureKey((k) => k + 1);
     }
-    runningCount.current = running.length;
-  }, [running.length, load]);
+    runningCount.current = busyCount;
+  }, [busyCount, load]);
 
   const gotoText = useCallback((sid: string, paragraph: number, text: string) => {
     setView("edit");
@@ -310,6 +313,14 @@ export default function Workspace() {
               }}
             >
               ■
+            </button>
+          </span>
+        ))}
+        {proofing.map((j) => (
+          <span key={j.sectionId} className="flex items-center gap-1.5 rounded-md bg-sky-600/20 px-2 py-1 text-xs text-sky-100" title="교정 중 — 다른 절로 옮겨도 계속됩니다">
+            <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-sky-300 border-t-transparent" />
+            <button className="max-w-40 truncate hover:underline" onClick={() => setCurrent(j.sectionId)} title="이 절로 가기">
+              교정 · {j.label}
             </button>
           </span>
         ))}

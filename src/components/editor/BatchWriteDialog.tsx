@@ -20,14 +20,18 @@ export default function BatchWriteDialog(props: {
   currentSketch: string;
   currentPages: number;
   cpp: number;
+  /** 처음 채울 추가 지시 (지금 입력칸 → 계속 쓰기로 둔 것 → 최근 것 순) */
+  initialExtra: string;
+  recentExtra: string[];
   onClose: () => void;
-  onStart: (items: BatchItem[]) => void;
+  onStart: (items: BatchItem[], extraInstruction: string) => void;
 }) {
   const { sections, currentId } = props;
   const [picked, setPicked] = useState<string[]>([currentId]);
   const [pages, setPages] = useState<Record<string, number>>({ [currentId]: props.currentPages });
   const [sketch, setSketch] = useState<Record<string, string>>({ [currentId]: props.currentSketch });
   const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [extra, setExtra] = useState(props.initialExtra);
 
   const order = useMemo(() => new Map(sections.map((s, i) => [s.id, i])), [sections]);
   const startIdx = order.get(currentId) ?? 0;
@@ -57,7 +61,10 @@ export default function BatchWriteDialog(props: {
   const start = async () => {
     if (!chosen.length) return;
     if (overwrite.length && !(await confirmDialog(`이미 본문이 있는 절 ${overwrite.length}개는 지금 본문을 버전 기록에 보관한 뒤 새로 씁니다. 진행할까요?`, { okLabel: "새로 쓰기" }))) return;
-    props.onStart(chosen.map((s) => ({ id: s.id, title: s.title, label: s.label, targetPages: pages[s.id] ?? (s.targetPages || 3), sketch: sketch[s.id] ?? "" })));
+    props.onStart(
+      chosen.map((s) => ({ id: s.id, title: s.title, label: s.label, targetPages: pages[s.id] ?? (s.targetPages || 3), sketch: sketch[s.id] ?? "" })),
+      extra.trim(),
+    );
   };
 
   return (
@@ -111,6 +118,32 @@ export default function BatchWriteDialog(props: {
               </div>
             );
           })}
+        </div>
+        <div className="border-t border-stone-200 px-5 py-3">
+          <label className="mb-1 block text-xs font-semibold text-stone-600" htmlFor="batch-extra">
+            집필 추가 지시 <span className="font-normal text-stone-400">— 고른 절 모두에 적용</span>
+          </label>
+          <textarea
+            id="batch-extra"
+            className="input min-h-[52px] text-xs"
+            placeholder="예: 사례는 교육 현장 위주로, 마지막은 질문으로 끝내기 (비우면 추가 지시 없이)"
+            value={extra}
+            onChange={(e) => setExtra(e.target.value)}
+          />
+          {props.recentExtra.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {props.recentExtra.map((r) => (
+                <button
+                  key={r}
+                  title={r}
+                  onClick={() => setExtra(r)}
+                  className={`max-w-[240px] truncate rounded-full border px-2 py-0.5 text-[11px] ${r === extra.trim() ? "border-amber-500 bg-amber-50 text-amber-900" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 border-t border-stone-200 px-5 py-3">
           <span className="text-xs text-stone-500">
