@@ -8,7 +8,8 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
-import { clearJob, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, type JobMode } from "./aiJobs";
+import { clearJob, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, useLastWriteTiming, type JobMode } from "./aiJobs";
+import { scheduleOutlinePreparation, scheduleSummaryPreparation } from "./preparation";
 import { attachFile } from "@/lib/upload-client";
 import {
   appendDocs,
@@ -150,6 +151,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [notice, setNotice] = useState<string | null>(data.recovered ? "브라우저에 보관돼 있던 최신 입력을 복원했습니다." : null);
   // 이 절의 AI 집필 작업 (편집기 밖에서 돈다 — 절을 옮겨도 계속된다)
   const job = useAiJobs().find((j) => j.sectionId === section.id) ?? null;
+  const lastTiming = useLastWriteTiming(section.id);
   const jobRef = useRef(job);
   jobRef.current = job;
   const writing = job?.state === "running" ? job : null;
@@ -196,6 +198,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     commitEdit();
     return flushQueue();
   }, [commitEdit, flushQueue]);
+  useEffect(() => {
+    // Avoid speculative requests until a long section has a sketch and all edits are saved.
+    if (targetPages <= 5 || !sketch.trim() || writing || tab !== "ai" || !["idle", "saved"].includes(saveState.kind)) return;
+    return scheduleOutlinePreparation(section.id, { targetPages, extraInstruction: extra });
+  }, [section.id, targetPages, sketch, extra, Boolean(writing), tab, saveState.kind, saveState.at]);
   useEffect(() => {
     const hide = () => document.visibilityState === "hidden" && commitEdit();
     window.addEventListener("pagehide", commitEdit);
@@ -617,7 +624,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "ai_output" } }).catch(() => {});
     setVersionKey((k) => k + 1);
     checkLength(charCount(editor.getJSON() as JNode));
-    fetch(`/api/sections/${section.id}/summarize`, { method: "POST" }).catch(() => {});
+    scheduleSummaryPreparation(section.id, undefined, 0);
   };
 
   const undoAi = async () => {
@@ -1355,6 +1362,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <div className="min-h-0 flex-1 overflow-hidden">
           {tab === "ai" && (
             <div className="h-full space-y-4 overflow-auto p-3 text-sm">
+              <p className="text-[11px] leading-4 text-stone-400">저장 후 입력이 20초간 멈추면 요약을 미리 갱신합니다. 스케치가 있는 5쪽 초과 절은 개요도 준비합니다.</p>
+              {lastTiming && <details className="rounded border border-stone-200 p-2 text-xs text-stone-500">
+                <summary className="cursor-pointer">최근 집필 {(lastTiming.totalMs / 1000).toFixed(1)}초 · 첫 본문 {lastTiming.firstTextMs === null ? "없음" : `${(lastTiming.firstTextMs / 1000).toFixed(1)}초`}</summary>
+                <dl className="mt-2 grid grid-cols-2 gap-1">
+                  <dt>원고 불러오기</dt><dd>{(lastTiming.loadMs / 1000).toFixed(1)}초</dd>
+                  <dt>앞 내용 정리</dt><dd>{(lastTiming.summaryMs / 1000).toFixed(1)}초</dd>
+                  <dt>집필 개요{lastTiming.outlineCached ? " (재사용)" : ""}</dt><dd>{(lastTiming.outlineMs / 1000).toFixed(1)}초</dd>
+                  <dt>본문 생성</dt><dd>{(lastTiming.generationMs / 1000).toFixed(1)}초</dd>
+                </dl>
+                <p className="mt-1">첫 본문 시간은 서버 집필 시작부터, 본문 생성 시간은 모델 응답 대기를 포함합니다. 현재 탭에서 측정한 결과입니다.</p>
+              </details>}
               {candidateText !== null && (
                 <div className="rounded-lg border border-violet-200 bg-violet-50 p-2">
                   <div className="mb-1 flex items-center justify-between text-xs font-semibold text-violet-800">

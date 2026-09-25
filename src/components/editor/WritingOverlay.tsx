@@ -36,7 +36,7 @@ export default function WritingOverlay(props: {
           <div className={`h-full rounded-full bg-amber-600 transition-[width] duration-500 ${props.chars ? "" : "writing-indeterminate"}`} style={{ width: props.chars ? `${Math.max(3, pct)}%` : "30%" }} />
         </div>
         <div className="mt-1 flex justify-between text-[11px] text-stone-400">
-          <span>{props.chars ? `${props.chars.toLocaleString()}자 작성` : "첫 문장을 구상하고 있습니다 (30초~1분)"}</span>
+          <span>{props.chars ? `${props.chars.toLocaleString()}자 작성` : "집필에 필요한 내용을 준비하고 있습니다"}</span>
           {props.target > 0 && <span>목표 약 {props.target.toLocaleString()}자</span>}
         </div>
         <div className="writing-roll mt-4 h-[4.8em] overflow-hidden rounded-lg bg-stone-50 px-3 py-2 font-book text-[12.5px] leading-[1.6em] text-stone-600">

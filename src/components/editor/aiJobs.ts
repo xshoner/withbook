@@ -5,6 +5,8 @@ import { api, readStream } from "@/lib/client";
 import { appendDocs, charCount, markdownToDoc, parseDoc, type JNode } from "@/lib/doc/doc";
 import { toast } from "../ui/feedback";
 import { saveViaQueue, settleSection } from "./useAutosave";
+import type { WriteTiming } from "@/lib/ai/write-timing";
+import { scheduleSummaryPreparation } from "./preparation";
 
 /**
  * AI 집필 작업 — 편집기 밖(모듈)에서 돈다. 쓰는 동안 다른 절로 옮겨 편집해도 멈추지 않는다.
@@ -38,6 +40,14 @@ const jobs = new Map<string, AiJob>();
 const ctrls = new Map<string, AbortController>();
 const appliers = new Map<string, Applier>();
 const subs = new Set<() => void>();
+const lastTimings = new Map<string, WriteTiming>();
+export function useLastWriteTiming(sectionId: string) {
+  return useSyncExternalStore(
+    (f) => { subs.add(f); return () => { subs.delete(f); }; },
+    () => lastTimings.get(sectionId) ?? null,
+    () => null,
+  );
+}
 let snapshot: AiJob[] = [];
 const emit = () => {
   snapshot = [...jobs.values()];
@@ -139,6 +149,13 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   try {
     const res = await fetch(o.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o.body), signal: ctrl.signal });
     await readStream(res, (e) => {
+      if (e.t === "timing" && e.timing) {
+        lastTimings.delete(o.sectionId);
+        lastTimings.set(o.sectionId, e.timing);
+        if (lastTimings.size > 100) lastTimings.delete(lastTimings.keys().next().value!);
+        emit();
+        return;
+      }
       if (e.t === "status" && e.v === "truncated") return update(job, { notice: "AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다." });
       if (e.t === "status" && e.v === "partial") return update(job, { notice: "긴 절이라 한 번에 쓸 수 있는 시간(약 5분)을 넘겨 앞부분까지만 썼습니다. [집필하기 → 뒤에 이어쓰기]로 나머지를 이어 쓰세요." });
       if (e.t === "status") return update(job, { status: e.v ?? "" });
@@ -189,7 +206,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   emit();
   if (content) {
     api(`/api/sections/${o.sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
-    fetch(`/api/sections/${o.sectionId}/summarize`, { method: "POST" }).catch(() => {});
+    scheduleSummaryPreparation(o.sectionId, undefined, 0);
     if (!appliers.has(o.sectionId)) toast.success(`${job.label} ${aborted ? "쓴 데까지 저장했습니다" : "집필을 마쳤습니다"}.`);
     if (job.error) toast.error(`AI 오류 (${job.label}): ${job.error} — 쓴 데까지는 넣었습니다.`);
   }

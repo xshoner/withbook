@@ -1,4 +1,5 @@
 "use client";
+import type { WriteTiming } from "./ai/write-timing";
 
 /** 클라이언트 fetch 도우미 — 서버 오류 메시지를 그대로 던진다 */
 export async function api<T = any>(url: string, init?: RequestInit & { json?: unknown }): Promise<T> {
@@ -14,7 +15,7 @@ export async function api<T = any>(url: string, init?: RequestInit & { json?: un
   return data as T;
 }
 
-export type StreamEvent = { t: "status" | "delta" | "done" | "error"; v?: string; chars?: number };
+export type StreamEvent = { t: "status" | "delta" | "done" | "error" | "timing"; v?: string; chars?: number; timing?: WriteTiming };
 
 /** NDJSON 스트림 읽기 */
 export async function readStream(res: Response, onEvent: (e: StreamEvent) => void) {

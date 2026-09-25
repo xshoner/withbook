@@ -3,6 +3,7 @@
 import { get, set, update } from "idb-keyval";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AutosaveQueue, type Draft, type Patch, type SaveResult, type SaveState } from "@/lib/autosave-queue";
+import { cancelSummaryPreparation, scheduleSummaryPreparation } from "./preparation";
 export type { Patch, SaveState } from "@/lib/autosave-queue";
 
 const key = (id: string) => `bookk-pending:${id}`;
@@ -17,7 +18,9 @@ function queue(id: string) {
           body: JSON.stringify(patch), signal: AbortSignal.timeout(15000),
         });
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `저장 실패 (${res.status})`);
-        return res.json();
+        const result = await res.json();
+        if (patch.content !== undefined) scheduleSummaryPreparation(id, () => !queues.get(id)?.draft);
+        return result;
       },
       persist: (draft) => set(key(id), draft),
       acknowledge: (token) => update<Draft | undefined>(key(id), (value) => value?.token === token ? undefined : value),
@@ -35,6 +38,7 @@ export async function flushAllPending() {
 /** 편집기 없이 절을 저장한다 (다른 절을 보는 동안 끝난 AI 집필 등) — 같은 저장 큐를 거치므로 편집기 저장과 겹치지 않는다 */
 export async function saveViaQueue(id: string, patch: Patch) {
   const q = queue(id);
+  cancelSummaryPreparation(id);
   q.mark(patch);
   const ok = await q.flush();
   if (q.idle() && queues.get(id) === q) queues.delete(id);
@@ -51,7 +55,10 @@ export function useAutosave(sectionId: string | null, onSaved?: (result: SaveRes
   callback.current = onSaved;
   const q = sectionId ? queue(sectionId) : null;
   const flush = useCallback(() => q?.flush() ?? Promise.resolve(true), [q]);
-  const markDirty = useCallback((patch: Patch) => q?.mark(patch), [q]);
+  const markDirty = useCallback((patch: Patch) => {
+    if (sectionId) cancelSummaryPreparation(sectionId);
+    q?.mark(patch);
+  }, [q, sectionId]);
   useEffect(() => {
     if (!q) return;
     const unsubscribe = q.subscribe((state, result) => {

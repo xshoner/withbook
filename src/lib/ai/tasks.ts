@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../db";
 import { flatSections, loadBook, type Book, type BookChapter, type BookSection } from "../book";
@@ -8,6 +9,10 @@ import { editStats, pickLearningPairs, type EditPair } from "../style/edits";
 import { chat, chatStream, extractJson, type ChatOptions } from "./client";
 import { buildMessages } from "./prompts";
 import { singleFlight } from "./single-flight";
+import { collectRecentContext } from "./recent-context";
+import { WriteClock, type WriteTiming } from "./write-timing";
+import { getSetting, setSetting } from "../app-settings";
+import { loadAiSettings } from "./settings";
 
 /* ---------------- 공통 텍스트 조립 ---------------- */
 
@@ -272,53 +277,65 @@ export async function summarizeSection(sectionId: string) {
   const chapters = numberChapters(project.chapters, parseLayout(project.layout).numberFormat);
   const c = chapters.find((x) => x.sections.some((s) => s.id === sectionId));
   const label = c?.sections.find((s) => s.id === sectionId)?.label ?? "";
-  return ensureSectionSummary(sec.chapter.projectId, c ?? { label: "", kind: "body" }, { ...sec, label });
+  const summary = await ensureSectionSummary(sec.chapter.projectId, c ?? { label: "", kind: "body" }, { ...sec, label });
+  // Warm the chapter only when its section summaries are already current.
+  // Never fan out into other uncached sections from an idle preparation request.
+  const chapter = await prisma.chapter.findUnique({ where: { id: sec.chapterId }, include: { sections: { orderBy: { order: "asc" } } } });
+  if (chapter && c && chapter.sections.every((s) => {
+    const text = docPlainText(parseDoc(s.content));
+    return !text.trim() || Boolean(s.summary && s.summaryHash === hashText(text));
+  })) {
+    const numbered = { ...chapter, label: c.label, sections: chapter.sections.map((s) => ({ ...s, label: c.sections.find((row) => row.id === s.id)?.label ?? "" })) };
+    await ensureChapterSummary(sec.chapter.projectId, numbered);
+  }
+  return summary;
 }
 
-async function ensureChapterSummary(book: Book, c: BookChapter): Promise<string> {
-  const sums = await mapLimit(c.sections, 3, (s) => ensureSectionSummary(book.project.id, c, s));
+const pendingChapterSummary = singleFlight<string>();
+async function ensureChapterSummary(projectId: string, c: Pick<BookChapter, "id" | "label" | "kind" | "title" | "summary" | "summaryHash"> & { sections: SummaryTarget[] }): Promise<string> {
+  const sums = await mapLimit(c.sections, 3, (s) => ensureSectionSummary(projectId, c, s));
   const parts = c.sections.map((s, i) => (sums[i] ? `${s.label || "-"} ${s.title}: ${sums[i]}` : "")).filter(Boolean);
   if (!parts.length) return "";
   const joined = parts.join("\n");
   const h = hashText(joined);
   if (c.summary && c.summaryHash === h) return c.summary;
-  const { messages } = await buildMessages("chapter-summary", {
-    chapterNo: chapterName(c),
-    chapterTitle: c.title,
-    sectionSummaries: joined,
+  const summary = await pendingChapterSummary(`${projectId}:${c.id}:${h}`, async () => {
+    const latest = await prisma.chapter.findUnique({ where: { id: c.id }, select: { summary: true, summaryHash: true } });
+    if (latest?.summary && latest.summaryHash === h) return latest.summary;
+    const { messages } = await buildMessages("chapter-summary", {
+      chapterNo: chapterName(c),
+      chapterTitle: c.title,
+      sectionSummaries: joined,
+    });
+    const r = await chat({ purpose: "chapter_summary", projectId, messages, temperature: 0.3, maxTokens: 6000 });
+    const summary = r.text.trim();
+    await prisma.chapter.updateMany({
+      where: { id: c.id, AND: c.sections.map((s) => ({ sections: { some: { id: s.id, content: s.content } } })) },
+      data: { summary, summaryHash: h },
+    });
+    return summary;
   });
-  const r = await chat({ purpose: "chapter_summary", projectId: book.project.id, messages, temperature: 0.3, maxTokens: 6000 });
-  const summary = r.text.trim();
-  await prisma.chapter.update({ where: { id: c.id }, data: { summary, summaryHash: h } });
   c.summary = summary;
   c.summaryHash = h;
   return summary;
 }
 
 /**
- * 이전 장들은 장 단위 요약, 같은 장은 절 요약 전부. 최대 2,500자(가까운 내용 우선).
- * 없는 요약은 동시에 3개씩 만든다(뒤쪽 장 첫 집필이 수십 번의 순차 호출을 기다리지 않게).
+ * 가까운 절부터 필요한 2,500자만 확보한다. 예산이 차면 오래된 장은 조회·생성하지 않는다.
  */
-async function previousSummaries(book: Book, chapterIdx: number, sectionIdx: number) {
+async function previousSummaries(book: Book, chapterIdx: number, sectionIdx: number, signal?: AbortSignal) {
   const cur = book.chapters[chapterIdx];
-  const prevChapters = book.chapters.slice(0, chapterIdx);
-  // 절 요약을 먼저 한꺼번에 채운 뒤(캐시), 장 요약을 만든다
-  const allSections = [
-    ...prevChapters.flatMap((c) => c.sections.map((s) => ({ c, s }))),
-    ...cur.sections.slice(0, sectionIdx).map((s) => ({ c: cur, s })),
+  const items = [
+    ...cur.sections.slice(0, sectionIdx).reverse().map((s) => async () => {
+      const summary = await ensureSectionSummary(book.project.id, cur, s);
+      return summary ? `[${s.label || ""} ${s.title}] ${summary}` : "";
+    }),
+    ...book.chapters.slice(0, chapterIdx).reverse().map((c) => async () => {
+      const summary = await ensureChapterSummary(book.project.id, c);
+      return summary ? `[${chapterName(c)} ${c.title}] ${summary}` : "";
+    }),
   ];
-  await mapLimit(allSections, 3, ({ c, s }) => ensureSectionSummary(book.project.id, c, s));
-  const chapterSums = await mapLimit(prevChapters, 3, (c) => ensureChapterSummary(book, c));
-
-  const chunks: string[] = [];
-  prevChapters.forEach((c, i) => chapterSums[i] && chunks.push(`[${chapterName(c)} ${c.title}] ${chapterSums[i]}`));
-  for (const s of cur.sections.slice(0, sectionIdx)) if (s.summary) chunks.push(`[${s.label || ""} ${s.title}] ${s.summary}`);
-  let out = "";
-  for (let i = chunks.length - 1; i >= 0; i--) {
-    if ((chunks[i] + "\n" + out).length > 2500) break;
-    out = chunks[i] + (out ? "\n" + out : "");
-  }
-  return out;
+  return collectRecentContext(items, 2500, signal);
 }
 
 function tailOf(content: string, maxChars = 800) {
@@ -342,6 +359,7 @@ export type WriteEvent =
   | { t: "status"; v: string }
   | { t: "delta"; v: string }
   | { t: "done"; chars: number }
+  | { t: "timing"; timing: WriteTiming }
   | { t: "error"; v: string };
 
 export type WriteOptions = {
@@ -364,6 +382,45 @@ const outlineSchema = z.object({
     .min(1),
 });
 
+type OutlineParts = z.infer<typeof outlineSchema>["parts"];
+const pendingOutline = singleFlight<{ parts: OutlineParts; cached: boolean }>();
+async function preparedOutline(sectionId: string, projectId: string, vars: Record<string, unknown>) {
+  const om = await buildMessages("section-outline", vars);
+  const { provider, baseUrl, model, reasoningEffort, maxOutputTokens } = await loadAiSettings("outline");
+  // Include all rendered inputs and generation settings, but no credentials.
+  const hash = createHash("sha256").update(JSON.stringify({ messages: om.messages, provider, baseUrl, model, reasoningEffort, maxOutputTokens })).digest("hex");
+  const key = `ai:outline-cache:${sectionId}`;
+  const read = async () => {
+    const saved = await getSetting<{ hash: string; expires: number; parts: unknown }>(key);
+    const parsed = outlineSchema.safeParse({ parts: saved?.parts });
+    return saved?.hash === hash && saved.expires > Date.now() && parsed.success ? parsed.data.parts : null;
+  };
+  const saved = await read();
+  if (saved) return { parts: saved, cached: true };
+  return pendingOutline(`${key}:${hash}`, async () => {
+    const existing = await read();
+    if (existing) return { parts: existing, cached: true };
+    const outline = await chatJson(outlineSchema, {
+      purpose: "section_outline", projectId, messages: om.messages,
+      temperature: 0.5, maxTokens: 8000, instructionIncluded: om.instructionIncluded,
+    });
+    const parts = outline.value?.parts;
+    if (!parts) return { parts: [{ heading: "", points: [], sketchItems: [], chars: Number(vars.targetChars) }], cached: false };
+    await setSetting(key, { hash, parts, expires: Date.now() + 24 * 60 * 60_000 }).catch(() => {
+      console.warn("[outline-cache] 개요 캐시 저장 실패");
+    });
+    return { parts, cached: false };
+  });
+}
+
+/** Prepares only the outline, never a draft or a version of the manuscript. */
+export async function prepareSection(sectionId: string, opts: WriteOptions) {
+  if (opts.targetPages <= 5) return { ready: false };
+  const { projectId, baseVars } = await writeContext(sectionId, opts, new WriteClock());
+  const result = await preparedOutline(sectionId, projectId, baseVars);
+  return { ready: true, cached: result.cached };
+}
+
 /** 새 파트를 시작할 수 있는 마지막 시점 — AI 호출 예산(요청 시작 후 240초, client.ts) 안에 파트 하나(보통 1분 안팎)를 끝낼 수 있게 */
 const PART_START_BUDGET_MS = 150_000;
 
@@ -380,8 +437,8 @@ async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undef
   if (r.value?.truncated) yield { t: "status", v: "truncated" };
 }
 
-export async function* writeSection(sectionId: string, opts: WriteOptions): AsyncGenerator<WriteEvent> {
-  const started = Date.now();
+async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteClock) {
+  const loadStarted = Date.now();
   const book = await sectionInBook(sectionId);
   const projectId = book.project.id;
 
@@ -393,8 +450,10 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
   const prev = flat[idx - 1];
   const next = flat[idx + 1];
 
-  yield { t: "status", v: "앞 내용 정리 중…" };
-  const prevSummaries = await previousSummaries(book, ci, si);
+  clock.loadMs = Date.now() - loadStarted;
+  const summaryStarted = Date.now();
+  const prevSummaries = await previousSummaries(book, ci, si, opts.signal);
+  clock.summaryMs = Date.now() - summaryStarted;
 
   const cpp = book.project.charsPerPage || 700;
   const targetChars = Math.round(opts.targetPages * cpp);
@@ -420,64 +479,86 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
     mode_continue: opts.mode === "continue",
     existingContent: opts.mode === "continue" ? docToMarkdown(existing).md.slice(-6000) : "",
   };
+  return { projectId, baseVars, targetChars };
+}
 
-  let total = 0;
-  const count = (t: string) => (total += t.length);
+export async function* writeSection(sectionId: string, opts: WriteOptions): AsyncGenerator<WriteEvent> {
+  const started = Date.now();
+  const clock = new WriteClock();
+  let result = "aborted";
+  try {
+    yield { t: "status", v: "앞 내용 정리 중…" };
+    const { projectId, baseVars, targetChars } = await writeContext(sectionId, opts, clock);
+    opts.signal?.throwIfAborted();
+    let total = 0;
+    const count = (t: string) => { clock.text(); total += t.length; };
+    const track = async function* (events: AsyncGenerator<WriteEvent>) {
+      for await (const event of events) {
+        if (event.t === "status" && ["truncated", "partial"].includes(event.v)) result = event.v;
+        yield event;
+      }
+    };
 
-  if (opts.targetPages <= 5) {
-    yield { t: "status", v: "구상 중… 문체와 앞뒤 흐름을 살펴보고 있습니다" };
-    const { messages, instructionIncluded } = await buildMessages("section-write", baseVars);
-    yield* pipe(
-      chatStream({ purpose: "section_write", projectId, messages, temperature: 0.7, maxTokens: writeTokens(targetChars), signal: opts.signal, instructionIncluded }),
-      count,
-    );
-  } else {
-    // 긴 절: 개요 → 파트별 생성
-    yield { t: "status", v: "긴 절이라 소제목 개요를 먼저 만드는 중…" };
-    const om = await buildMessages("section-outline", baseVars);
-    const outline = await chatJson(outlineSchema, {
-      purpose: "section_outline",
-      projectId,
-      messages: om.messages,
-      temperature: 0.5,
-      maxTokens: 8000,
-      signal: opts.signal,
-      instructionIncluded: om.instructionIncluded,
-    });
-    const parts = outline.value?.parts ?? [{ heading: "", points: [], sketchItems: [], chars: targetChars }];
-    let written = "";
-    for (let p = 0; p < parts.length; p++) {
-      if (opts.signal?.aborted) break;
-      if (p > 0 && Date.now() - started > PART_START_BUDGET_MS) {
-        // 한 번의 요청으로 쓸 수 있는 시간을 넘기기 전에 멈춘다 — 쓴 데까지는 그대로 넣고 [이어쓰기]로 계속
-        yield { t: "status", v: "partial" };
-        break;
+    if (opts.targetPages <= 5) {
+      yield { t: "status", v: "구상 중… 문체와 앞뒤 흐름을 살펴보고 있습니다" };
+      const { messages, instructionIncluded } = await buildMessages("section-write", baseVars);
+      clock.startGeneration();
+      yield* track(pipe(
+        chatStream({ purpose: "section_write", projectId, messages, temperature: 0.7, maxTokens: writeTokens(targetChars), signal: opts.signal, instructionIncluded }),
+        count,
+      ));
+    } else {
+      // 긴 절: 개요 → 파트별 생성
+      yield { t: "status", v: "긴 절의 집필 개요 준비 중…" };
+      const outlineStarted = Date.now();
+      const outline = await preparedOutline(sectionId, projectId, baseVars);
+      clock.outlineMs = Date.now() - outlineStarted;
+      clock.outlineCached = outline.cached;
+      const parts = outline.parts;
+      let written = "";
+      for (let p = 0; p < parts.length; p++) {
+        if (opts.signal?.aborted) break;
+        if (p > 0 && Date.now() - started > PART_START_BUDGET_MS) {
+          // 한 번의 요청으로 쓸 수 있는 시간을 넘기기 전에 멈춘다 — 쓴 데까지는 그대로 넣고 [이어쓰기]로 계속
+          yield { t: "status", v: "partial" };
+          result = "partial";
+          break;
+        }
+        const part = parts[p];
+        yield { t: "status", v: `집필 중… (${p + 1}/${parts.length}) ${part.heading}` };
+        if (part.heading) {
+          const h = `${written ? "\n\n" : ""}## ${part.heading}\n\n`;
+          written += h;
+          yield { t: "delta", v: h };
+        }
+        const lastPara = written.trim().split(/\n+/).filter((l) => l.trim() && !l.startsWith("## ")).slice(-1)[0] ?? "";
+        const partInfo = [
+          `[이번 파트] ${part.heading || "(소제목 없음)"} / 다룰 내용: ${part.points.join("; ") || "(개요 없음)"} / 배정된 스케치: ${part.sketchItems.join("; ") || "(없음)"} / 분량 약 ${part.chars}자`,
+          p > 0 ? `앞 파트 마지막 문단: ${lastPara}\n절 도입부를 다시 쓰지 말고 앞 파트에서 자연스럽게 이어 쓴다.` : "이 파트는 절의 도입부다.",
+          p === parts.length - 1 ? "이 파트에서 절을 마무리한다." : "이 파트에서 절을 마무리하지 않는다.",
+          "소제목은 앱이 붙이므로 출력하지 않는다.",
+        ].join("\n");
+        const { messages, instructionIncluded } = await buildMessages("section-write", { ...baseVars, partInfo });
+        clock.startGeneration();
+        yield* track(pipe(
+          chatStream({ purpose: "section_write_part", projectId, messages, temperature: 0.7, maxTokens: writeTokens(part.chars), signal: opts.signal, instructionIncluded }),
+          (t) => {
+            count(t);
+            written += t;
+          },
+        ));
       }
-      const part = parts[p];
-      yield { t: "status", v: `집필 중… (${p + 1}/${parts.length}) ${part.heading}` };
-      if (part.heading) {
-        const h = `${written ? "\n\n" : ""}## ${part.heading}\n\n`;
-        written += h;
-        yield { t: "delta", v: h };
-      }
-      const lastPara = written.trim().split(/\n+/).filter((l) => l.trim() && !l.startsWith("## ")).slice(-1)[0] ?? "";
-      const partInfo = [
-        `[이번 파트] ${part.heading || "(소제목 없음)"} / 다룰 내용: ${part.points.join("; ") || "(개요 없음)"} / 배정된 스케치: ${part.sketchItems.join("; ") || "(없음)"} / 분량 약 ${part.chars}자`,
-        p > 0 ? `앞 파트 마지막 문단: ${lastPara}\n절 도입부를 다시 쓰지 말고 앞 파트에서 자연스럽게 이어 쓴다.` : "이 파트는 절의 도입부다.",
-        p === parts.length - 1 ? "이 파트에서 절을 마무리한다." : "이 파트에서 절을 마무리하지 않는다.",
-        "소제목은 앱이 붙이므로 출력하지 않는다.",
-      ].join("\n");
-      const { messages, instructionIncluded } = await buildMessages("section-write", { ...baseVars, partInfo });
-      yield* pipe(
-        chatStream({ purpose: "section_write_part", projectId, messages, temperature: 0.7, maxTokens: writeTokens(part.chars), signal: opts.signal, instructionIncluded }),
-        (t) => {
-          count(t);
-          written += t;
-        },
-      );
     }
+    if (opts.signal?.aborted) result = "aborted";
+    else if (result === "aborted") result = "ok";
+    yield { t: "timing", timing: clock.snapshot() };
+    yield { t: "done", chars: total };
+  } catch (error) {
+    result = opts.signal?.aborted ? "aborted" : "error";
+    throw error;
+  } finally {
+    console.info("[write-timing]", JSON.stringify({ sectionId, result, ...clock.snapshot() }));
   }
-  yield { t: "done", chars: total };
 }
 
 /* ---------------- 분량 조정 ---------------- */

@@ -22,6 +22,12 @@ export async function dailyMaintenance() {
   try {
     await purgeTrash(30);
   } catch {}
+  // Rebuildable outline cache expires after one day, including orphaned sections.
+  try {
+    await prisma.appSetting.deleteMany({
+      where: { key: { startsWith: "ai:outline-cache:" }, updatedAt: { lt: new Date(Date.now() - 24 * 3600 * 1000) } },
+    });
+  } catch {}
 }
 
 /** 원고 이미지 저장 경로 (assets 버킷 안) */
