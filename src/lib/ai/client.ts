@@ -27,7 +27,16 @@ export type ChatOptions = {
   deadline?: number;
 };
 
-export type Usage = { promptTokens: number; completionTokens: number; cost: number; truncated?: boolean; deadline?: boolean };
+export type Usage = {
+  promptTokens: number;
+  completionTokens: number;
+  cost: number;
+  /** 출력 중 추론(생각) 토큰 · 입력 중 캐시에서 읽은 토큰 — 게이트웨이가 알려 줄 때만 */
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  truncated?: boolean;
+  deadline?: boolean;
+};
 
 const TIMEOUT_MS = 120_000;
 const MAX_RETRIES = 3;
@@ -111,6 +120,8 @@ function parseUsage(u: any, est?: any): Usage {
     promptTokens: Number(u?.prompt_tokens ?? 0) || 0,
     completionTokens: Number(u?.completion_tokens ?? 0) || 0,
     cost,
+    reasoningTokens: Number(u?.completion_tokens_details?.reasoning_tokens ?? u?.output_tokens_details?.reasoning_tokens ?? 0) || 0,
+    cachedTokens: Number(u?.prompt_tokens_details?.cached_tokens ?? u?.cache_read_input_tokens ?? 0) || 0,
   };
 }
 
@@ -233,20 +244,23 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string, Usa
   let usage: Usage = { promptTokens: 0, completionTokens: 0, cost: 0 };
   let truncated = false;
   let yielded = 0;
+  let firstTextAt = 0;
+  let modelName = "";
   let finished = false;
   let status = "ok";
   let err: string | undefined;
   try {
     const { url, headers, model, provider, maxOut, reasoningEffort } = await config(opts);
+    modelName = model;
     const maxTokens = Math.min(opts.maxTokens ?? 4000, maxOut);
     const res = await post(
       url,
       headers,
       {
         model,
-        messages: opts.messages,
+        messages: withCache(opts.messages, provider, model),
         temperature: opts.temperature ?? 0.7,
-        ...(provider === "gemini" && reasoningEffort && reasoningEffort !== "default" ? { reasoning_effort: reasoningEffort } : {}),
+        ...(effortFor(opts.purpose, provider, reasoningEffort) ? { reasoning_effort: effortFor(opts.purpose, provider, reasoningEffort) } : {}),
         // OpenAI 최신 모델은 max_completion_tokens만 받는다
         ...(provider === "openai" ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
         stream: true,
@@ -279,6 +293,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string, Usa
           continue;
         }
         const delta = j?.choices?.[0]?.delta?.content;
+        if (delta && !firstTextAt) firstTextAt = Date.now();
         const fin = j?.choices?.[0]?.finish_reason;
         if (fin === "length") truncated = true;
         if (j?.usage) usage = parseUsage(j.usage, j.estimated_cost);
@@ -325,6 +340,48 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string, Usa
     clearTimeout(stopAt);
     opts.signal?.removeEventListener("abort", onAbort);
     ctrl.abort();
+    // 호출별 시간·토큰 (첫 글자까지 걸린 시간, 추론·캐시 토큰) — 속도 측정용 구조화 로그, 프롬프트·원고는 넣지 않는다
+    console.info(
+      "[ai-call]",
+      JSON.stringify({
+        purpose: opts.purpose,
+        model: modelName,
+        status,
+        ms: Date.now() - started,
+        firstTextMs: firstTextAt ? firstTextAt - started : null,
+        in: usage.promptTokens,
+        out: usage.completionTokens,
+        reasoning: usage.reasoningTokens ?? null,
+        cached: usage.cachedTokens ?? null,
+      }),
+    );
     await log(opts, userId, started, truncated && status === "ok" ? "truncated" : status, usage, err);
   }
+}
+
+/**
+ * 보낼 추론 강도 — 연결 설정의 값(기본이면 보내지 않음). 게이트웨이·Gemini·OpenAI가 reasoning_effort를 받는다.
+ * 측정용: 환경변수 AI_REASONING_OVERRIDE="low" 또는 "section_write=low,section_outline=low"가 설정보다 앞선다(운영에는 두지 않는다).
+ */
+function effortFor(purpose: string, provider: string, configured?: string): string | null {
+  const o = process.env.AI_REASONING_OVERRIDE?.trim();
+  if (o) {
+    if (!o.includes("=")) return o === "default" ? null : o;
+    const hit = o.split(",").map((x) => x.trim().split("=")).find(([k]) => k === purpose || (k.endsWith("*") && purpose.startsWith(k.slice(0, -1))));
+    if (hit) return hit[1] === "default" ? null : hit[1];
+  }
+  if (!configured || configured === "default") return null;
+  return provider === "anthropic" ? null : configured;
+}
+
+/**
+ * 프롬프트 캐시 — 게이트웨이의 Claude 모델은 system 메시지(instruction.md·책 정보·문체·목차, 절마다 같다)에 cache_control을 달면
+ * 5분 안의 다음 호출(다른 절·긴 절의 다음 파트)이 그 부분을 캐시에서 읽는다. 결과는 같고, 첫 응답이 조금 빨라지며 입력 비용이 준다.
+ * 내용이 짧으면(1,024토큰 미만) 캐시가 만들어지지 않으므로 긴 system에만 단다.
+ */
+export function withCache(messages: ChatMessage[], provider: string, model: string): unknown[] {
+  if (provider !== "gateway" || !/claude/i.test(model)) return messages;
+  return messages.map((m) =>
+    m.role === "system" && m.content.length > 4000 ? { role: "system", content: [{ type: "text", text: m.content, cache_control: { type: "ephemeral" } }] } : m,
+  );
 }

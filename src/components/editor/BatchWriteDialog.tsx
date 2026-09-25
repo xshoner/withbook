@@ -17,6 +17,8 @@ export { BATCH_MAX };
 export default function BatchWriteDialog(props: {
   sections: SectionRef[];
   currentId: string;
+  /** AI 집필·교정 중인 절 — 고를 수 없다 */
+  busyIds?: ReadonlySet<string>;
   currentSketch: string;
   currentPages: number;
   cpp: number;
@@ -27,7 +29,8 @@ export default function BatchWriteDialog(props: {
   onStart: (items: BatchItem[], extraInstruction: string) => void;
 }) {
   const { sections, currentId } = props;
-  const [picked, setPicked] = useState<string[]>([currentId]);
+  const busy = (id: string) => !!props.busyIds?.has(id);
+  const [picked, setPicked] = useState<string[]>(busy(currentId) ? [] : [currentId]);
   const [pages, setPages] = useState<Record<string, number>>({ [currentId]: props.currentPages });
   const [sketch, setSketch] = useState<Record<string, string>>({ [currentId]: props.currentSketch });
   const [loading, setLoading] = useState<Record<string, boolean>>({});
@@ -40,7 +43,7 @@ export default function BatchWriteDialog(props: {
 
   const toggle = async (s: SectionRef) => {
     if (picked.includes(s.id)) return setPicked(picked.filter((x) => x !== s.id));
-    if (picked.length >= BATCH_MAX) return;
+    if (picked.length >= BATCH_MAX || busy(s.id)) return;
     setPicked([...picked, s.id]);
     setPages((p) => ({ ...p, [s.id]: p[s.id] ?? (s.targetPages || 3) }));
     if (sketch[s.id] === undefined) {
@@ -56,7 +59,8 @@ export default function BatchWriteDialog(props: {
     }
   };
 
-  const chosen = sections.filter((s) => picked.includes(s.id)); // 책 순서
+  // 창을 연 뒤에 작업이 시작된 절은 뺀다
+  const chosen = sections.filter((s) => picked.includes(s.id) && !busy(s.id)); // 책 순서
   const overwrite = chosen.filter((s) => s.charCount > 0);
   const start = async () => {
     if (!chosen.length) return;
@@ -78,15 +82,17 @@ export default function BatchWriteDialog(props: {
         </div>
         <div className="min-h-0 flex-1 space-y-1.5 overflow-auto px-5 py-3">
           {list.map((s) => {
-            const on = picked.includes(s.id);
-            const full = !on && picked.length >= BATCH_MAX;
+            const isBusy = busy(s.id);
+            const on = picked.includes(s.id) && !isBusy;
+            const full = (!on && picked.length >= BATCH_MAX) || isBusy;
             return (
               <div key={s.id} className={`rounded-lg border ${on ? "border-amber-400 bg-amber-50/60" : "border-stone-200"} ${full ? "opacity-50" : ""}`}>
                 <label className={`flex items-center gap-2 px-3 py-2 text-sm ${full ? "cursor-not-allowed" : "cursor-pointer"}`}>
-                  <input type="checkbox" checked={on} disabled={full} onChange={() => toggle(s)} />
+                  <input type="checkbox" checked={on} disabled={full} onChange={() => toggle(s)} title={isBusy ? "AI 집필·교정 중인 절은 고를 수 없습니다" : undefined} />
                   <span className="shrink-0 text-xs text-stone-400">{s.label}</span>
                   <span className="min-w-0 flex-1 truncate font-medium">{s.title}</span>
                   {s.id === currentId && <span className="rounded bg-stone-800 px-1.5 text-[10px] text-white">지금 절</span>}
+                  {isBusy && <span className="rounded bg-sky-100 px-1.5 text-[10px] text-sky-800">작업 중 — 끝난 뒤에 고르세요</span>}
                   {s.charCount > 0 && <span className="rounded bg-stone-100 px-1.5 text-[10px] text-stone-500">본문 {s.charCount.toLocaleString()}자</span>}
                   <span className="shrink-0 text-[11px] text-stone-400">{s.chapterTitle}</span>
                 </label>

@@ -2,7 +2,7 @@
 
 import { get, set, update } from "idb-keyval";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AutosaveQueue, type Draft, type Patch, type SaveResult, type SaveState } from "@/lib/autosave-queue";
+import { AutosaveQueue, SaveError, type Draft, type Patch, type SaveResult, type SaveState } from "@/lib/autosave-queue";
 import { cancelSummaryPreparation, scheduleSummaryPreparation } from "./preparation";
 export type { Patch, SaveState } from "@/lib/autosave-queue";
 
@@ -17,7 +17,7 @@ function queue(id: string) {
           method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patch), signal: AbortSignal.timeout(15000),
         });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `저장 실패 (${res.status})`);
+        if (!res.ok) throw new SaveError((await res.json().catch(() => ({}))).error ?? `저장 실패 (${res.status})`, res.status);
         const result = await res.json();
         if (patch.content !== undefined) scheduleSummaryPreparation(id, () => !queues.get(id)?.draft);
         return result;
@@ -31,7 +31,17 @@ function queue(id: string) {
   return q;
 }
 
+/** 열린 편집기가 아직 큐에 넣지 않은 입력(250ms 묶음)을 넣는 함수 — 저장을 기다리기 전에 먼저 부른다 */
+const committers = new Map<string, () => void>();
+export function registerCommit(id: string, fn: () => void) {
+  committers.set(id, fn);
+  return () => {
+    if (committers.get(id) === fn) committers.delete(id);
+  };
+}
+
 export async function flushAllPending() {
+  committers.forEach((fn) => fn());
   return (await Promise.all([...queues.values()].map((q) => q.flush()))).every(Boolean);
 }
 
@@ -45,8 +55,10 @@ export async function saveViaQueue(id: string, patch: Patch) {
   return ok;
 }
 
+/** 이 절에 밀린 저장을 보낸다. 보낼 것이 없거나 다 보냈으면 true */
 export async function settleSection(id: string) {
-  await queues.get(id)?.flush();
+  committers.get(id)?.();
+  return (await queues.get(id)?.flush()) ?? true;
 }
 
 export function useAutosave(sectionId: string | null, onSaved?: (result: SaveResult) => void) {

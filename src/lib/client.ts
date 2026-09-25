@@ -15,7 +15,15 @@ export async function api<T = any>(url: string, init?: RequestInit & { json?: un
   return data as T;
 }
 
-export type StreamEvent = { t: "status" | "delta" | "done" | "error" | "timing"; v?: string; chars?: number; timing?: WriteTiming };
+export type StreamEvent = {
+  t: "status" | "delta" | "done" | "error" | "timing" | "resume";
+  v?: string;
+  chars?: number;
+  timing?: WriteTiming;
+  /** resume: 긴 절을 같은 개요로 이어 쓸 다음 파트 */
+  fromPart?: number;
+  parts?: { heading: string; points: string[]; sketchItems: string[]; chars: number }[];
+};
 
 /** NDJSON 스트림 읽기 */
 export async function readStream(res: Response, onEvent: (e: StreamEvent) => void) {

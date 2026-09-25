@@ -15,6 +15,7 @@ import type { PagedInfo, ProjectTree, SectionPageInfo, TreeSection } from "@/com
 import { api, fmtTime } from "@/lib/client";
 import { toast, toastError } from "@/components/ui/feedback";
 import { numberChapters } from "@/lib/layout";
+import { shiftSection } from "@/lib/page-shift";
 
 // 열 때만 필요한 화면은 따로 불러온다 (편집 화면 첫 로딩을 가볍게)
 const BookSearchDialog = dynamic(() => import("@/components/BookSearchDialog"));
@@ -200,7 +201,26 @@ export default function Workspace() {
     if (measured === undefined) setMeasureKey((k) => k + 1);
     else if (Math.abs(chars - measured) > Math.max(150, measured * 0.03)) setSectionMeasure({ sid, n: Date.now() });
   }, []);
-  const onSectionInfo = useCallback((sid: string, m: SectionPageInfo) => setInfo((i) => (i ? shiftSection(i, sid, m) : i)), []);
+  // 책 순서(앞붙이 → 본문 → 뒷붙이)의 장
+  const orderRef = useRef<{ id: string; sectionIds: string[] }[]>([]);
+  orderRef.current = chapters.map((c) => ({ id: c.id, sectionIds: c.sections.map((s) => s.id) }));
+  const treeRef = useRef<ProjectTree | null>(null);
+  treeRef.current = tree;
+  const onSectionInfo = useCallback((sid: string, m: SectionPageInfo) => {
+    const cur = infoRef.current;
+    const t = treeRef.current;
+    if (!cur || !t) return;
+    const next = shiftSection(cur, sid, m, {
+      startRight: t.layout.chapterStartRight,
+      chapters: orderRef.current,
+    });
+    // 오른쪽 시작 장의 빈 쪽이 달라져 여기서 맞출 수 없다 → 책 전체를 다시 잰다
+    if (!next) setMeasureKey((k) => k + 1);
+    else if (next !== cur) {
+      infoRef.current = next;
+      setInfo(next);
+    }
+  }, []);
   useEffect(() => {
     if (!staleRef.current) return;
     staleRef.current = false;
@@ -455,28 +475,6 @@ export default function Workspace() {
       {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} />}
     </div>
   );
-}
-
-/**
- * 절 하나를 다시 잰 결과를 책 전체 측정값에 합친다 — 그 절이 차지하는 쪽 수가 달라진 만큼 뒤 절·장의 쪽을 민다.
- * (오른쪽 시작 장의 빈 쪽 변화는 다음 전체 측정에서 맞춘다)
- */
-function shiftSection(info: PagedInfo, sid: string, m: SectionPageInfo): PagedInfo {
-  const old = info.sections[sid];
-  if (!old) return info;
-  const span = (x: SectionPageInfo) => x.endIdx - x.startIdx + 1;
-  const d = span(m) - span(old);
-  const sections: PagedInfo["sections"] = {};
-  for (const [k, s] of Object.entries(info.sections)) {
-    if (k === sid) {
-      sections[k] = { ...old, pages: m.pages, chars: m.chars, fig: m.fig, endIdx: old.startIdx + span(m) - 1, end: old.start > 0 ? old.start + span(m) - 1 : old.end };
-    } else if (d && s.startIdx > old.startIdx) {
-      sections[k] = { ...s, startIdx: s.startIdx + d, endIdx: s.endIdx + d, start: s.start > 0 ? s.start + d : s.start, end: s.end > 0 ? s.end + d : s.end, side: (s.startIdx + d) % 2 === 1 ? "right" : "left" };
-    } else sections[k] = s;
-  }
-  const chapters: PagedInfo["chapters"] = {};
-  for (const [k, c] of Object.entries(info.chapters)) chapters[k] = d && old.start > 0 && c.start > old.start ? { start: c.start + d } : c;
-  return { ...info, total: info.total + d, sections, chapters };
 }
 
 const SHORTCUTS: [string, string][] = [

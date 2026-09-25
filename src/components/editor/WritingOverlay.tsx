@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 /**
  * AI 집필 중 진행 창 — 새로 쓰는 절의 편집 화면 가운데에만 뜬다(다른 절은 편집 가능). 본문은 다 쓴 뒤 한 번에 넣으므로 화면이 흔들리지 않는다.
  * 최근 몇 줄만 아래에서 위로 굴러 올라가게 보여 준다.
@@ -11,7 +13,10 @@ export default function WritingOverlay(props: {
   target: number;
   step?: { i: number; n: number; label: string } | null;
   onStop: () => void;
+  /** 시작 시각 — 첫 문장 전 경과 시간 */
+  startedAt?: number;
 }) {
+  const elapsed = useElapsed(props.startedAt, !props.chars);
   const pct = props.target > 0 ? Math.min(100, Math.round((props.chars / props.target) * 100)) : 0;
   const tail = props.text.replace(/⟦주:[^⟧]*⟧/g, "").replace(/[#*>]/g, "").trim();
   return (
@@ -36,7 +41,11 @@ export default function WritingOverlay(props: {
           <div className={`h-full rounded-full bg-amber-600 transition-[width] duration-500 ${props.chars ? "" : "writing-indeterminate"}`} style={{ width: props.chars ? `${Math.max(3, pct)}%` : "30%" }} />
         </div>
         <div className="mt-1 flex justify-between text-[11px] text-stone-400">
-          <span>{props.chars ? `${props.chars.toLocaleString()}자 작성` : "집필에 필요한 내용을 준비하고 있습니다"}</span>
+          <span>
+            {props.chars
+              ? `${props.chars.toLocaleString()}자 작성`
+              : `문체·앞뒤 흐름을 구상하는 중 · ${elapsed}초 — 첫 문장까지 보통 1~2분 (그동안 다른 절을 편집하세요)`}
+          </span>
           {props.target > 0 && <span>목표 약 {props.target.toLocaleString()}자</span>}
         </div>
         <div className="writing-roll mt-4 h-[4.8em] overflow-hidden rounded-lg bg-stone-50 px-3 py-2 font-book text-[12.5px] leading-[1.6em] text-stone-600">
@@ -48,4 +57,15 @@ export default function WritingOverlay(props: {
       </div>
     </div>
   );
+}
+
+/** 1초마다 경과 초 (on일 때만 센다) */
+function useElapsed(startedAt: number | undefined, on: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!on || !startedAt) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [on, startedAt]);
+  return startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0;
 }

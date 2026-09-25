@@ -3,6 +3,15 @@ export type SaveResult = { charCount: number; status: string; updatedAt: string 
 export type SaveState = { kind: "idle" | "dirty" | "saving" | "saved" | "offline" | "error"; at?: Date; msg?: string };
 export type Draft = Patch & { ts: number; token: string };
 
+/** 저장 요청 실패 — status로 서버 응답 코드를 알린다 (404 = 절이 지워짐) */
+export class SaveError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 /** One serialized writer per section, including across editor unmounts. */
 export class AutosaveQueue {
   draft: Draft | null = null;
@@ -65,6 +74,17 @@ export class AutosaveQueue {
         }
         this.emit({ kind: this.draft ? "dirty" : "saved", at: new Date() }, result);
       } catch (error) {
+        if (error instanceof SaveError && error.status === 404) {
+          // 절이 지워졌다 — 다시 보내도 소용없으니 보관본까지 버리고 멈춘다
+          await this.storage;
+          const last = this.draft;
+          this.draft = null;
+          this.firstDirty = 0;
+          if (last) await this.io.acknowledge(last.token).catch(() => {});
+          this.emit({ kind: "idle", msg: "삭제된 절이라 저장하지 않았습니다." });
+          clearTimeout(this.timer);
+          return true;
+        }
         this.emit({ kind: this.io.offline() ? "offline" : "error", msg: error instanceof Error ? error.message : "저장 실패" });
         clearTimeout(this.timer);
         this.timer = setTimeout(() => void this.flush(), 5000);

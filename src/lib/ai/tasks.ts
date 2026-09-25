@@ -360,13 +360,18 @@ export type WriteEvent =
   | { t: "delta"; v: string }
   | { t: "done"; chars: number }
   | { t: "timing"; timing: WriteTiming }
-  | { t: "error"; v: string };
+  | { t: "error"; v: string }
+  | { t: "resume"; fromPart: number; parts: OutlineParts };
+
+export type WriteResume = { fromPart: number; written: string; parts: OutlineParts };
 
 export type WriteOptions = {
   targetPages: number;
   mode: "overwrite" | "continue" | "newVersion";
   extraInstruction?: string;
   signal?: AbortSignal;
+  /** 긴 절 자동 이어 쓰기 (같은 개요로 fromPart부터) */
+  resume?: WriteResume;
 };
 
 const outlineSchema = z.object({
@@ -511,15 +516,18 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
       // 긴 절: 개요 → 파트별 생성
       yield { t: "status", v: "긴 절의 집필 개요 준비 중…" };
       const outlineStarted = Date.now();
-      const outline = await preparedOutline(sectionId, projectId, baseVars);
+      // 이어 쓰기면 처음 요청의 개요를 그대로 쓴다 (같은 개요·같은 파트 프롬프트 → 한 번에 쓸 때와 같은 결과)
+      const outline = opts.resume ? { parts: opts.resume.parts, cached: true } : await preparedOutline(sectionId, projectId, baseVars);
       clock.outlineMs = Date.now() - outlineStarted;
       clock.outlineCached = outline.cached;
       const parts = outline.parts;
-      let written = "";
-      for (let p = 0; p < parts.length; p++) {
+      const from = opts.resume ? Math.min(opts.resume.fromPart, parts.length) : 0;
+      let written = opts.resume?.written ?? "";
+      for (let p = from; p < parts.length; p++) {
         if (opts.signal?.aborted) break;
-        if (p > 0 && Date.now() - started > PART_START_BUDGET_MS) {
-          // 한 번의 요청으로 쓸 수 있는 시간을 넘기기 전에 멈춘다 — 쓴 데까지는 그대로 넣고 [이어쓰기]로 계속
+        if (p > from && Date.now() - started > PART_START_BUDGET_MS) {
+          // 한 번의 요청으로 쓸 수 있는 시간을 넘기기 전에 멈춘다 — 브라우저가 같은 개요로 다음 요청을 이어 보낸다(resume)
+          yield { t: "resume", fromPart: p, parts };
           yield { t: "status", v: "partial" };
           result = "partial";
           break;

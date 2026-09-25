@@ -31,4 +31,4 @@
 
 {{#if partInfo}}{{partInfo}}{{/if}}
 
-instruction.md 7장의 출력 형식에 따라 본문만 출력하라.
+본문은 쓰지 않는다. 위 스케치·분량·앞뒤 흐름으로 파트를 나눈 개요 JSON 하나만 출력하라 (소제목은 instruction.md 4장 규칙을 따른다).

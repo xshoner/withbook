@@ -8,11 +8,10 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
-import { clearJob, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, useLastWriteTiming, type JobMode } from "./aiJobs";
+import { clearJob, jobFor, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, useLastWriteTiming, type JobMode } from "./aiJobs";
 import { scheduleOutlinePreparation, scheduleSummaryPreparation } from "./preparation";
 import { attachFile } from "@/lib/upload-client";
 import {
-  appendDocs,
   docParagraphs,
   charCount,
   charCountNoSpace,
@@ -30,12 +29,12 @@ import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
 import ProofPanel, { type AppliedChange } from "./ProofPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, textblockAt } from "./pmOps";
-import { recoverPending, settleSection, useAutosave, type SaveState } from "./useAutosave";
+import { recoverPending, registerCommit, settleSection, useAutosave, type SaveState } from "./useAutosave";
 import FindPanel from "./FindPanel";
 import type { BatchItem, SectionRef } from "./BatchWriteDialog";
 import { BATCH_MAX } from "./batch";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
-import { registerProofApplier, runProof, takeProofResult, useProofJobs } from "./proofJobs";
+import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, takeProofResult, useProofJobs } from "./proofJobs";
 import WritingOverlay from "./WritingOverlay";
 import FootnotePopover from "./FootnotePopover";
 import ToolGroup from "./ToolGroup";
@@ -137,7 +136,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [proofLevel, setProofLevel] = useState<"proof" | "light">("proof");
   const [proof, setProof] = useState<AppliedChange[] | null>(null);
   // 교정도 편집기 밖에서 돈다 — 교정 중에 다른 절로 옮겨도 계속된다 (그동안 이 절만 잠근다)
-  const proofJob = useProofJobs().find((j) => j.sectionId === section.id) ?? null;
+  const proofJobs = useProofJobs();
+  const proofJob = proofJobs.find((j) => j.sectionId === section.id) ?? null;
   const proofBusy = proofJob?.state === "running";
   const [preProof, setPreProof] = useState<JNode | null>(null);
   const [versionKey, setVersionKey] = useState(0);
@@ -153,7 +153,13 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [rewriteBusy, setRewriteBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(data.recovered ? "브라우저에 보관돼 있던 최신 입력을 복원했습니다." : null);
   // 이 절의 AI 집필 작업 (편집기 밖에서 돈다 — 절을 옮겨도 계속된다)
-  const job = useAiJobs().find((j) => j.sectionId === section.id) ?? null;
+  const aiJobs = useAiJobs();
+  const job = aiJobs.find((j) => j.sectionId === section.id) ?? null;
+  // 다중 집필 창에서 고를 수 없는 절 (AI 집필·교정 중)
+  const busyIds = useMemo(
+    () => new Set([...aiJobs.filter((j) => j.state === "running").map((j) => j.sectionId), ...proofJobs.filter((j) => j.state === "running").map((j) => j.sectionId)]),
+    [aiJobs, proofJobs],
+  );
   const lastTiming = useLastWriteTiming(section.id);
   const jobRef = useRef(job);
   jobRef.current = job;
@@ -216,6 +222,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       commitEdit(); // 절을 옮겨도 밀린 입력을 저장 큐에 넣는다
     };
   }, [commitEdit]);
+  useEffect(() => registerCommit(section.id, commitEdit), [section.id, commitEdit]);
   useEffect(() => onSaveState(saveState), [saveState, onSaveState]);
   useEffect(() => {
     if (data.recovered) markDirty({ content: data.content, sketch: data.sketch, status: data.status });
@@ -517,6 +524,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   async function startJob(url: string, body: { targetPages?: number; targetChars?: number; mode?: string; extraInstruction?: string }, mode: JobMode) {
     if (!editor) return;
+    if (proofRunning(section.id)) return toast("교정·교열이 끝난 뒤에 집필하세요.");
     if (!(await flush())) return toast.error("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
     setLengthHint(null);
     if (mode !== "continue") setSketchOpen(false);
@@ -550,11 +558,18 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         setPanelOpen(true);
         return null;
       }
-      const d = job.mode === "continue" ? appendDocs(editor.getJSON() as JNode, doc) : doc;
-      setDoc(d);
+      if (job.mode === "continue") {
+        // 이어쓰기: 작가가 치고 있을 수 있다 — 앞 본문은 건드리지 않고 끝에만 한 번에 붙인다 (한글 조합 중이면 끝날 때까지 기다린다)
+        await compositionDone(editor);
+        if (editor.isDestroyed) return null;
+        appendAtEnd(editor, doc);
+      } else {
+        setDoc(doc);
+        scrollRef.current?.scrollTo({ top: 0 });
+      }
+      const d = editor.getJSON() as JNode;
       setCounts({ chars: charCount(d), noSpace: charCountNoSpace(d) });
-      if (job.mode !== "continue") scrollRef.current?.scrollTo({ top: 0 });
-      editor.setEditable(true, false);
+      editor.setEditable(!proofRunning(section.id), false);
       await commitDoc("ai_draft");
       setVersionKey((k) => k + 1);
       checkLength(charCount(editor.getJSON() as JNode));
@@ -645,6 +660,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   async function runProofread() {
     if (!editor) return;
     if (isDocEmpty(editor.getJSON() as JNode)) return toast("교정할 본문이 없습니다.");
+    if (jobFor(section.id)?.state === "running") return toast("AI 집필이 끝난 뒤에 교정하세요.");
     if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 교정해주세요.");
     setTab("proof");
     setPanelOpen(true);
@@ -657,7 +673,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!editor) return;
     return registerProofApplier(section.id, async (changes, failed, before) => {
       if (editor.isDestroyed) return null;
-      editor.setEditable(true, false);
+      editor.setEditable(!locksSection(jobFor(section.id)), false);
       setPreProof(before);
       const applied: AppliedChange[] = changes.map((c) => ({ ...c, state: replaceInBlock(editor, c.paragraph, c.before, c.after) ? "applied" : "failed" }));
       const list = [...applied, ...failed.map((c) => ({ ...c, state: "failed" as const }))];
@@ -688,12 +704,29 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proofJob?.state]);
 
+  // 새로 고침 뒤 — 편집기 밖에 남은 결과가 없으면 서버에 보관한 지난 교정 내역을 불러온다
+  useEffect(() => {
+    if (proofBusy || proofJob?.state === "done") return;
+    let alive = true;
+    loadProofResult(section.id).then((r) => {
+      if (!alive || !r || proofRunning(section.id)) return;
+      setPreProof((p) => p ?? r.before);
+      setProof((p) => p ?? r.result);
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section.id]);
+
   const revertOne = async (i: number) => {
     if (!editor || !proof) return;
     const c = proof[i];
     const ok = replaceInBlock(editor, c.paragraph, c.after, c.before);
     if (!ok) return toast.error("이미 다른 수정이 있어 이 항목만 되돌릴 수 없습니다. [전체 되돌리기]나 버전 기록을 쓰세요.");
-    setProof(proof.map((x, k) => (k === i ? { ...x, state: "reverted" } : x)));
+    const next = proof.map((x, k): AppliedChange => (k === i ? { ...x, state: "reverted" } : x));
+    setProof(next);
+    if (preProof) void saveProofResult(section.id, { label: secLabel, before: preProof, result: next });
     await commitDoc("editing");
   };
 
@@ -702,6 +735,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!(await confirmDialog("교정 전 상태로 모두 되돌릴까요?", { okLabel: "모두 되돌리기" }))) return;
     setDoc(preProof, true);
     setProof((p) => p?.map((x) => (x.state === "applied" ? { ...x, state: "reverted" } : x)) ?? null);
+    void clearProofResult(section.id);
     await commitDoc("editing");
   };
 
@@ -1018,7 +1052,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           <button className="btn-ghost text-xs" onClick={() => setPanelOpen(!panelOpen)} title="오른쪽 패널(AI 옵션·버전·교정 내역) 열기/닫기">
             {panelOpen ? "패널 닫기 ▸" : "◂ 패널"}
           </button>
-          <button className="btn" disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy} onClick={runProofread}>
+          <button
+            className="btn"
+            disabled={!!writing || proofBusy || !!rewriteBusy || !!fnBusy}
+            onClick={runProofread}
+            title={writing ? "AI 집필이 끝난 뒤에 교정할 수 있습니다" : undefined}
+          >
             {proofBusy ? "교정 중…" : "교정·교열"}
           </button>
           <button
@@ -1046,7 +1085,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           ) : (
             <div className="relative">
               <div className="flex gap-2">
-                <button className="btn-accent" onClick={onWriteClick} disabled={proofBusy || !!rewriteBusy}>
+                <button className="btn-accent" onClick={onWriteClick} disabled={proofBusy || !!rewriteBusy} title={proofBusy ? "교정·교열이 끝난 뒤에 집필할 수 있습니다" : undefined}>
                   ✎ AI 집필하기
                 </button>
                 <button
@@ -1214,6 +1253,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 분량이 목표({lengthHint.target.toLocaleString()}자)와 {Math.round(((lengthHint.chars - lengthHint.target) / lengthHint.target) * 100)}% 차이 납니다.
                 <button
                   className="btn px-2 py-0.5 text-xs"
+                  disabled={proofBusy || !!writing || !!rewriteBusy}
+                  title={proofBusy ? "교정·교열이 끝난 뒤에 조정할 수 있습니다" : undefined}
                   onClick={() => startJob(`/api/sections/${section.id}/adjust`, { targetChars: lengthHint.target }, "adjust")}
                 >
                   {lengthHint.chars < lengthHint.target ? "목표만큼 늘리기" : "목표만큼 줄이기"}
@@ -1238,6 +1279,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             chars={job.chars}
             target={job.target}
             step={job.batch ? { ...job.batch, label: job.label } : null}
+            startedAt={job.startedAt}
             onStop={() => {
               if (job.batch) stopBatch();
               stopJob(section.id);
@@ -1582,6 +1624,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <BatchWriteDialog
           sections={allSections}
           currentId={section.id}
+          busyIds={busyIds}
           currentSketch={sketch}
           currentPages={targetPages}
           cpp={cpp}
@@ -1697,4 +1740,24 @@ const NL = "\n";
 function textblockStart(editor: Editor, index: number) {
   const b = textblockAt(editor.state.doc, index);
   return b ? b.pos + 1 : 0;
+}
+
+/** 한글 등 입력 조합이 끝날 때까지 */
+function compositionDone(editor: Editor): Promise<void> {
+  if (editor.isDestroyed || !editor.view.composing) return Promise.resolve();
+  return new Promise((resolve) => editor.view.dom.addEventListener("compositionend", () => window.setTimeout(resolve, 0), { once: true }));
+}
+
+/** 문서 끝(끝의 빈 문단 자리)에 한 트랜잭션으로 붙인다 — 앞 본문·커서는 그대로 둔다 */
+function appendAtEnd(editor: Editor, doc: JNode) {
+  const st = editor.state;
+  const end = st.doc.content.size;
+  let from = end;
+  for (let i = st.doc.childCount - 1; i >= 0; i--) {
+    const c = st.doc.child(i);
+    if (c.type.name !== "paragraph" || c.content.size > 0) break;
+    from -= c.nodeSize;
+  }
+  const node = editor.schema.nodeFromJSON(doc);
+  editor.view.dispatch(st.tr.replaceWith(from, end, node.content).setMeta("addToHistory", false));
 }

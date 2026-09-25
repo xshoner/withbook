@@ -45,7 +45,11 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
-  page.on('dialog', dialog => dialog.accept());
+  // 앱은 브라우저 alert/confirm 대신 화면 안 알림·확인 창을 쓴다 — 새로 고침 때의 beforeunload만 허용
+  page.on('dialog', dialog => {
+    if (dialog.type() !== 'beforeunload') errors.push(`native ${dialog.type()}: ${dialog.message()}`);
+    dialog.accept();
+  });
   await page.goto(`${origin}/projects/${project.id}?s=${one.id}`);
   async function waitContent(id, expected) {
     for (let i = 0; i < 50; i++) {
@@ -59,9 +63,17 @@ try {
   await editor.waitFor();
   await editor.fill('자동저장 검증 문장입니다. [확인 필요] 두 번째 문장입니다.');
   await waitContent(one.id, '자동저장 검증');
-  await page.getByLabel('본문 찾기').fill('확인 필요');
+  // 도구줄의 [찾기] 묶음 (이 절에서 찾기·바꾸기)
+  const find = page.getByLabel('찾기', { exact: true });
+  await find.fill('확인 필요');
   await page.getByRole('button', { name: '다음', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '1 / 1개' }).waitFor();
+  await page.getByRole('button', { name: /^바꾸기/ }).click();
+  await page.getByPlaceholder('바꿀 말').fill('확인함');
+  await page.getByRole('button', { name: '이 절 모두', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '1곳을 바꿨습니다.' }).waitFor();
+  await waitContent(one.id, '[확인함]');
+  await find.fill('');
   await context.setOffline(true);
   await editor.fill('오프라인에서도 보관되는 새 원고입니다.');
   await page.waitForTimeout(1500);
@@ -93,6 +105,8 @@ try {
   await page.getByRole('button', { name: '펼침면 미리보기', exact: true }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('iframe')].some(f => f.contentWindow?.__PAGED_DONE === true), null, { timeout: 60000 });
   assert.deepEqual(errors, []);
+  await page.getByRole('button', { name: '편집', exact: true }).click();
+  await editor.waitFor();
   const zip = await request(`${origin}/api/projects/${project.id}/backup`);
   assert.equal(zip.status, 200);
   const form = new FormData(); form.set('file', new File([await zip.arrayBuffer()], 'backup.zip'));
@@ -109,7 +123,23 @@ try {
   assert.equal(hwpx.status, 200);
   const hwpxZip = await JSZip.loadAsync(await hwpx.arrayBuffer());
   assert.ok(hwpxZip.file('Contents/section0.xml'));
-  console.log(JSON.stringify({ ok: true, web, checks: ['API validation', 'CSRF', 'autosave', 'search', 'offline retry', 'section switching', 'version history', 'reload recovery', 'preview', 'backup/import', 'PDF size/fonts', 'HWPX structure'], artifacts: dir }));
+  // 삭제 → 화면 안 확인 창 → 알림의 [되돌리기] (휴지통 30일). 밀린 저장이 지운 절로 되풀이되지 않아야 한다
+  await page.goto(`${origin}/projects/${project.id}?s=${two.id}`);
+  await editor.waitFor();
+  await editor.fill('삭제 직전에 입력한 문장입니다.');
+  await page.getByRole('button', { name: '「둘째 절」 메뉴' }).click();
+  await page.getByRole('menuitem', { name: '삭제' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '삭제', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '「둘째 절」을(를) 삭제했습니다' }).waitFor();
+  assert.equal(await db.section.count({ where: { id: two.id } }), 0);
+  await page.getByRole('button', { name: '되돌리기', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '「둘째 절」을(를) 되돌렸습니다' }).waitFor();
+  const back = await db.section.findUniqueOrThrow({ where: { id: two.id } });
+  assert.ok(back.content.includes('삭제 직전에 입력한'), 'deleted section keeps the last typed text');
+  await page.waitForTimeout(1500);
+  assert.ok(!(await page.locator('header').innerText()).includes('저장 실패'), 'no endless save retry after delete');
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({ ok: true, web, checks: ['API validation', 'CSRF', 'autosave', 'search', 'replace in section', 'delete/undo', 'offline retry', 'section switching', 'version history', 'reload recovery', 'preview', 'backup/import', 'PDF size/fonts', 'HWPX structure'], artifacts: dir }));
 } finally {
   await browser?.close();
   server.kill();

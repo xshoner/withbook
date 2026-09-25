@@ -8,6 +8,9 @@ import { useEffect, useRef, useState } from "react";
 import { STATUS_LABEL, api } from "@/lib/client";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 import TrashDialog from "./TrashDialog";
+import { jobFor, stopJob, waitJobIdle } from "./editor/aiJobs";
+import { proofRunning, stopProof, waitProofIdle } from "./editor/proofJobs";
+import { settleSection } from "./editor/useAutosave";
 import type { PagedInfo, TreeChapter, TreeSection } from "./types";
 
 type LabeledChapter = Omit<TreeChapter, "sections"> & { label: string; sections: (TreeSection & { label: string })[] };
@@ -398,6 +401,24 @@ export default function TocPanel(props: Props) {
       const gone = (x: { cid: string; sid: string }) => (kind === "chapter" ? x.cid === id : x.sid === id);
       const curIdx = flat.findIndex((x) => x.sid === props.current);
       const fallback = curIdx >= 0 && gone(flat[curIdx]) ? ([...flat.slice(curIdx + 1), ...flat.slice(0, curIdx).reverse()].find((x) => !gone(x))?.sid ?? null) : null;
+      // 돌고 있는 AI 집필·교정은 먼저 멈춘다 (지운 절에 결과를 저장하려다 잃지 않게 — 쓴 데까지는 저장된 뒤 함께 휴지통으로 간다)
+      const ids = flat.filter(gone).map((x) => x.sid);
+      const writing = ids.filter((sid) => jobFor(sid)?.state === "running");
+      const proofing = ids.filter(proofRunning);
+      if (writing.length || proofing.length) {
+        const what = [writing.length ? "AI 집필" : "", proofing.length ? "교정·교열" : ""].filter(Boolean).join("·");
+        const ok = await confirmDialog(`「${title}」에서 ${what}이(가) 진행 중입니다. 작업을 멈추고 삭제할까요?\n(AI가 쓴 데까지는 저장한 뒤 함께 삭제합니다 — 삭제한 장·절에서 되돌릴 수 있습니다)`, {
+          danger: true,
+          okLabel: "멈추고 삭제",
+        });
+        if (!ok) return;
+        writing.forEach(stopJob); // 다중 집필이면 이 절만 멈추고 다음 절로 넘어간다
+        proofing.forEach(stopProof);
+        await Promise.all([...writing.map(waitJobIdle), ...proofing.map(waitProofIdle)]);
+      }
+      // 밀린 자동 저장을 먼저 보낸다 — 지운 절로 저장을 되풀이하지 않고, 휴지통에 최신 원고가 남게
+      const saved = (await Promise.all(ids.map(settleSection))).every(Boolean);
+      if (!saved && !(await confirmDialog("아직 서버에 저장하지 못한 입력이 있습니다. 그래도 삭제할까요?\n(저장하지 못한 입력은 휴지통에 남지 않습니다)", { danger: true, okLabel: "그래도 삭제" }))) return;
       try {
         const body = kind === "chapter" ? { op: "deleteChapter", chapterId: id, label } : { op: "deleteSection", sectionId: id, label };
         const r = await api<{ trashId?: string }>(`/api/projects/${props.projectId}/toc`, { method: "PATCH", json: body });
