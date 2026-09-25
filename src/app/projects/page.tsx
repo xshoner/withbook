@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import LogoutButton from "@/components/LogoutButton";
 import { api, fmtDate } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
+import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 
 type P = {
   id: string;
@@ -36,8 +37,8 @@ export default function ProjectList() {
   const trash = list?.filter((p) => p.deletedAt) ?? [];
 
   const act = async (p: P, kind: "dup" | "del" | "restore" | "purge") => {
-    if (kind === "del" && !confirm(`「${p.title}」을(를) 휴지통으로 옮길까요? 30일 뒤 자동 삭제됩니다.`)) return;
-    if (kind === "purge" && !confirm(`「${p.title}」을(를) 영구 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    if (kind === "del" && !(await confirmDialog(`「${p.title}」을(를) 휴지통으로 옮길까요? 30일 뒤 자동 삭제됩니다.`, { okLabel: "휴지통으로" }))) return;
+    if (kind === "purge" && !(await confirmDialog(`「${p.title}」을(를) 영구 삭제할까요? 되돌릴 수 없습니다.`, { danger: true, okLabel: "영구 삭제" }))) return;
     if (kind === "dup") await api(`/api/projects/${p.id}/duplicate`, { method: "POST" });
     if (kind === "del") await api(`/api/projects/${p.id}`, { method: "DELETE" });
     if (kind === "restore") await api(`/api/projects/${p.id}`, { method: "PATCH", json: { restore: true } });
@@ -52,7 +53,7 @@ export default function ProjectList() {
       const r = await api<{ id: string }>("/api/projects/import", { method: "POST", body: fd });
       router.push(`/projects/${r.id}`);
     } catch (e: any) {
-      alert(e.message);
+      toastError(e);
     }
   };
 

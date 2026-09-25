@@ -11,6 +11,8 @@ instruction.md
 *.hwp
 public/fonts/*.ttf
 public/fonts/*.otf
+public/fonts/*.woff
+public/fonts/*.woff2
 
 # 빌드·테스트 산출물
 node_modules/

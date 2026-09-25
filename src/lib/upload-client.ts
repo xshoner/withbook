@@ -1,7 +1,6 @@
 "use client";
 
 import { api } from "./client";
-import { browserSupabase } from "./supabase/browser";
 
 const DIRECT_LIMIT = 3.5 * 1024 * 1024; // Vercel 요청 본문 4.5MB 제한보다 작게
 
@@ -19,6 +18,8 @@ export async function attachFile(fd: FormData, field: string, file: File) {
     fd.append(field, file);
     return;
   }
+  // Supabase 브라우저 라이브러리는 큰 파일을 올릴 때만 불러온다 (편집 화면 첫 로딩을 가볍게)
+  const { browserSupabase } = await import("./supabase/browser");
   const { error } = await browserSupabase().storage.from("incoming").uploadToSignedUrl(s.path, s.token, file, { contentType: file.type || "application/octet-stream" });
   if (error) throw new Error(`파일 업로드 실패: ${error.message}`);
   fd.append(`${field}Path`, s.path);

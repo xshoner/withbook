@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
+import { listTrash, restoreTrash, trashChapter, trashSection } from "@/lib/trash";
 
 /** 순서 번호를 1부터 다시 매긴다 (같은 트랜잭션 안에서) */
 async function renumberSections(tx: Prisma.TransactionClient, chapterId: string) {
@@ -12,12 +13,24 @@ async function renumberChapters(tx: Prisma.TransactionClient, projectId: string)
   for (const [i, r] of rest.entries()) if (r.order !== i + 1) await tx.chapter.update({ where: { id: r.id }, data: { order: i + 1 } });
 }
 const TX = { timeout: 20_000 };
+const labelOf = (v: unknown) => (typeof v === "string" ? v.slice(0, 40) : "");
+
+/** 휴지통 목록: GET ?trash=1 → { items: [{ id, kind, title, label, deletedAt, charCount, versionsDropped? }] } */
+export const GET = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]/toc">) => {
+  const { id: projectId } = await ctx.params;
+  if (new URL(req.url).searchParams.get("trash") !== "1") return fail("알 수 없는 요청입니다.");
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  if (!p) return fail("책을 찾을 수 없습니다.", 404);
+  return ok({ items: await listTrash(projectId) });
+});
 
 /**
  * 목차 편집 — op 단위로 즉시 저장
  * addChapter {title, kind?} | addSection {chapterId, title, afterId?} | renameChapter {chapterId, title}
  * renameSection {sectionId, title} | updateSection {sectionId, gist?, targetPages?} | deleteChapter {chapterId}
  * deleteSection {sectionId} | reorderChapters {ids} | reorderSections {chapterId, ids} | moveSection {sectionId, toChapterId}
+ * restoreTrash {trashId} | refresh (아무것도 하지 않음 — 목록 다시 읽기용)
+ * 삭제는 휴지통(AppSetting)에 먼저 담고 { ok, trashId }를 돌려준다. label?: 목차 번호(휴지통 표시용)
  */
 export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]/toc">) => {
   const { id: projectId } = await ctx.params;
@@ -80,28 +93,35 @@ export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/project
       await prisma.section.update({ where: { id: b.sectionId }, data });
       return ok({ ok: true });
     }
-    case "deleteChapter":
+    case "deleteChapter": {
       await ownsChapter(b.chapterId);
-      await prisma.$transaction(async (tx) => {
+      const trashId = await prisma.$transaction(async (tx) => {
+        const tid = await trashChapter(tx, b.chapterId, labelOf(b.label));
         await tx.chapter.delete({ where: { id: b.chapterId } });
         await renumberChapters(tx, projectId);
+        return tid;
       }, TX);
-      return ok({ ok: true });
+      return ok({ ok: true, trashId });
+    }
     case "deleteSection": {
       const s = await ownsSection(b.sectionId);
       const done = await prisma.$transaction(async (tx) => {
         const count = await tx.section.count({ where: { chapterId: s.chapterId } });
-        if (count <= 1) return false;
+        if (count <= 1) return null;
+        const tid = await trashSection(tx, b.sectionId, labelOf(b.label));
         await tx.section.delete({ where: { id: b.sectionId } });
         await renumberSections(tx, s.chapterId);
-        return true;
+        return tid;
       }, TX);
       if (!done) return fail("장에는 절이 최소 1개 있어야 합니다. 장을 삭제하세요.");
-      return ok({ ok: true });
+      return ok({ ok: true, trashId: done });
     }
     case "reorderChapters": {
       const ids: string[] = b.ids ?? [];
-      for (const cid of ids) await ownsChapter(cid);
+      if (!Array.isArray(ids) || new Set(ids).size !== ids.length) return fail("장 순서가 올바르지 않습니다.");
+      // 모두 이 프로젝트의 장인지 한 번에 확인
+      const owned = await prisma.chapter.count({ where: { id: { in: ids }, projectId } });
+      if (owned !== ids.length) return fail("장을 찾을 수 없습니다.", 404);
       await prisma.$transaction(ids.map((cid, i) => prisma.chapter.update({ where: { id: cid }, data: { order: i + 1 } })));
       return ok({ ok: true });
     }
@@ -130,6 +150,13 @@ export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/project
       if (!done) return fail("장의 마지막 절은 옮길 수 없습니다.");
       return ok({ ok: true });
     }
+    case "restoreTrash": {
+      if (typeof b.trashId !== "string" || !b.trashId) return fail("되돌릴 항목을 지정하세요.");
+      const r = await restoreTrash(projectId, b.trashId);
+      return ok({ ok: true, ...r });
+    }
+    case "refresh":
+      return ok({ ok: true });
   }
   return fail("알 수 없는 작업입니다.");
 });

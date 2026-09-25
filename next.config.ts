@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   env: { NEXT_PUBLIC_APP_ACCESS_MODE: process.env.APP_ACCESS_MODE ?? "local" },
   outputFileTracingIncludes: {
     "/**": ["./prompts/**/*.md", "./instruction.md"],
-    "/pagedjs": ["./node_modules/pagedjs/dist/paged.polyfill.js"],
+    "/pagedjs": ["./node_modules/pagedjs/dist/paged.polyfill.min.js"],
     // Vercel에서 PDF를 만드는 서버용 Chromium
     // playwright-core는 browsers.json 등을 실행 중에 읽으므로 패키지 전체를 넣는다
     "/api/projects/*/export/pdf": ["./node_modules/@sparticuz/chromium/bin/**", "./node_modules/playwright-core/**"],

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/client";
+import { confirmDialog } from "./ui/feedback";
 
 type Hit = { paragraph: number; offset: number; before: string; match: string; after: string };
 type Result = { total: number; sections: { sectionId: string; label: string; title: string; chapterTitle: string; hits: Hit[] }[] };
@@ -52,7 +53,7 @@ export default function BookSearchDialog({
   const replace = async () => {
     if (!res || !picked.size) return;
     const n = res.sections.filter((s) => picked.has(s.sectionId)).reduce((a, s) => a + s.hits.length, 0);
-    if (!confirm(`${picked.size}개 절에서 "${q}" ${n}곳을 "${rep}"(으)로 바꿀까요? 바꾸기 전 원고는 각 절의 버전 기록에 남습니다.`)) return;
+    if (!(await confirmDialog(`${picked.size}개 절에서 "${q}" ${n}곳을 "${rep}"(으)로 바꿀까요? 바꾸기 전 원고는 각 절의 버전 기록에 남습니다.`, { okLabel: "모두 바꾸기" }))) return;
     setBusy(true);
     try {
       if (!(await beforeEdit())) throw new Error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");

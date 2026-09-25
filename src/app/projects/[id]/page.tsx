@@ -1,20 +1,25 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import BookSearchDialog from "@/components/BookSearchDialog";
-import ChecksDialog from "@/components/ChecksDialog";
-import ExportDialog from "@/components/ExportDialog";
 import Paginator from "@/components/Paginator";
-import PreviewPane from "@/components/PreviewPane";
 import TocPanel from "@/components/TocPanel";
 import SectionEditor from "@/components/editor/SectionEditor";
 import type { SaveState } from "@/components/editor/useAutosave";
 import { flushAllPending } from "@/components/editor/useAutosave";
-import type { PagedInfo, ProjectTree, TreeSection } from "@/components/types";
+import { stopBatch, stopJob, useAiJobs } from "@/components/editor/aiJobs";
+import type { PagedInfo, ProjectTree, SectionPageInfo, TreeSection } from "@/components/types";
 import { api, fmtTime } from "@/lib/client";
+import { toast, toastError } from "@/components/ui/feedback";
 import { numberChapters } from "@/lib/layout";
+
+// 열 때만 필요한 화면은 따로 불러온다 (편집 화면 첫 로딩을 가볍게)
+const BookSearchDialog = dynamic(() => import("@/components/BookSearchDialog"));
+const ChecksDialog = dynamic(() => import("@/components/ChecksDialog"));
+const ExportDialog = dynamic(() => import("@/components/ExportDialog"));
+const PreviewPane = dynamic(() => import("@/components/PreviewPane"));
 
 export default function Workspace() {
   const { id } = useParams<{ id: string }>();
@@ -30,6 +35,20 @@ export default function Workspace() {
   const [exportOpen, setExportOpen] = useState(false);
   const [dialog, setDialog] = useState<null | { kind: "search"; q: string } | { kind: "checks" }>(null);
   const [checkCount, setCheckCount] = useState<number | null>(null);
+  // 목차 접기 — 좁은 화면(1400px 미만)은 처음부터 접는다, 선택은 기억한다
+  const [tocCollapsed, setTocCollapsed] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("bookk-toc-collapsed");
+      setTocCollapsed(v ? v === "1" : window.innerWidth < 1400);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("bookk-toc-collapsed", tocCollapsed ? "1" : "0");
+    } catch {}
+  }, [tocCollapsed]);
   // 서버에서 원고를 고치면(바꾸기·확인 표시·장 퇴고) 편집 화면을 다시 불러온다
   const [editorNonce, setEditorNonce] = useState(0);
   const [locate, setLocate] = useState<{ sid: string; paragraph: number; text: string; nonce: number } | null>(null);
@@ -86,8 +105,28 @@ export default function Workspace() {
     if (n) setCurrent(n.s.id);
   }, [flat, idx]);
 
+  /** 다음(없으면 처음부터) 아직 본문이 없는 절 — 비어 있거나 스케치만 있는 절 */
+  const nextEmpty = useMemo(() => {
+    const todo = (f: (typeof flat)[number]) => f.s.status === "empty" || f.s.status === "sketch";
+    return flat.slice(idx + 1).find(todo) ?? flat.slice(0, Math.max(0, idx)).find(todo) ?? null;
+  }, [flat, idx]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // ? — 단축키 목록 (글을 쓰는 중이 아닐 때)
+      const t = e.target as HTMLElement | null;
+      if (e.key === "?" && !t?.closest("input, textarea, select, [contenteditable='true']")) {
+        e.preventDefault();
+        setKeysOpen((o) => !o);
+        return;
+      }
+      if (e.key === "Escape") setKeysOpen(false);
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "ArrowDown") {
+        e.preventDefault();
+        if (nextEmpty) setCurrent(nextEmpty.s.id);
+        else toast("아직 쓰지 않은 절이 없습니다.");
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         e.preventDefault();
         go(e.key === "ArrowUp" ? -1 : 1);
@@ -95,7 +134,7 @@ export default function Workspace() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go]);
+  }, [go, nextEmpty]);
 
   const onOp = useCallback(
     async (body: Record<string, unknown>) => {
@@ -113,7 +152,7 @@ export default function Workspace() {
         }
         setMeasureKey((k) => k + 1);
       } catch (e: any) {
-        alert(e.message);
+        toastError(e);
       }
     },
     [id, load, current],
@@ -146,19 +185,21 @@ export default function Workspace() {
   );
 
   /**
-   * 저장마다 책 전체를 다시 조판하지 않는다 — 마지막 조판 때보다 분량이 3%(최소 150자) 넘게 바뀌었을 때만 다시 잰다.
-   * 작은 변화는 절을 옮길 때 한 번에 반영한다.
+   * 저장마다 책 전체를 다시 조판하지 않는다.
+   * 분량이 3%(최소 150자) 넘게 바뀌면 그 절 하나만 다시 재고 뒤 절들의 쪽 번호를 그만큼 민다(sectionMeasure).
+   * 책 전체는 절을 옮길 때 한 번 다시 잰다(오른쪽 시작 장의 빈 쪽·차례 쪽수까지 정확히).
    */
   const staleRef = useRef(false);
   const infoRef = useRef<PagedInfo | null>(null);
   infoRef.current = info;
+  const [sectionMeasure, setSectionMeasure] = useState<{ sid: string; n: number } | null>(null);
   const onSaved = useCallback((sid: string, chars: number) => {
+    staleRef.current = true;
     const measured = infoRef.current?.sections[sid]?.chars;
-    if (measured === undefined || Math.abs(chars - measured) > Math.max(150, measured * 0.03)) {
-      staleRef.current = false;
-      setMeasureKey((k) => k + 1);
-    } else staleRef.current = true;
+    if (measured === undefined) setMeasureKey((k) => k + 1);
+    else if (Math.abs(chars - measured) > Math.max(150, measured * 0.03)) setSectionMeasure({ sid, n: Date.now() });
   }, []);
+  const onSectionInfo = useCallback((sid: string, m: SectionPageInfo) => setInfo((i) => (i ? shiftSection(i, sid, m) : i)), []);
   useEffect(() => {
     if (!staleRef.current) return;
     staleRef.current = false;
@@ -179,6 +220,18 @@ export default function Workspace() {
     },
     [load, current],
   );
+
+  // AI 집필은 편집기 밖에서 돈다 — 끝나면(작업 수가 줄면) 목차 상태·글자 수를 새로 받는다
+  const jobs = useAiJobs();
+  const running = jobs.filter((j) => j.state === "running");
+  const runningCount = useRef(0);
+  useEffect(() => {
+    if (running.length < runningCount.current) {
+      load();
+      setMeasureKey((k) => k + 1);
+    }
+    runningCount.current = running.length;
+  }, [running.length, load]);
 
   const gotoText = useCallback((sid: string, paragraph: number, text: string) => {
     setView("edit");
@@ -230,8 +283,36 @@ export default function Workspace() {
             <button className="btn-ghost px-1.5" disabled={idx < 0 || idx >= flat.length - 1} onClick={() => go(1)} title="다음 절 (Ctrl+↓)">
               ▶
             </button>
+            <button
+              className="btn-ghost whitespace-nowrap px-1.5 text-xs"
+              disabled={!nextEmpty}
+              onClick={() => nextEmpty && setCurrent(nextEmpty.s.id)}
+              title={nextEmpty ? `아직 본문이 없는 다음 절: ${nextEmpty.s.label} ${nextEmpty.s.title} (Ctrl+Shift+↓)` : "모든 절에 본문이 있습니다"}
+            >
+              ⇥ 다음 빈 절
+            </button>
           </div>
         </div>
+        {running.map((j) => (
+          <span key={j.sectionId} className="flex items-center gap-1.5 rounded-md bg-amber-600/20 px-2 py-1 text-xs text-amber-100" title={j.status}>
+            <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
+            <button className="max-w-40 truncate hover:underline" onClick={() => setCurrent(j.sectionId)} title="이 절로 가기">
+              AI 집필 {j.batch ? `${j.batch.i}/${j.batch.n} ` : ""}· {j.label}
+            </button>
+            <span className="text-amber-300">{j.chars ? `${j.chars.toLocaleString()}자` : "구상 중"}</span>
+            <button
+              className="ml-0.5 text-amber-200 hover:text-white"
+              aria-label="집필 중지"
+              title="중지 (쓴 데까지 저장)"
+              onClick={() => {
+                if (j.batch) stopBatch();
+                stopJob(j.sectionId);
+              }}
+            >
+              ■
+            </button>
+          </span>
+        ))}
         <span className={`text-xs ${save.kind === "error" || save.kind === "offline" ? "text-red-300" : "text-stone-400"}`}>{saveLabel}</span>
         <div className="flex overflow-hidden rounded-md border border-stone-500 text-sm">
           <button className={`px-3 py-1 ${view === "edit" ? "bg-amber-600 text-white" : "bg-stone-700 text-stone-200 hover:bg-stone-600"}`} onClick={() => setView("edit")}>
@@ -240,7 +321,7 @@ export default function Workspace() {
           <button
             className={`px-3 py-1 ${view === "preview" ? "bg-amber-600 text-white" : "bg-stone-700 text-stone-200 hover:bg-stone-600"}`}
             onClick={async () => {
-              if (!await flushAllPending()) return alert("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+              if (!await flushAllPending()) return toast.error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
               setPreviewKey((k) => k + 1);
               setView("preview");
             }}
@@ -256,7 +337,7 @@ export default function Workspace() {
           확인할 것{checkCount ? ` ${checkCount}` : ""}
         </button>
         <button className="btn" onClick={async () => {
-          if (!await flushAllPending()) return alert("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+          if (!await flushAllPending()) return toast.error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
           setExportOpen(true);
         }}>
           내보내기
@@ -276,6 +357,13 @@ export default function Workspace() {
           targetPages={tree.targetPages}
           onSelect={setCurrent}
           onOp={onOp}
+          onReload={async () => {
+            await load();
+            setMeasureKey((k) => k + 1);
+          }}
+          collapsed={tocCollapsed}
+          onToggleCollapse={() => setTocCollapsed((c) => !c)}
+          writing={running.map((j) => j.sectionId)}
         />
         {view === "preview" ? (
           <PreviewPane projectId={id} focus={current} reloadKey={previewKey} onInfo={onInfo} />
@@ -301,7 +389,7 @@ export default function Workspace() {
               setTree((t) => (t ? { ...t, layout: { ...t.layout, ...patch } } : t));
               api(`/api/projects/${id}`, { method: "PATCH", json: { layout: patch } })
                 .then(() => setMeasureKey((k) => k + 1))
-                .catch((e) => alert("조판 설정 저장 실패: " + e.message));
+                .catch((e) => toastError(e, "조판 설정 저장 실패: "));
             }}
             onRename={(title) => onOp({ op: "renameSection", sectionId: cur.s.id, title })}
             onRenameChapter={(title) => onOp({ op: "renameChapter", chapterId: cur.c.id, title })}
@@ -325,7 +413,8 @@ export default function Workspace() {
           </div>
         )}
       </div>
-      {view === "edit" && <Paginator projectId={id} trigger={measureKey} onInfo={onInfo} />}
+      {view === "edit" && <Paginator projectId={id} trigger={measureKey} section={sectionMeasure} onInfo={onInfo} onSection={onSectionInfo} />}
+      {keysOpen && <ShortcutsDialog onClose={() => setKeysOpen(false)} />}
       {dialog?.kind === "search" && (
         <BookSearchDialog
           projectId={id}
@@ -353,6 +442,65 @@ export default function Workspace() {
         />
       )}
       {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} />}
+    </div>
+  );
+}
+
+/**
+ * 절 하나를 다시 잰 결과를 책 전체 측정값에 합친다 — 그 절이 차지하는 쪽 수가 달라진 만큼 뒤 절·장의 쪽을 민다.
+ * (오른쪽 시작 장의 빈 쪽 변화는 다음 전체 측정에서 맞춘다)
+ */
+function shiftSection(info: PagedInfo, sid: string, m: SectionPageInfo): PagedInfo {
+  const old = info.sections[sid];
+  if (!old) return info;
+  const span = (x: SectionPageInfo) => x.endIdx - x.startIdx + 1;
+  const d = span(m) - span(old);
+  const sections: PagedInfo["sections"] = {};
+  for (const [k, s] of Object.entries(info.sections)) {
+    if (k === sid) {
+      sections[k] = { ...old, pages: m.pages, chars: m.chars, fig: m.fig, endIdx: old.startIdx + span(m) - 1, end: old.start > 0 ? old.start + span(m) - 1 : old.end };
+    } else if (d && s.startIdx > old.startIdx) {
+      sections[k] = { ...s, startIdx: s.startIdx + d, endIdx: s.endIdx + d, start: s.start > 0 ? s.start + d : s.start, end: s.end > 0 ? s.end + d : s.end, side: (s.startIdx + d) % 2 === 1 ? "right" : "left" };
+    } else sections[k] = s;
+  }
+  const chapters: PagedInfo["chapters"] = {};
+  for (const [k, c] of Object.entries(info.chapters)) chapters[k] = d && old.start > 0 && c.start > old.start ? { start: c.start + d } : c;
+  return { ...info, total: info.total + d, sections, chapters };
+}
+
+const SHORTCUTS: [string, string][] = [
+  ["Ctrl+S", "지금 저장"],
+  ["Ctrl+↑ / Ctrl+↓", "이전 / 다음 절"],
+  ["Ctrl+Shift+↓", "아직 본문이 없는 다음 절"],
+  ["Esc", "AI 집필 중지 (쓴 데까지 넣음) · 창 닫기"],
+  ["Enter / Shift+Enter", "찾기 칸에서 다음 / 이전 결과"],
+  ["Ctrl+Z / Ctrl+Y", "실행 취소 / 다시 실행"],
+  ["F2", "목차에서 고른 절 이름 바꾸기"],
+  ["Space + 화살표", "목차에서 ⋮⋮에 초점을 두고 순서 바꾸기"],
+  ["?", "이 목록 열기·닫기"],
+];
+
+function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-label="단축키" className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-semibold">단축키</h2>
+          <button className="btn-ghost" aria-label="닫기" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <dl className="space-y-1.5 text-sm">
+          {SHORTCUTS.map(([k, v]) => (
+            <div key={k} className="flex gap-3">
+              <dt className="w-36 shrink-0">
+                <kbd className="rounded border border-stone-300 bg-stone-50 px-1.5 py-0.5 font-mono text-xs">{k}</kbd>
+              </dt>
+              <dd className="text-stone-600">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
     </div>
   );
 }

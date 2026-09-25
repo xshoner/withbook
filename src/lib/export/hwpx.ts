@@ -1,6 +1,6 @@
 import "server-only";
 import path from "node:path";
-import { getObject } from "../storage";
+import { getObject, mapLimit } from "../storage";
 import JSZip from "jszip";
 import { prisma } from "../db";
 import type { Book } from "../book";
@@ -102,6 +102,27 @@ function secPr(book: Book) {
 /* ---------- 본문 문단 ---------- */
 
 type Img = { id: string; file: string; mime: string; data: Buffer; w: number; h: number };
+type Loaded = { path: string; mime: string; widthPx: number; heightPx: number; data: Buffer };
+
+/** 원고 속 그림의 이미지 ID 모으기 */
+function figureIds(n: JNode, out: Set<string>) {
+  if (n.type === "figure" && n.attrs?.assetId) out.add(String(n.attrs.assetId));
+  for (const c of n.content ?? []) figureIds(c, out);
+}
+
+/** 그림 이미지를 한 번에 조회하고 4개씩 나란히 내려받는다 */
+async function loadAssets(docs: JNode[]) {
+  const ids = new Set<string>();
+  for (const d of docs) figureIds(d, ids);
+  const map = new Map<string, Loaded>();
+  if (!ids.size) return map;
+  const rows = await prisma.asset.findMany({ where: { id: { in: [...ids] } }, select: { id: true, path: true, mime: true, widthPx: true, heightPx: true } });
+  await mapLimit(rows, 4, async (r) => {
+    const data = await getObject("assets", r.path);
+    if (data) map.set(r.id, { ...r, data });
+  });
+  return map;
+}
 
 class Writer {
   paras: string[] = [];
@@ -109,7 +130,7 @@ class Writer {
   images: Img[] = [];
   first = true;
   notes = 0;
-  constructor(private book: Book) {}
+  constructor(private book: Book, private assets: Map<string, Loaded> = new Map()) {}
 
   p(runs: string, paraPrId = 0, pageBreak = false) {
     let lead = "";
@@ -145,10 +166,9 @@ class Writer {
   }
   async figure(n: JNode, label: string) {
     const a = n.attrs ?? {};
-    const asset = a.assetId ? await prisma.asset.findUnique({ where: { id: a.assetId } }) : null;
+    const asset = a.assetId ? this.assets.get(String(a.assetId)) : undefined;
     if (!asset) return;
-    const data = await getObject("assets", asset.path);
-    if (!data) return;
+    const data = asset.data;
     const idx = this.images.length + 1;
     const ext = path.extname(asset.path).slice(1) || "png";
     const img: Img = { id: `image${idx}`, file: `BinData/image${idx}.${ext}`, mime: asset.mime, data, w: asset.widthPx, h: asset.heightPx };
@@ -199,8 +219,9 @@ class Writer {
 }
 
 export async function buildHwpx(book: Book): Promise<Buffer> {
-  const w = new Writer(book);
   const { project, layout } = book;
+  const docs = new Map(book.chapters.flatMap((c) => c.sections.map((s) => [s, parseDoc(s.content)] as const)));
+  const w = new Writer(book, await loadAssets([...docs.values()]));
   // 표제지
   w.p(w.run(project.title, 8), 1);
   if (project.subtitle) w.p(w.run(project.subtitle, 4), 1);
@@ -215,7 +236,7 @@ export async function buildHwpx(book: Book): Promise<Buffer> {
     for (const [i, s] of c.sections.entries()) {
       // 절은 항상 새 쪽에서 시작 (앞붙이·뒷붙이의 첫 절은 장 제목 바로 아래)
       if (!single) w.p(w.run(`${s.label ? s.label + " " : ""}${s.title}`, 3), 1, c.kind === "body" || i > 0);
-      await w.blocks(parseDoc(s.content), fig);
+      await w.blocks(docs.get(s)!, fig);
     }
   }
   // 판권면

@@ -109,9 +109,9 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
 
   /* ---------- CSS ---------- */
   const css = `
-@font-face { font-family: ${TYPO.bodyFontCss}; src: url(/api/fonts/KoPubBatangLight.ttf) format("truetype"); font-weight: 400; }
-@font-face { font-family: ${TYPO.bodyFontCss}; src: url(/api/fonts/KoPubBatangBold.ttf) format("truetype"); font-weight: 700; }
-@font-face { font-family: ${TYPO.headingFontCss}; src: url(/api/fonts/KoPubDotumMedium.ttf) format("truetype"); }
+@font-face { font-family: ${TYPO.bodyFontCss}; src: url(/api/fonts/KoPubBatangLight.woff2) format("woff2"), url(/api/fonts/KoPubBatangLight.ttf) format("truetype"); font-weight: 400; }
+@font-face { font-family: ${TYPO.bodyFontCss}; src: url(/api/fonts/KoPubBatangBold.woff2) format("woff2"), url(/api/fonts/KoPubBatangBold.ttf) format("truetype"); font-weight: 700; }
+@font-face { font-family: ${TYPO.headingFontCss}; src: url(/api/fonts/KoPubDotumMedium.woff2) format("woff2"), url(/api/fonts/KoPubDotumMedium.ttf) format("truetype"); }
 @page { size: ${W}mm ${H}mm; margin: ${top}mm ${outer}mm ${bottom}mm ${inner}mm; }
 @page :left { margin-left: ${outer}mm; margin-right: ${inner}mm; }
 @page :right { margin-left: ${inner}mm; margin-right: ${outer}mm; }
@@ -251,7 +251,7 @@ window.PagedConfig = {
   after: () => { try { window.__afterPaged(); } catch (e) { console.error(e); window.__PAGED_ERROR = String(e); window.__PAGED_DONE = true; } },
 };
 </script>
-<script src="/pagedjs"></script>
+<script src="/pagedjs?v=0.4.3"></script>
 <script>${AFTER_SCRIPT}</script>
 </head><body class="${bodyCls}">
 ${html}

@@ -2,17 +2,20 @@
 
 @font-face {
   font-family: BookBody;
-  src: url(/api/fonts/KoPubBatangLight.ttf) format("truetype");
+  src: url(/api/fonts/KoPubBatangLight.woff2) format("woff2"), url(/api/fonts/KoPubBatangLight.ttf) format("truetype");
   font-weight: 400;
+  font-display: swap;
 }
 @font-face {
   font-family: BookBody;
-  src: url(/api/fonts/KoPubBatangBold.ttf) format("truetype");
+  src: url(/api/fonts/KoPubBatangBold.woff2) format("woff2"), url(/api/fonts/KoPubBatangBold.ttf) format("truetype");
   font-weight: 700;
+  font-display: swap;
 }
 @font-face {
   font-family: BookHeading;
-  src: url(/api/fonts/KoPubDotumMedium.ttf) format("truetype");
+  src: url(/api/fonts/KoPubDotumMedium.woff2) format("woff2"), url(/api/fonts/KoPubDotumMedium.ttf) format("truetype");
+  font-display: swap;
 }
 
 @theme {

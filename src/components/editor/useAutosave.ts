@@ -32,6 +32,15 @@ export async function flushAllPending() {
   return (await Promise.all([...queues.values()].map((q) => q.flush()))).every(Boolean);
 }
 
+/** 편집기 없이 절을 저장한다 (다른 절을 보는 동안 끝난 AI 집필 등) — 같은 저장 큐를 거치므로 편집기 저장과 겹치지 않는다 */
+export async function saveViaQueue(id: string, patch: Patch) {
+  const q = queue(id);
+  q.mark(patch);
+  const ok = await q.flush();
+  if (q.idle() && queues.get(id) === q) queues.delete(id);
+  return ok;
+}
+
 export async function settleSection(id: string) {
   await queues.get(id)?.flush();
 }

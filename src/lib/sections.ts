@@ -3,25 +3,21 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { charCount, parseDoc } from "./doc/doc";
 import { sectionInput } from "./section-input";
+import { versionsToDrop } from "./version-policy";
 
 const STATUSES = new Set(["empty", "sketch", "ai_draft", "editing", "proofread"]);
 
 type Tx = Prisma.TransactionClient;
 
-/** 절당 보관 개수: 자동 저장 30 · 직접 저장 30 · 그 밖(AI 집필·교정·복원 등) 합쳐서 50 */
-const KEEP = { autosave: 30, manual: 30, other: 50 };
-
-/** 오래된 버전 정리 — 버전을 만든 같은 트랜잭션 안에서 부른다 */
+/** 오래된 버전 정리 — 버전을 만든 같은 트랜잭션 안에서 부른다 (본문은 읽지 않는다) */
 export async function pruneVersions(tx: Tx, sectionId: string) {
-  const groups: { where: Prisma.VersionWhereInput; keep: number }[] = [
-    { where: { sectionId, reason: "autosave" }, keep: KEEP.autosave },
-    { where: { sectionId, reason: "manual" }, keep: KEEP.manual },
-    { where: { sectionId, reason: { notIn: ["autosave", "manual"] } }, keep: KEEP.other },
-  ];
-  for (const g of groups) {
-    const old = await tx.version.findMany({ where: g.where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: g.keep, select: { id: true } });
-    if (old.length) await tx.version.deleteMany({ where: { id: { in: old.map((v) => v.id) } } });
-  }
+  const rows = await tx.version.findMany({
+    where: { sectionId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, reason: true, createdAt: true },
+  });
+  const drop = versionsToDrop(rows);
+  if (drop.length) await tx.version.deleteMany({ where: { id: { in: drop } } });
 }
 
 /**
@@ -42,9 +38,10 @@ export async function saveSection(
   if (typeof b.sketch === "string") data.sketch = b.sketch;
   if (b.status && STATUSES.has(b.status)) data.status = b.status;
   const run = async (tx: Tx) => {
-    const current = await tx.section.findUniqueOrThrow({ where: { id } });
-    if (!opts.skipAutosave && b.content !== undefined && b.content !== current.content && current.charCount > 0) {
-      const latest = await tx.version.findFirst({ where: { sectionId: id, reason: "autosave" }, orderBy: { createdAt: "desc" } });
+    // 자동 저장은 1초마다 올 수 있으므로 필요한 칸만 읽는다
+    const current = b.content === undefined || opts.skipAutosave ? null : await tx.section.findUniqueOrThrow({ where: { id }, select: { content: true, charCount: true } });
+    if (current && b.content !== current.content && current.charCount > 0) {
+      const latest = await tx.version.findFirst({ where: { sectionId: id, reason: "autosave" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
       if (!latest || Date.now() - latest.createdAt.getTime() >= 5 * 60_000) {
         await tx.version.create({ data: { sectionId: id, reason: "autosave", content: current.content, charCount: current.charCount } });
         await pruneVersions(tx, id);

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import BookInfoForm, { EMPTY_INFO } from "@/components/BookInfoForm";
 import { api } from "@/lib/client";
+import { toast, toastError } from "@/components/ui/feedback";
 
 export default function NewProject() {
   const router = useRouter();
@@ -29,7 +30,7 @@ export default function NewProject() {
               const r = await api<{ id: string }>("/api/projects", { method: "POST", json: v });
               router.push(`/projects/${r.id}/toc?auto=1`);
             } catch (e: any) {
-              alert(e.message);
+              toastError(e);
               setBusy(false);
             }
           }}

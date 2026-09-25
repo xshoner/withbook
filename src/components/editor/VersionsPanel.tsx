@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/client";
-import { diffParagraphs, docParagraphs, parseDoc, type JNode } from "@/lib/doc/doc";
+import { docParagraphs, parseDoc, type JNode } from "@/lib/doc/doc";
+import { ParagraphDiff } from "@/components/InlineDiff";
+import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 
 const REASON: Record<string, string> = {
   autosave: "자동 저장 이전 원고",
@@ -37,7 +39,11 @@ export default function VersionsPanel({
   beforeRestore: () => Promise<boolean>;
 }) {
   const [list, setList] = useState<V[]>([]);
-  const [view, setView] = useState<{ v: V; rows: ReturnType<typeof diffParagraphs> } | null>(null);
+  const [view, setView] = useState<{
+    v: V;
+    before: string[];
+    after: string[];
+  } | null>(null);
   const load = () => api<V[]>(`/api/sections/${sectionId}/versions`).then(setList);
   useEffect(() => {
     load();
@@ -46,17 +52,33 @@ export default function VersionsPanel({
   }, [sectionId, refreshKey]);
 
   const open = async (v: V) => {
-    const full = await api<{ content: string }>(`/api/versions/${v.id}`);
-    setView({ v, rows: diffParagraphs(docParagraphs(parseDoc(full.content)), docParagraphs(getCurrent())) });
+    try {
+      const full = await api<{ content: string }>(`/api/versions/${v.id}`);
+      setView({
+        v,
+        before: docParagraphs(parseDoc(full.content)),
+        after: docParagraphs(getCurrent()),
+      });
+    } catch (e) {
+      toastError(e, "버전을 불러오지 못했습니다: ");
+    }
   };
 
   const restore = async (v: V) => {
-    if (!confirm(`${fmtDate(v.createdAt)} 버전(${REASON[v.reason] ?? v.reason})으로 되돌릴까요? 지금 내용은 버전 기록에 남습니다.`)) return;
-    if (!await beforeRestore()) return alert("현재 원고 저장을 완료한 뒤 복원해주세요.");
-    const r = await api<{ content: string }>(`/api/versions/${v.id}`, { method: "POST", json: { currentContent: JSON.stringify(getCurrent()) } });
-    onRestore(r.content);
-    setView(null);
-    load();
+    if (!(await confirmDialog(`${fmtDate(v.createdAt)} 버전(${REASON[v.reason] ?? v.reason})으로 되돌릴까요? 지금 내용은 버전 기록에 남습니다.`, { okLabel: "복원" }))) return;
+    if (!(await beforeRestore())) return toast.error("현재 원고 저장을 완료한 뒤 복원해주세요.");
+    try {
+      const r = await api<{ content: string }>(`/api/versions/${v.id}`, {
+        method: "POST",
+        json: { currentContent: JSON.stringify(getCurrent()) },
+      });
+      onRestore(r.content);
+      setView(null);
+      load();
+      toast("이전 버전으로 복원했습니다.");
+    } catch (e) {
+      toastError(e, "복원하지 못했습니다: ");
+    }
   };
 
   return (
@@ -84,14 +106,10 @@ export default function VersionsPanel({
             </button>
           </div>
           <p className="px-3 py-1 text-[11px] text-stone-500">
-            <span className="bg-red-100 px-1">빨강</span> = 이 버전에만 있음, <span className="bg-emerald-100 px-1">초록</span> = 지금 내용에만 있음
+            <span className="bg-red-100 px-1 line-through">빨강</span> = 이 버전에만 있음, <span className="bg-emerald-100 px-1 underline">초록</span> = 지금 내용에만 있음
           </p>
-          <div className="min-h-0 flex-1 space-y-1 overflow-auto px-3 pb-3 font-book text-[12px] leading-5">
-            {view.rows.map((r, i) => (
-              <p key={i} className={r.type === "del" ? "bg-red-50 text-red-800 line-through decoration-red-300" : r.type === "add" ? "bg-emerald-50 text-emerald-900" : "text-stone-400"}>
-                {r.type === "same" ? (r.text.length > 60 ? r.text.slice(0, 60) + "…" : r.text) : r.text}
-              </p>
-            ))}
+          <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+            <ParagraphDiff key={view.v.id} before={view.before} after={view.after} />
           </div>
         </div>
       ) : (

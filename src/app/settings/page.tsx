@@ -6,6 +6,7 @@ import AiSettingsPanel from "@/components/AiSettingsPanel";
 import StyleProfileView from "@/components/StyleProfileView";
 import { api, fmtDate } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
+import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 
 export default function Settings() {
   const [cfg, setCfg] = useState<any>(null);
@@ -68,7 +69,7 @@ export default function Settings() {
                 className="text-xs text-red-600 hover:underline"
                 disabled={!!busy}
                 onClick={async () => {
-                  if (!confirm(`학습 자료에서 「${f.name}」을(를) 뺄까요? (이미 학습된 프로필은 다시 학습할 때 바뀝니다)`)) return;
+                  if (!(await confirmDialog(`학습 자료에서 「${f.name}」을(를) 뺄까요? (이미 학습된 프로필은 다시 학습할 때 바뀝니다)`, { okLabel: "빼기" }))) return;
                   await api(`/api/style/global?name=${encodeURIComponent(f.name)}`, { method: "DELETE" });
                   await loadStyle();
                 }}
@@ -98,7 +99,7 @@ export default function Settings() {
                 await loadStyle();
                 setMsg(`학습 자료 ${list.length}개를 올렸습니다. [다시 학습]을 누르면 반영됩니다.`);
               } catch (er: any) {
-                alert(er.message);
+                toastError(er);
               } finally {
                 setBusy("");
               }
@@ -116,11 +117,11 @@ export default function Settings() {
             setBusy("style");
             try {
               const r = await api("/api/style/global", { method: "POST" });
-              if (r.error) alert(r.error);
+              if (r.error) toast.error(r.error);
               await loadStyle();
               setMsg("문체를 다시 학습했습니다.");
             } catch (e: any) {
-              alert(e.message);
+              toastError(e);
             } finally {
               setBusy("");
             }

@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/client";
+import { BATCH_MAX } from "./batch";
+import { confirmDialog } from "../ui/feedback";
 
 export type SectionRef = { id: string; title: string; label: string; chapterTitle: string; targetPages: number; charCount: number; gist: string };
 export type BatchItem = { id: string; title: string; label: string; targetPages: number; sketch: string };
 
-export const BATCH_MAX = 3;
+export { BATCH_MAX };
 
 /**
  * 여러 절 한 번에 집필 — 최대 3개 절을 골라 절마다 분량·스케치를 정한다.
@@ -52,9 +54,9 @@ export default function BatchWriteDialog(props: {
 
   const chosen = sections.filter((s) => picked.includes(s.id)); // 책 순서
   const overwrite = chosen.filter((s) => s.charCount > 0);
-  const start = () => {
+  const start = async () => {
     if (!chosen.length) return;
-    if (overwrite.length && !confirm(`이미 본문이 있는 절 ${overwrite.length}개는 지금 본문을 버전 기록에 보관한 뒤 새로 씁니다. 진행할까요?`)) return;
+    if (overwrite.length && !(await confirmDialog(`이미 본문이 있는 절 ${overwrite.length}개는 지금 본문을 버전 기록에 보관한 뒤 새로 씁니다. 진행할까요?`, { okLabel: "새로 쓰기" }))) return;
     props.onStart(chosen.map((s) => ({ id: s.id, title: s.title, label: s.label, targetPages: pages[s.id] ?? (s.targetPages || 3), sketch: sketch[s.id] ?? "" })));
   };
 

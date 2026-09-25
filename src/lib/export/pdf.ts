@@ -73,7 +73,9 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
       const target = new URL(req.url());
       // 내부 토큰은 우리 서버로 가는 요청에만 붙인다
       if (target.origin === origin) return route.continue({ headers: { ...req.headers(), [RENDER_HEADER]: token } });
-      const ok = target.protocol === "data:" || (fontOrigin && target.origin === fontOrigin && target.pathname.startsWith("/storage/v1/object/public/fonts/"));
+      // 저장소에서는 공개 글꼴과, 이미지 주소가 보내 주는 서명된 원고 이미지만 받는다
+      const storagePath = target.pathname.startsWith("/storage/v1/object/public/fonts/") || target.pathname.startsWith("/storage/v1/object/sign/assets/");
+      const ok = target.protocol === "data:" || (fontOrigin && target.origin === fontOrigin && storagePath);
       return ok ? route.continue() : route.abort();
     });
     const left = () => deadline - Date.now();

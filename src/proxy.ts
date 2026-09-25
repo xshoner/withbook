@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { ROLES } from "./lib/auth";
+import { ROLES, USER_HEADER, userHeaderValue } from "./lib/auth";
 import { validRenderToken } from "./lib/render-token";
 import { checkAccess, webMode } from "./lib/security";
 
@@ -16,6 +16,9 @@ export async function proxy(request: NextRequest) {
   // 서버 안 PDF 조판 브라우저 (짧은 내부 토큰)
   if (validRenderToken(request)) return NextResponse.next();
 
+  // 로그인이 필요 없는 경로는 세션을 확인하지 않는다 (첫 화면만 로그인 상태면 목록으로 보낸다)
+  if (path !== "/" && PUBLIC.some((p) => p.test(path))) return NextResponse.next();
+
   let response = NextResponse.next({ request });
   const supabase = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!, {
     cookies: {
@@ -29,8 +32,9 @@ export async function proxy(request: NextRequest) {
   });
   // 세션을 확인하고(필요하면 갱신 쿠키를 붙인다) 역할을 본다
   const { data } = await supabase.auth.getClaims();
-  const claims = data?.claims as { app_metadata?: { role?: string } } | undefined;
-  const allowed = Boolean(claims && ROLES.has(claims.app_metadata?.role ?? ""));
+  const claims = data?.claims as { sub?: string; email?: string; app_metadata?: { role?: string } } | undefined;
+  const role = claims?.app_metadata?.role ?? "";
+  const allowed = Boolean(claims?.sub && ROLES.has(role));
 
   const withCookies = (res: NextResponse) => {
     response.cookies.getAll().forEach((c) => res.cookies.set(c));
@@ -48,7 +52,17 @@ export async function proxy(request: NextRequest) {
     if (path !== "/projects") to.searchParams.set("next", path + request.nextUrl.search);
     return withCookies(NextResponse.redirect(to));
   }
+  if (path.startsWith("/api/")) {
+    // 확인한 사용자를 서명해 라우트로 넘긴다 → handle()이 세션을 다시 확인하지 않는다 (밖에서 보낸 같은 이름 헤더는 덮어쓴다)
+    const headers = new Headers(request.headers);
+    const v = userHeaderValue({ id: claims!.sub!, email: claims?.email ?? "", role: role as "superadmin" | "editor" });
+    if (v) headers.set(USER_HEADER, v);
+    const res = NextResponse.next({ request: { headers } });
+    response.cookies.getAll().forEach((c) => res.cookies.set(c));
+    return res;
+  }
   return response;
 }
 
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+// Paged.js(공개 라이브러리)는 로그인 확인 없이 캐시에서 바로 받는다
+export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico|pagedjs).*)"] };

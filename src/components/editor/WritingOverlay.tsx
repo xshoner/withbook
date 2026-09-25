@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * AI 집필 중 진행 창 — 편집 화면 가운데에 고정. 본문은 다 쓴 뒤 한 번에 넣으므로 화면이 흔들리지 않는다.
+ * AI 집필 중 진행 창 — 새로 쓰는 절의 편집 화면 가운데에만 뜬다(다른 절은 편집 가능). 본문은 다 쓴 뒤 한 번에 넣으므로 화면이 흔들리지 않는다.
  * 최근 몇 줄만 아래에서 위로 굴러 올라가게 보여 준다.
  */
 export default function WritingOverlay(props: {
@@ -44,7 +44,7 @@ export default function WritingOverlay(props: {
             <p className="whitespace-pre-line">{tail ? tail.slice(-180) : "…"}</p>
           </div>
         </div>
-        <p className="mt-3 text-center text-[11px] text-stone-400">다 쓰면 본문에 한 번에 들어갑니다 · 다른 절로 옮기면 쓴 데까지 저장하고 멈춥니다 · Esc 중지</p>
+        <p className="mt-3 text-center text-[11px] text-stone-400">다 쓰면 이 절에 한 번에 들어갑니다 · 그동안 목차에서 <b className="text-stone-600">다른 절을 열어 편집</b>해도 집필은 계속됩니다 · Esc 중지</p>
       </div>
     </div>
   );

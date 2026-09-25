@@ -22,6 +22,7 @@ export default function ExportDialog({
   const [size, setSize] = useState<"bleed" | "trim">("bleed");
   const [scope, setScope] = useState<"all" | "chapter" | "section">("all");
   const [padEven, setPadEven] = useState(true);
+  const [withVersions, setWithVersions] = useState(true);
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
@@ -166,7 +167,11 @@ export default function ExportDialog({
           {tab === "backup" && (
             <>
               <p className="text-stone-600">프로젝트 전체(책 정보·목차·본문·버전 기록·이미지)를 zip 하나로 내려받습니다. 프로젝트 목록의 [백업 불러오기]로 복원할 수 있습니다.</p>
-              <a className="btn-accent w-full" href={`/api/projects/${projectId}/backup`}>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={withVersions} onChange={(e) => setWithVersions(e.target.checked)} /> 버전 기록 포함
+              </label>
+              <p className="text-xs text-stone-500">버전 기록을 빼면 백업이 가볍고 빨라집니다. 현재 원고와 이미지는 그대로 담깁니다.</p>
+              <a className="btn-accent w-full" href={`/api/projects/${projectId}/backup${withVersions ? "" : "?versions=none"}`}>
                 백업 zip 다운로드
               </a>
             </>

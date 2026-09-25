@@ -42,6 +42,42 @@ export async function getObject(bucket: Bucket, key: string): Promise<Buffer | n
   return fs.readFile(localPath(bucket, key)).catch(() => null);
 }
 
+/** 저장소 안 복사 — 웹은 Supabase copy(서버 간 복사, 내려받지 않음), 로컬·예전 절대 경로는 읽어서 쓴다. 원본이 없으면 false */
+export async function copyObject(bucket: Bucket, from: string, to: string, contentType = "application/octet-stream"): Promise<boolean> {
+  if (storageConfigured() && !path.isAbsolute(from)) {
+    const { error } = await supabaseAdmin().storage.from(bucket).copy(safeKey(from), safeKey(to));
+    if (!error) return true;
+    if (/not.?found/i.test(error.message)) return false;
+    throw new Error(`파일 복사 실패: ${error.message}`);
+  }
+  if (!path.isAbsolute(from)) {
+    const dest = localPath(bucket, to);
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    return fs.copyFile(localPath(bucket, from), dest).then(() => true, (e) => {
+      if (e?.code === "ENOENT") return false;
+      throw e;
+    });
+  }
+  const buf = await getObject(bucket, from);
+  if (!buf) return false;
+  await putObject(bucket, to, buf, contentType);
+  return true;
+}
+
+/** 동시 실행 수를 제한한 map (저장소 요청을 한꺼번에 몰아 보내지 않도록) — 결과 순서는 입력 순서 */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
+  return out;
+}
+
 export async function removeObjects(bucket: Bucket, keys: string[]) {
   const list = keys.filter((k) => k && !path.isAbsolute(k)).map(safeKey);
   if (!list.length) return;
@@ -68,6 +104,14 @@ export async function signedDownloadUrl(bucket: Bucket, key: string, filename: s
   if (!storageConfigured()) return null;
   const { data, error } = await supabaseAdmin().storage.from(bucket).createSignedUrl(safeKey(key), 600, { download: filename });
   if (error || !data) throw new Error(`내려받기 주소를 만들지 못했습니다: ${error?.message}`);
+  return data.signedUrl;
+}
+
+/** 이미지 표시용 서명 URL (기본 1시간) — 웹만, 로컬은 null */
+export async function signedViewUrl(bucket: Bucket, key: string, expiresIn = 3600): Promise<string | null> {
+  if (!storageConfigured() || path.isAbsolute(key)) return null;
+  const { data, error } = await supabaseAdmin().storage.from(bucket).createSignedUrl(safeKey(key), expiresIn);
+  if (error || !data) return null;
   return data.signedUrl;
 }
 

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, fmtDate } from "@/lib/client";
+import { confirmDialog } from "@/components/ui/feedback";
 
 type Report = {
   id: string;
@@ -69,7 +70,7 @@ export default function TocDesign() {
   async function apply(rep: Report) {
     const r = await api<{ needConfirm?: boolean; written?: number }>(`/api/projects/${id}/toc/apply`, { method: "POST", json: { reportId: rep.id } });
     if (r.needConfirm) {
-      if (!confirm(`이미 본문이 작성된 절이 ${r.written}개 있습니다. 목차를 교체하면 기존 장/절과 본문이 모두 삭제됩니다. 계속할까요?`)) return;
+      if (!(await confirmDialog(`이미 본문이 작성된 절이 ${r.written}개 있습니다. 목차를 교체하면 기존 장/절과 본문이 모두 삭제됩니다. 계속할까요?`, { danger: true, okLabel: "목차 교체" }))) return;
       await api(`/api/projects/${id}/toc/apply`, { method: "POST", json: { reportId: rep.id, force: true } });
     }
     router.push(`/projects/${id}`);

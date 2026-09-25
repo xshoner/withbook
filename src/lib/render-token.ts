@@ -29,6 +29,17 @@ function secret() {
 
 const sign = (payload: string) => createHmac("sha256", secret()).update(payload).digest("hex");
 
+/** 서버 안에서만 오가는 값의 서명·확인 (proxy → API 사용자 전달 등). 용도 이름을 앞에 붙여 토큰끼리 섞이지 않게 한다 */
+export function signInternal(purpose: string, payload: string) {
+  return secret() ? createHmac("sha256", secret()).update(`${purpose}:${payload}`).digest("hex") : "";
+}
+
+export function verifyInternal(purpose: string, payload: string, sig: string) {
+  const want = signInternal(purpose, payload);
+  if (!want || want.length !== sig.length) return false;
+  return timingSafeEqual(Buffer.from(want), Buffer.from(sig));
+}
+
 export function makeRenderToken(ttlMs = 5 * 60_000, projectId = "") {
   const pid = /^[a-zA-Z0-9_-]*$/.test(projectId) ? projectId : "";
   const payload = `${Date.now() + ttlMs}.${pid}`;

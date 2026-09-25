@@ -1,8 +1,9 @@
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
 import { assetKey } from "@/lib/backup";
-import { getObject, putObject, removeObjects } from "@/lib/storage";
+import { copyObject, mapLimit, removeObjects } from "@/lib/storage";
 
 export const maxDuration = 300;
 
@@ -36,18 +37,17 @@ export const POST = handle(async (_req: Request, ctx: RouteContext<"/api/project
           glossary: { create: p.glossary.map((g) => ({ term: g.term, preferred: g.preferred, note: g.note })) },
         },
       });
-      // 이미지 행 복사 (ID 재매핑) — 파일 복사는 트랜잭션 밖에서
+      // 이미지 행 복사 (ID 재매핑) — ID·경로를 미리 정해 한 번에 넣고, 파일 복사는 트랜잭션 밖에서
       const idMap = new Map<string, string>();
       const files: { from: string; to: string; mime: string }[] = [];
-      for (const a of p.assets) {
-        const na = await tx.asset.create({
-          data: { projectId: copy.id, filename: a.filename, mime: a.mime, widthPx: a.widthPx, heightPx: a.heightPx, path: "" },
-        });
-        const dest = assetKey(copy.id, na.id, path.extname(a.path));
-        await tx.asset.update({ where: { id: na.id }, data: { path: dest } });
-        idMap.set(a.id, na.id);
+      const rows = p.assets.map((a) => {
+        const nid = "c" + randomBytes(12).toString("hex");
+        const dest = assetKey(copy.id, nid, path.extname(a.path));
+        idMap.set(a.id, nid);
         files.push({ from: a.path, to: dest, mime: a.mime });
-      }
+        return { id: nid, projectId: copy.id, filename: a.filename, mime: a.mime, widthPx: a.widthPx, heightPx: a.heightPx, path: dest };
+      });
+      if (rows.length) await tx.asset.createMany({ data: rows });
       const remap = (content: string) => {
         let c = content;
         idMap.forEach((nid, oid) => (c = c.split(oid).join(nid)));
@@ -86,12 +86,9 @@ export const POST = handle(async (_req: Request, ctx: RouteContext<"/api/project
   // 2) 이미지 파일 복사 — 실패하면 만든 복사본을 지우고 오류
   const written: string[] = [];
   try {
-    for (const f of files) {
-      const buf = await getObject("assets", f.from);
-      if (!buf) continue;
-      await putObject("assets", f.to, buf, f.mime);
-      written.push(f.to);
-    }
+    await mapLimit(files, 4, async (f) => {
+      if (await copyObject("assets", f.from, f.to, f.mime)) written.push(f.to);
+    });
   } catch (e) {
     await removeObjects("assets", written).catch(() => {});
     await prisma.project.delete({ where: { id: copy.id } }).catch(() => {});

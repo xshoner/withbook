@@ -10,6 +10,7 @@ import { api } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
 import type { LayoutSettings } from "@/lib/layout";
 import { BLEED, SAFE_MIN_FROM_TRIM } from "@/lib/print/spec";
+import { toast, toastError } from "@/components/ui/feedback";
 
 type Tab = "info" | "style" | "layout" | "glossary" | "ai";
 
@@ -101,7 +102,7 @@ function StyleTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m:
       await reload();
       flash("문체 프로필을 갱신했습니다.");
     } catch (e: any) {
-      alert(e.message);
+      toastError(e);
     } finally {
       setBusy("");
     }
@@ -317,7 +318,7 @@ function GlossaryTab({ id }: { id: string }) {
             setF({ term: "", preferred: "", note: "" });
             load();
           } catch (er: any) {
-            alert(er.message);
+            toastError(er);
           }
         }}
       >
@@ -394,7 +395,7 @@ function EditLearnCard({ p, reload, flash }: { p: any; reload: () => void; flash
       setLearned(r);
       setPicked(new Set(LEARN_KEYS.flatMap(([k]) => (r[k] as string[]).map((_, i) => `${k}:${i}`))));
     } catch (e: any) {
-      alert(e.message);
+      toastError(e);
     } finally {
       setBusy(false);
     }

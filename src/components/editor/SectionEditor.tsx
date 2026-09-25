@@ -4,15 +4,18 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { NodeSelection, type Transaction } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, readStream } from "@/lib/client";
+import { api } from "@/lib/client";
+import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
+import { clearJob, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, type JobMode } from "./aiJobs";
 import { attachFile } from "@/lib/upload-client";
 import {
   appendDocs,
+  docParagraphs,
   charCount,
   charCountNoSpace,
   docToMarkdown,
-  emptyDoc,
   isDocEmpty,
   markdownToDoc,
   parseDoc,
@@ -27,13 +30,19 @@ import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./Page
 import ProofPanel, { type AppliedChange } from "./ProofPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, textblockAt } from "./pmOps";
 import { recoverPending, settleSection, useAutosave, type SaveState } from "./useAutosave";
-import VersionsPanel from "./VersionsPanel";
 import FindPanel from "./FindPanel";
-import BatchWriteDialog, { BATCH_MAX, type BatchItem, type SectionRef } from "./BatchWriteDialog";
+import type { BatchItem, SectionRef } from "./BatchWriteDialog";
+import { BATCH_MAX } from "./batch";
 import WritingOverlay from "./WritingOverlay";
-import ChapterReviseDialog from "./ChapterReviseDialog";
 import FootnotePopover from "./FootnotePopover";
 import ToolGroup from "./ToolGroup";
+import Menu from "./Menu";
+import InlineDiff, { ParagraphDiff } from "../InlineDiff";
+
+// 열 때만 필요한 창·패널은 따로 불러온다
+const VersionsPanel = dynamic(() => import("./VersionsPanel"));
+const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
+const BatchWriteDialog = dynamic(() => import("./BatchWriteDialog"));
 
 type Props = {
   project: ProjectTree;
@@ -96,14 +105,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     return { chars: charCount(d), noSpace: charCountNoSpace(d) };
   });
   const [targetPages, setTargetPages] = useState<number>(section.targetPages || 3);
-  const [streaming, setStreaming] = useState<string | null>(null);
   const [modeAsk, setModeAsk] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [reviseOpen, setReviseOpen] = useState(false);
   const revisedRef = useRef(false);
-  const [batchStep, setBatchStep] = useState<{ i: number; n: number; label: string } | null>(null);
-  const [live, setLive] = useState<{ text: string; chars: number; target: number } | null>(null);
   const [candidate, setCandidate] = useState<string | null>(null);
+  const [candCompare, setCandCompare] = useState(false);
   const [lengthHint, setLengthHint] = useState<null | { chars: number; target: number }>(null);
   const [tab, setTab] = useState<"ai" | "versions" | "proof" | "notes">("ai");
   const [extra, setExtra] = useState("");
@@ -123,9 +130,21 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [docTick, setDocTick] = useState(0);
   const [rewriteBusy, setRewriteBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(data.recovered ? "브라우저에 보관돼 있던 최신 입력을 복원했습니다." : null);
+  // 이 절의 AI 집필 작업 (편집기 밖에서 돈다 — 절을 옮겨도 계속된다)
+  const job = useAiJobs().find((j) => j.sectionId === section.id) ?? null;
+  const jobRef = useRef(job);
+  jobRef.current = job;
+  const writing = job?.state === "running" ? job : null;
+  const locked = locksSection(job); // 이 절 전체를 새로 쓰는 중 → 이 절만 잠근다
+  const streaming = locked ? job!.status || "집필 중…" : null;
   const streamingRef = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => abortRef.current?.abort(), []);
+  streamingRef.current = locked;
+  const candidateText = candidate ?? (job?.mode === "newVersion" && job.md ? job.md : null);
+  const candidateWriting = job?.mode === "newVersion" && job.state === "running";
+  const dropCandidate = () => {
+    setCandidate(null);
+    clearJob(section.id);
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -209,7 +228,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             const attrs = await uploadImage(f);
             view.dispatch(view.state.tr.insert(pos, view.state.schema.nodes.figure.create(attrs)));
           } catch (e: any) {
-            alert(e.message);
+            toastError(e);
           }
         });
         return true;
@@ -222,7 +241,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             const attrs = await uploadImage(f);
             view.dispatch(view.state.tr.replaceSelectionWith(view.state.schema.nodes.figure.create(attrs)));
           } catch (e: any) {
-            alert(e.message);
+            toastError(e);
           }
         });
         return true;
@@ -246,6 +265,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   });
 
   editorRef.current = editor;
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.setEditable(!locked, false); // false: update 이벤트를 내지 않아 상태가 '수정 중'으로 바뀌지 않게
+  }, [editor, locked]);
 
   /* ---------- 쪽 나눔 (실제 조판처럼 쪽마다 끊고 사이를 띄운다) ---------- */
   const margins = project.layout.margins;
@@ -456,136 +479,67 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   };
 
   /**
-   * AI 스트리밍 집필. 집필 중에는 편집 화면을 건드리지 않고(흔들림 방지) 가운데 진행 창에만 흐름을 보여 주다가,
-   * 다 쓰면 한 번에 본문에 넣는다. 새 버전 비교(newVersion)는 오른쪽 패널에 흘려 보여 준다.
+   * AI 집필은 aiJobs(편집기 밖)에서 돈다 — 쓰는 동안 다른 절로 옮겨 편집해도 멈추지 않는다.
+   * 이 절 전체를 새로 쓰는 동안(덮어쓰기·분량 조정)만 이 절을 잠근다. 이어쓰기는 쓰는 중에도 이 절을 고칠 수 있다.
+   * 끝나면 이 편집기가 열려 있을 때 여기(applier)에서 넣고, 아니면 aiJobs가 저장 큐로 저장한다.
    */
-  /** 집필 스트림을 읽어 마크다운을 모은다. 한도(truncated)·시간(partial)으로 끊기면 알림을 띄운다. */
-  async function readWrite(url: string, body: object, signal: AbortSignal, onText: (md: string) => void, onStatus: (v: string) => void) {
-    let md = "";
-    let last = 0;
-    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
-    await readStream(res, (e) => {
-      if (e.t === "status" && e.v === "truncated") {
-        setNotice("AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다.");
-        return;
-      }
-      if (e.t === "status" && e.v === "partial") {
-        setNotice("긴 절이라 한 번에 쓸 수 있는 시간(약 5분)을 넘겨 앞부분까지만 썼습니다. [집필하기 → 뒤에 이어쓰기]로 나머지를 이어 쓰세요.");
-        return;
-      }
-      if (e.t === "status") onStatus(e.v ?? "");
-      if (e.t === "delta") {
-        md += e.v ?? "";
-        if (Date.now() - last > 250) {
-          last = Date.now();
-          onText(md);
-        }
-      }
-      if (e.t === "error") throw new Error(e.v);
-    });
-    return md;
-  }
+  const jobTarget = (mode: JobMode, body: { targetPages?: number; targetChars?: number }) =>
+    mode === "adjust" ? body.targetChars ?? targetChars : Math.round((body.targetPages ?? targetPages) * cpp);
+  const secLabel = `${section.label} ${section.title}`.trim();
 
-  /** AI가 쓴 초안 원본을 남긴다 — 작가 수정률과 [작가 수정에서 문체 배우기]의 기준 */
-  const recordAiOutput = (sectionId: string, content: string) =>
-    api(`/api/sections/${sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
-
-  async function runStream(url: string, body: object, mode: "overwrite" | "continue" | "newVersion" | "adjust", outer?: AbortController) {
+  async function startJob(url: string, body: { targetPages?: number; targetChars?: number; mode?: string; extraInstruction?: string }, mode: JobMode) {
     if (!editor) return;
-    if (!await flush()) return alert("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
-    const base = mode === "continue" ? (editor.getJSON() as JNode) : emptyDoc();
-    const figures = mode === "adjust" ? docToMarkdown(editor.getJSON() as JNode).figures : [];
-    const ctrl = outer ?? new AbortController();
-    abortRef.current = ctrl;
-    streamingRef.current = mode !== "newVersion";
-    if (mode !== "newVersion") editor.setEditable(false, false); // false: update 이벤트를 내지 않아 상태가 '수정 중'으로 바뀌지 않게
-    setStreaming("준비 중…");
-    setLive(mode === "newVersion" ? null : { text: "", chars: 0, target: mode === "adjust" ? (body as any).targetChars ?? targetChars : Math.round(((body as any).targetPages ?? targetPages) * cpp) });
+    if (!(await flush())) return toast.error("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
     setLengthHint(null);
-    setSketchOpen(false);
-    let md = "";
-    const docOf = () => (mode === "continue" ? appendDocs(base, markdownToDoc(md, figures)) : markdownToDoc(md, figures));
-    try {
-      md = await readWrite(
-        url,
-        body,
-        ctrl.signal,
-        (text) => {
-          md = text;
-          setStreaming((s) => (s && s.startsWith("구상") ? "집필 중…" : s));
-          if (mode === "newVersion") return setCandidate(text);
-          setLive((l) => (l ? { ...l, text: text.slice(-600), chars: charCount(markdownToDoc(text)) } : l));
-        },
-        (v) => setStreaming(v),
-      );
-    } catch (e: any) {
-      if (!ctrl.signal.aborted) alert("AI 오류: " + e.message);
-    } finally {
-      if (editor.isDestroyed) {
-        if (mode !== "newVersion" && md.trim()) {
-          const content = JSON.stringify(docOf());
-          markDirty({ content, status: "ai_draft" });
-          await flush();
-          recordAiOutput(section.id, content);
-        }
-        return;
+    if (mode !== "continue") setSketchOpen(false);
+    const figures = mode === "adjust" ? docToMarkdown(editor.getJSON() as JNode).figures : [];
+    runJob({ sectionId: section.id, label: secLabel, mode, url, body, target: jobTarget(mode, body), figures }).catch((e) => toastError(e, "AI 오류: "));
+  }
+
+  // 편집기를 연 순간 이미 저장 단계였다면(결과를 여기서 넣지 못했다면) 저장된 원고를 다시 불러온다
+  const appliedRef = useRef(false);
+  const wasWriting = useRef(false);
+  useEffect(() => {
+    if (writing) {
+      wasWriting.current = true;
+      appliedRef.current = false;
+      return;
+    }
+    if (wasWriting.current && !appliedRef.current && job?.mode !== "newVersion") onServerEdited();
+    wasWriting.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [writing]);
+
+  // 끝난 결과를 열린 편집기에 넣는다 (이어쓰기는 그사이 작가가 고친 본문 뒤에 붙인다)
+  useEffect(() => {
+    if (!editor) return;
+    return registerApplier(section.id, async (job, doc) => {
+      if (editor.isDestroyed) return null;
+      appliedRef.current = true;
+      if (job.mode === "newVersion") {
+        setCandidate(job.md);
+        setTab("ai");
+        setPanelOpen(true);
+        return null;
       }
-      if (md.trim()) {
-        if (mode === "newVersion") setCandidate(md);
-        else {
-          // 완성된 글을 한 번에 넣는다
-          const d = docOf();
-          setDoc(d);
-          setCounts({ chars: charCount(d), noSpace: charCountNoSpace(d) });
-          if (mode !== "continue") scrollRef.current?.scrollTo({ top: 0 });
-        }
-      }
-      streamingRef.current = false;
+      const d = job.mode === "continue" ? appendDocs(editor.getJSON() as JNode, doc) : doc;
+      setDoc(d);
+      setCounts({ chars: charCount(d), noSpace: charCountNoSpace(d) });
+      if (job.mode !== "continue") scrollRef.current?.scrollTo({ top: 0 });
       editor.setEditable(true, false);
-      setStreaming(null);
-      setLive(null);
-      if (!outer) abortRef.current = null;
-      if (mode !== "newVersion" && md.trim()) {
-        await commitDoc("ai_draft");
-        recordAiOutput(section.id, JSON.stringify(editor.getJSON()));
-        setVersionKey((k) => k + 1);
-        checkLength(charCount(editor.getJSON() as JNode));
-        fetch(`/api/sections/${section.id}/summarize`, { method: "POST" }).catch(() => {});
-      }
-    }
-  }
+      await commitDoc("ai_draft");
+      setVersionKey((k) => k + 1);
+      checkLength(charCount(editor.getJSON() as JNode));
+      return JSON.stringify(editor.getJSON());
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, section.id, setDoc, commitDoc, targetChars]);
 
-  /** 다른 절 집필 — 편집기 밖에서 받아 서버에 바로 저장한다 */
-  async function writeOther(it: BatchItem, ctrl: AbortController) {
-    setStreaming("준비 중…");
-    setLive({ text: "", chars: 0, target: Math.round(it.targetPages * cpp) });
-    let md = "";
-    try {
-      md = await readWrite(
-        `/api/sections/${it.id}/write`,
-        { targetPages: it.targetPages, mode: "overwrite", extraInstruction: extra },
-        ctrl.signal,
-        (text) => {
-          md = text;
-          setLive((l) => (l ? { ...l, text: text.slice(-600), chars: charCount(markdownToDoc(text)) } : l));
-        },
-        (v) => setStreaming(v),
-      );
-    } catch (e) {
-      if (!ctrl.signal.aborted) throw e; // 중지했으면 쓴 데까지 저장
-    }
-    if (!md.trim()) return;
-    const content = JSON.stringify(markdownToDoc(md));
-    await api(`/api/sections/${it.id}`, { method: "PUT", json: { content, status: "ai_draft" } });
-    recordAiOutput(it.id, content);
-    fetch(`/api/sections/${it.id}/summarize`, { method: "POST" }).catch(() => {});
-  }
-
-  /** 여러 절(최대 3개) 한 번에 집필 — 책 순서대로 하나씩 쓰고 저장한다(앞 절 요약이 다음 절에 이어진다) */
-  async function runBatch(items: BatchItem[]) {
+  /** 여러 절(최대 3개) 한 번에 집필 — 책 순서대로 하나씩 쓰고 저장한다(앞 절 요약이 다음 절에 이어진다). 그동안 다른 절은 편집할 수 있다 */
+  async function startBatch(items: BatchItem[]) {
     if (!editor || !items.length) return;
     setBatchOpen(false);
-    if (!await flush()) return alert("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
+    if (!(await flush())) return toast.error("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
     try {
       for (const it of items) {
         if (it.id === section.id) {
@@ -596,61 +550,51 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         await api(`/api/projects/${project.id}/toc`, { method: "PATCH", json: { op: "updateSection", sectionId: it.id, targetPages: it.targetPages } }).catch(() => {});
       }
       await flush();
-    } catch (e: any) {
-      return alert("스케치 저장 실패: " + e.message);
+    } catch (e) {
+      return toastError(e, "스케치 저장 실패: ");
     }
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    const done: string[] = [];
-    try {
-      for (const [i, it] of items.entries()) {
-        if (ctrl.signal.aborted) break;
-        setBatchStep({ i: i + 1, n: items.length, label: `${it.label} ${it.title}`.trim() });
-        if (it.id === section.id) await runStream(`/api/sections/${section.id}/write`, { targetPages: it.targetPages, mode: "overwrite", extraInstruction: extra }, "overwrite", ctrl);
-        else {
-          editor.setEditable(false, false);
-          await writeOther(it, ctrl);
-        }
-        if (!ctrl.signal.aborted) done.push(`${it.label} ${it.title}`.trim());
-      }
-    } catch (e: any) {
-      if (!ctrl.signal.aborted) alert("AI 오류: " + e.message);
-    } finally {
-      abortRef.current = null;
-      setBatchStep(null);
-      setStreaming(null);
-      setLive(null);
-      if (!editor.isDestroyed) editor.setEditable(true, false);
-      onTreeChanged();
-      if (done.length) setNotice(`${done.length}개 절을 집필했습니다: ${done.join(", ")}. 목차에서 각 절을 열어 확인하세요.`);
-    }
+    const tree = onTreeChanged; // 편집기가 닫혀도 목차를 새로 고친다
+    runBatch(
+      items.map((it) => ({
+        sectionId: it.id,
+        label: `${it.label} ${it.title}`.trim(),
+        mode: "overwrite" as const,
+        url: `/api/sections/${it.id}/write`,
+        body: { targetPages: it.targetPages, mode: "overwrite", extraInstruction: extra },
+        target: Math.round(it.targetPages * cpp),
+      })),
+    )
+      .then((done) => done.length && toast.success(`${done.length}개 절을 집필했습니다: ${done.join(", ")}`))
+      .catch((e) => toastError(e, "AI 오류: "))
+      .finally(tree);
   }
 
   const startWrite = (mode: "overwrite" | "continue" | "newVersion") => {
     setModeAsk(false);
     onTargetPages(targetPages);
     if (mode === "newVersion") {
+      setCandidate(null);
       setTab("ai");
       setPanelOpen(true);
     }
-    runStream(`/api/sections/${section.id}/write`, { targetPages, mode, extraInstruction: extra }, mode);
+    startJob(`/api/sections/${section.id}/write`, { targetPages, mode, extraInstruction: extra }, mode);
   };
 
-  const onWriteClick = () => {
+  const onWriteClick = async () => {
     if (!sketch.trim() && !section.gist) {
-      if (!confirm("스케치가 비어 있습니다. 목차의 절 요지만으로 쓸까요?")) return;
+      if (!(await confirmDialog("스케치가 비어 있습니다. 목차의 절 요지만으로 쓸까요?", { okLabel: "요지만으로 쓰기" }))) return;
     }
     if (editor && !isDocEmpty(editor.getJSON() as JNode)) setModeAsk(true);
     else startWrite("overwrite");
   };
 
   const acceptCandidate = async () => {
-    if (!candidate || !editor) return;
+    if (!candidateText || !editor) return;
     await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()) } });
-    setDoc(markdownToDoc(candidate), true);
-    setCandidate(null);
+    setDoc(markdownToDoc(candidateText), true);
+    dropCandidate();
     await commitDoc("ai_draft");
-    recordAiOutput(section.id, JSON.stringify(editor.getJSON()));
+    api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "ai_output" } }).catch(() => {});
     setVersionKey((k) => k + 1);
     checkLength(charCount(editor.getJSON() as JNode));
     fetch(`/api/sections/${section.id}/summarize`, { method: "POST" }).catch(() => {});
@@ -659,7 +603,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const undoAi = async () => {
     const vs = await api<{ id: string; reason: string }[]>(`/api/sections/${section.id}/versions`);
     const v = vs.find((x) => x.reason === "ai_write" || x.reason === "length_adjust");
-    if (!v) return alert("되돌릴 AI 집필 이전 버전이 없습니다.");
+    if (!v) return toast("되돌릴 AI 집필 이전 버전이 없습니다.");
     const r = await api<{ content: string }>(`/api/versions/${v.id}`, { method: "POST", json: { currentContent: JSON.stringify(editor?.getJSON()) } });
     setDoc(parseDoc(r.content), true);
     await commitDoc(statusFor(parseDoc(r.content)));
@@ -670,8 +614,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   /* ---------- 교정·교열 ---------- */
   async function runProofread() {
     if (!editor) return;
-    if (isDocEmpty(editor.getJSON() as JNode)) return alert("교정할 본문이 없습니다.");
-    if (!await flush()) return alert("원고 저장을 완료한 뒤 다시 교정해주세요.");
+    if (isDocEmpty(editor.getJSON() as JNode)) return toast("교정할 본문이 없습니다.");
+    if (!await flush()) return toast.error("원고 저장을 완료한 뒤 다시 교정해주세요.");
     setTab("proof");
     setPanelOpen(true);
     setProofBusy(true);
@@ -692,7 +636,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       await commitDoc("proofread");
       setVersionKey((k) => k + 1);
     } catch (e: any) {
-      alert("교정 오류: " + e.message);
+      toastError(e, "교정 오류: ");
     } finally {
       setProofBusy(false);
       if (!editor.isDestroyed) editor.setEditable(true, false);
@@ -703,59 +647,99 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!editor || !proof) return;
     const c = proof[i];
     const ok = replaceInBlock(editor, c.paragraph, c.after, c.before);
-    if (!ok) return alert("이미 다른 수정이 있어 이 항목만 되돌릴 수 없습니다. [전체 되돌리기]나 버전 기록을 쓰세요.");
+    if (!ok) return toast.error("이미 다른 수정이 있어 이 항목만 되돌릴 수 없습니다. [전체 되돌리기]나 버전 기록을 쓰세요.");
     setProof(proof.map((x, k) => (k === i ? { ...x, state: "reverted" } : x)));
     await commitDoc("editing");
   };
 
   const revertAll = async () => {
     if (!preProof || !editor) return;
-    if (!confirm("교정 전 상태로 모두 되돌릴까요?")) return;
+    if (!(await confirmDialog("교정 전 상태로 모두 되돌릴까요?", { okLabel: "모두 되돌리기" }))) return;
     setDoc(preProof, true);
     setProof((p) => p?.map((x) => (x.state === "applied" ? { ...x, state: "reverted" } : x)) ?? null);
     await commitDoc("editing");
   };
 
   /* ---------- 선택 영역 AI ---------- */
-  async function rewrite(action: "polish" | "expand" | "shorten" | "tone" | "example") {
-    if (!editor || streaming || proofBusy || rewriteBusy) return;
-    const { from, to } = editor.state.selection;
-    if (from === to) return alert("먼저 본문에서 고칠 부분을 드래그해 선택하세요.");
-    let toneTarget = "";
-    if (action === "tone") {
-      toneTarget = prompt("어떤 톤으로 바꿀까요? (예: 더 친근하게, 더 단호하게, 강연하듯)") ?? "";
-      if (!toneTarget) return;
-    }
-    const doc = editor.state.doc;
-    const selection = doc.textBetween(from, to, "\n");
-    const before = doc.textBetween(0, from, "\n");
-    const after = doc.textBetween(to, doc.content.size, "\n");
+  type RewriteAction = "polish" | "expand" | "shorten" | "tone" | "example";
+  const REWRITE_LABEL: Record<RewriteAction, string> = { polish: "다듬기", expand: "늘리기", shorten: "줄이기", tone: "톤 바꾸기", example: "예시 추가" };
+  /** 선택 영역 AI 결과 — 바로 넣지 않고 원문과 비교해 보여 준 뒤 [적용]할 때 넣는다. 그동안 선택 위치가 바뀌지 않게 편집을 잠근다 */
+  const [rewritePreview, setRewritePreview] = useState<null | {
+    action: RewriteAction;
+    from: number;
+    to: number;
+    selection: string;
+    text: string;
+    req: { selection: string; before: string; after: string; toneTarget: string };
+    x: number;
+    y: number;
+  }>(null);
+
+  async function requestRewrite(action: RewriteAction, from: number, to: number, req: { selection: string; before: string; after: string; toneTarget: string }) {
+    if (!editor) return;
     setRewriteBusy(action);
     editor.setEditable(false, false);
     try {
-      if (!await flush()) return alert("원고 저장을 완료한 뒤 다시 수정해주세요.");
+      if (!(await flush())) throw new Error("원고 저장을 완료한 뒤 다시 수정해주세요.");
       const r = await api<{ text: string }>(`/api/sections/${section.id}/rewrite`, {
         method: "POST",
-        json: { action, selection, before, after, toneTarget, content: JSON.stringify(editor.getJSON()) },
+        json: { action, ...req, content: JSON.stringify(editor.getJSON()) },
       });
       if (editor.isDestroyed) return;
-      const parts = markdownToDoc(r.text).content ?? [];
-      const single = parts.length === 1 && parts[0].type === "paragraph";
-      if (action === "example") {
-        const $to = editor.state.doc.resolve(to);
-        const end = $to.after($to.depth > 0 ? 1 : 0);
-        editor.chain().focus().insertContentAt(end, parts).run();
-      } else if (single) {
-        editor.chain().focus().insertContentAt({ from, to }, parts[0].content ?? []).run();
-      } else {
-        editor.chain().focus().insertContentAt({ from, to }, parts).run();
-      }
-      setVersionKey((k) => k + 1);
-    } catch (e: any) {
-      alert(e.message);
+      const c = editor.view.coordsAtPos(Math.min(to, editor.state.doc.content.size));
+      setRewritePreview({ action, from, to, selection: req.selection, text: r.text.trim(), req, x: c.left, y: c.bottom });
+    } catch (e) {
+      toastError(e);
+      if (!editor.isDestroyed) editor.setEditable(!streamingRef.current, false);
     } finally {
       setRewriteBusy(null);
-      if (!editor.isDestroyed) editor.setEditable(true, false);
+    }
+  }
+
+  async function rewrite(action: RewriteAction) {
+    if (!editor || streaming || proofBusy || rewriteBusy || rewritePreview) return;
+    const { from, to } = editor.state.selection;
+    if (from === to) return toast("먼저 본문에서 고칠 부분을 드래그해 선택하세요.");
+    let toneTarget = "";
+    if (action === "tone") {
+      toneTarget = (await promptDialog("어떤 톤으로 바꿀까요?", { choices: ["더 친근하게", "더 단호하게", "강연하듯", "더 담백하게", "더 따뜻하게"], placeholder: "직접 입력해도 됩니다", okLabel: "바꾸기" })) ?? "";
+      if (!toneTarget) return;
+    }
+    const doc = editor.state.doc;
+    await requestRewrite(action, from, to, {
+      selection: doc.textBetween(from, to, NL),
+      before: doc.textBetween(0, from, NL),
+      after: doc.textBetween(to, doc.content.size, NL),
+      toneTarget,
+    });
+  }
+
+  async function applyRewrite() {
+    const p = rewritePreview;
+    if (!editor || !p) return;
+    // 적용 전 원고를 버전으로 남긴다 (되돌리기 대비)
+    await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "rewrite" } }).catch(() => {});
+    editor.setEditable(true, false);
+    const parts = markdownToDoc(p.text).content ?? [];
+    const single = parts.length === 1 && parts[0].type === "paragraph";
+    if (p.action === "example") {
+      const $to = editor.state.doc.resolve(p.to);
+      const end = $to.after($to.depth > 0 ? 1 : 0);
+      editor.chain().focus().insertContentAt(end, parts).run();
+    } else if (single) {
+      editor.chain().focus().insertContentAt({ from: p.from, to: p.to }, parts[0].content ?? []).run();
+    } else {
+      editor.chain().focus().insertContentAt({ from: p.from, to: p.to }, parts).run();
+    }
+    setRewritePreview(null);
+    setVersionKey((k) => k + 1);
+  }
+
+  function cancelRewrite() {
+    setRewritePreview(null);
+    if (editor && !editor.isDestroyed) {
+      editor.setEditable(!streamingRef.current, false);
+      editor.commands.focus();
     }
   }
 
@@ -802,8 +786,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!editor || streaming || proofBusy || rewriteBusy || fnBusy) return;
     const t = termAtSelection();
     if (!t) return;
-    if (ai && !t.term) return alert("각주를 달 단어를 드래그해 선택하세요.");
-    if (t.term.length > 80) return alert("각주는 단어나 짧은 구절(80자 이하)에 답니다.");
+    if (ai && !t.term) return toast("각주를 달 단어를 드래그해 선택하세요.");
+    if (t.term.length > 80) return toast("각주는 단어나 짧은 구절(80자 이하)에 답니다.");
     let note = "";
     if (ai) {
       setFnBusy("one");
@@ -815,7 +799,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         });
         note = r.note;
       } catch (e: any) {
-        alert("각주 AI 오류: " + e.message);
+        toastError(e, "각주 AI 오류: ");
         return;
       } finally {
         setFnBusy(null);
@@ -834,7 +818,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     const a = node.attrs as FootnoteAttrs;
     const $p = editor.state.doc.resolve(pos);
     const term = a.term || termAtSelection()?.term || "";
-    if (!term) return alert("각주를 단 단어를 알 수 없습니다. 내용을 직접 입력하세요.");
+    if (!term) return toast("각주를 단 단어를 알 수 없습니다. 내용을 직접 입력하세요.");
     setFnBusy("regen");
     try {
       const r = await api<{ note: string }>(`/api/sections/${section.id}/footnote`, {
@@ -846,7 +830,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         editor.view.dispatch(editor.state.tr.setNodeAttribute(pos, "auto", true));
       }
     } catch (e: any) {
-      alert("각주 AI 오류: " + e.message);
+      toastError(e, "각주 AI 오류: ");
     } finally {
       setFnBusy(null);
     }
@@ -854,8 +838,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   async function autoFootnote() {
     if (!editor || streaming || proofBusy || rewriteBusy || fnBusy) return;
-    if (isDocEmpty(editor.getJSON() as JNode)) return alert("각주를 달 본문이 없습니다.");
-    if (!await flush()) return alert("원고 저장을 완료한 뒤 다시 시도해주세요.");
+    if (isDocEmpty(editor.getJSON() as JNode)) return toast("각주를 달 본문이 없습니다.");
+    if (!await flush()) return toast.error("원고 저장을 완료한 뒤 다시 시도해주세요.");
     setFnBusy("auto");
     editor.setEditable(false, false);
     try {
@@ -878,7 +862,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         setPanelOpen(true);
       }
     } catch (e: any) {
-      alert("자동 각주 오류: " + e.message);
+      toastError(e, "자동 각주 오류: ");
     } finally {
       setFnBusy(null);
       if (!editor.isDestroyed) editor.setEditable(true, false);
@@ -903,7 +887,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         e.preventDefault();
         flush();
       }
-      if (e.key === "Escape" && abortRef.current) abortRef.current.abort();
+      if (e.key === "Escape" && jobRef.current?.state === "running") stopJob(section.id);
       if (e.key === "Escape") {
         setFnEdit(null);
         setBubble(null);
@@ -922,11 +906,22 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   const pagesNow = counts.chars / cpp;
   const pagesLabel = pageInfo && pageInfo.pages > 0 ? pageInfo.pages : pagesNow;
+  // 버튼이 꺼진 이유 (툴팁으로 알려 준다)
+  const busyReason = locked
+    ? "AI가 이 절을 쓰는 중입니다 — 다른 절은 편집할 수 있습니다"
+    : proofBusy
+      ? "교정·교열 중입니다"
+      : rewriteBusy || rewritePreview
+        ? "선택 영역 AI 결과를 먼저 적용하거나 취소하세요"
+        : fnBusy
+          ? "각주 작업 중입니다"
+          : "";
   const tb = (label: string, onClick: () => void, active = false, title?: string) => (
     <button
       key={label + (title ?? "")}
-      title={title ?? label}
-      disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy}
+      title={busyReason || title || label}
+      aria-label={title ?? label}
+      disabled={!!busyReason}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       className={`px-1.5 py-1 text-xs disabled:opacity-40 ${active ? "bg-stone-800 text-white" : "text-stone-700 hover:bg-stone-100"}`}
@@ -985,15 +980,22 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             className="btn"
             disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy}
             onClick={async () => {
-              if (!(await flush())) return alert("원고 저장을 완료한 뒤 다시 시도하세요.");
+              if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
               setReviseOpen(true);
             }}
             title="이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
           >
             장 퇴고
           </button>
-          {streaming ? (
-            <button className="btn-primary bg-red-700 hover:bg-red-800" onClick={() => abortRef.current?.abort()}>
+          {writing ? (
+            <button
+              className="btn-primary bg-red-700 hover:bg-red-800"
+              onClick={() => {
+                if (writing.batch) stopBatch();
+                stopJob(section.id);
+              }}
+              title="Esc — 쓴 데까지는 본문에 넣습니다"
+            >
               ■ 중지
             </button>
           ) : (
@@ -1048,77 +1050,81 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <div className="space-y-1.5 border-b border-stone-300 bg-stone-100 px-3 py-1.5">
           {editor && (
             <>
+              {/* 한 줄 도구줄: 본문 서식 · 각주 · 찾기 · 선택 AI · 책 서식(펼침) — 선택 AI는 드래그하면 뜨는 말풍선에도 있다 */}
               <div className="flex flex-wrap items-center gap-2">
                 <ToolGroup label="본문" tone="bg-stone-700">
                   {tb("소제목", () => editor.chain().focus().toggleHeading({ level: 3 }).run(), editor.isActive("heading"))}
                   {tb("굵게", () => editor.chain().focus().toggleBold().run(), editor.isActive("bold"))}
                   {tb("기울임", () => editor.chain().focus().toggleItalic().run(), editor.isActive("italic"))}
                   {tb("인용", () => editor.chain().focus().toggleBlockquote().run(), editor.isActive("blockquote"))}
-                  {tb("• 목록", () => editor.chain().focus().toggleBulletList().run(), editor.isActive("bulletList"))}
-                  {tb("1. 목록", () => editor.chain().focus().toggleOrderedList().run(), editor.isActive("orderedList"))}
-                  {tb("구분선", () => editor.chain().focus().setHorizontalRule().run())}
-                  {tb("🖼 이미지", () => fileRef.current?.click())}
-                  {tb("↶ 되돌리기", () => editor.chain().focus().undo().run(), false, "실행 취소 (Ctrl+Z)")}
-                  {tb("↷ 앞으로", () => editor.chain().focus().redo().run(), false, "다시 실행 (Ctrl+Y)")}
-                </ToolGroup>
-                <ToolGroup label="선택영역 AI" tone="bg-violet-700">
-                  {(["polish", "expand", "shorten", "tone", "example"] as const).map((a) =>
-                    tb(
-                      rewriteBusy === a ? "…" : { polish: "다듬기", expand: "늘리기", shorten: "줄이기", tone: "톤 바꾸기", example: "예시 추가" }[a],
-                      () => rewrite(a),
-                      false,
-                      "본문을 드래그해 선택한 뒤 누르세요",
-                    ),
-                  )}
-                </ToolGroup>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <ToolGroup label="서식" tone="bg-sky-800" title="책 전체 본문에 적용됩니다 (미리보기·PDF·HWPX 포함)">
-                  <label className="flex items-center gap-1 px-1 py-0.5 text-xs text-stone-600">
-                    글자
-                    <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={bodySizePt} onChange={(e) => onLayout({ bodySizePt: Number(e.target.value) })}>
-                      {[9, 9.5, 10, 10.5, 11, 11.5, 12].map((v) => (
-                        <option key={v} value={v}>
-                          {v}pt
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-1 px-1 py-0.5 text-xs text-stone-600">
-                    줄간격
-                    <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={lineHeight} onChange={(e) => onLayout({ lineHeight: Number(e.target.value) })}>
-                      {[1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2].map((v) => (
-                        <option key={v} value={v}>
-                          {Math.round(v * 100)}%
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-1 px-1 py-0.5 text-xs text-stone-600">
-                    문단 간격
-                    <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={paraSpacingMm} onChange={(e) => onLayout({ paraSpacingMm: Number(e.target.value) })}>
-                      {[0, 1, 2, 3, 4, 5, 6].map((v) => (
-                        <option key={v} value={v}>
-                          {v ? `${v}mm` : "없음"}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  {tb("•", () => editor.chain().focus().toggleBulletList().run(), editor.isActive("bulletList"), "글머리 목록")}
+                  {tb("1.", () => editor.chain().focus().toggleOrderedList().run(), editor.isActive("orderedList"), "번호 목록")}
+                  {tb("―", () => editor.chain().focus().setHorizontalRule().run(), false, "구분선")}
+                  {tb("🖼", () => fileRef.current?.click(), false, "이미지 넣기 (끌어다 놓거나 붙여 넣어도 됩니다)")}
+                  {tb("↶", () => editor.chain().focus().undo().run(), false, "실행 취소 (Ctrl+Z)")}
+                  {tb("↷", () => editor.chain().focus().redo().run(), false, "다시 실행 (Ctrl+Y)")}
                 </ToolGroup>
                 <ToolGroup label="각주" tone="bg-amber-700">
                   <button
-                    title="드래그한 단어에 AI가 각주를 씁니다"
-                    disabled={selEmpty || !!streaming || proofBusy || !!rewriteBusy || !!fnBusy}
+                    title={selEmpty ? "먼저 각주를 달 단어를 드래그해 선택하세요" : busyReason || "드래그한 단어에 AI가 각주를 씁니다"}
+                    disabled={selEmpty || !!busyReason}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => addFootnote(true)}
                     className={`px-1.5 py-1 text-xs ${selEmpty ? "text-stone-400" : "bg-amber-100 font-semibold text-amber-900 hover:bg-amber-200"} disabled:opacity-50`}
                   >
                     {fnBusy === "one" ? "각주 쓰는 중…" : "✦ AI 각주"}
                   </button>
-                  {tb("직접 각주", () => addFootnote(false), false, "선택한 단어(또는 커서 위치)에 각주를 달고 내용을 직접 입력합니다")}
-                  {tb(fnBusy === "auto" ? "찾는 중…" : "자동 각주", autoFootnote, false, "AI가 이 절의 중요 키워드를 골라 각주를 답니다")}
+                  {tb("직접", () => addFootnote(false), false, "선택한 단어(또는 커서 위치)에 각주를 달고 내용을 직접 입력합니다")}
+                  {tb(fnBusy === "auto" ? "찾는 중…" : "자동", autoFootnote, false, "AI가 이 절의 중요 키워드를 골라 각주를 답니다")}
                 </ToolGroup>
-                <FindPanel editor={editor} onBookSearch={onBookSearch} disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy} />
+                <Menu
+                  label={rewriteBusy ? `✦ ${REWRITE_LABEL[rewriteBusy as RewriteAction] ?? ""} 중…` : "✦ 선택 AI ▾"}
+                  tone="text-violet-800"
+                  disabled={!!busyReason || selEmpty}
+                  title={selEmpty ? "본문을 드래그해 선택하면 다듬기·늘리기·줄이기·톤·예시를 쓸 수 있습니다" : busyReason || "선택한 부분을 AI로 고칩니다 (결과를 비교한 뒤 적용)"}
+                >
+                  {(Object.keys(REWRITE_LABEL) as RewriteAction[]).map((a) => (
+                    <button key={a} className="block w-full px-3 py-1.5 text-left text-xs hover:bg-violet-50" onMouseDown={(e) => e.preventDefault()} onClick={() => rewrite(a)}>
+                      {REWRITE_LABEL[a]}
+                    </button>
+                  ))}
+                </Menu>
+                <Menu label="서식 ▾" tone="text-sky-800" title="글자 크기·줄 간격·문단 간격 — 책 전체 본문에 적용됩니다 (미리보기·PDF·HWPX 포함)">
+                  <div className="space-y-2 p-3 text-xs text-stone-600">
+                    <p className="text-[11px] text-stone-500">책 전체 본문에 적용됩니다</p>
+                    <label className="flex items-center justify-between gap-3">
+                      글자 크기
+                      <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={bodySizePt} onChange={(e) => onLayout({ bodySizePt: Number(e.target.value) })}>
+                        {[9, 9.5, 10, 10.5, 11, 11.5, 12].map((v) => (
+                          <option key={v} value={v}>
+                            {v}pt
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center justify-between gap-3">
+                      줄 간격
+                      <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={lineHeight} onChange={(e) => onLayout({ lineHeight: Number(e.target.value) })}>
+                        {[1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2].map((v) => (
+                          <option key={v} value={v}>
+                            {Math.round(v * 100)}%
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center justify-between gap-3">
+                      문단 간격
+                      <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={paraSpacingMm} onChange={(e) => onLayout({ paraSpacingMm: Number(e.target.value) })}>
+                        {[0, 1, 2, 3, 4, 5, 6].map((v) => (
+                          <option key={v} value={v}>
+                            {v ? `${v}mm` : "없음"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </Menu>
+                <FindPanel editor={editor} onBookSearch={onBookSearch} disabled={!!busyReason} />
               </div>
             </>
           )}
@@ -1135,21 +1141,15 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 const attrs = await uploadImage(f);
                 editor.chain().focus().insertContent({ type: "figure", attrs }).run();
               } catch (er: any) {
-                alert(er.message);
+                toastError(er);
               }
             }}
           />
         </div>
 
         {/* 알림 줄 */}
-        {((streaming && !live) || notice || lengthHint) && (
+        {(notice || lengthHint) && (
           <div className="space-y-1 border-b border-stone-200 bg-amber-50 px-4 py-2 text-sm">
-            {streaming && !live && (
-              <div className="flex items-center gap-2 text-amber-900">
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
-                {streaming} <span className="text-xs text-amber-700">· {counts.chars.toLocaleString()}자 · Esc로 중지</span>
-              </div>
-            )}
             {notice && (
               <div className="flex justify-between text-stone-700">
                 {notice}
@@ -1163,7 +1163,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 분량이 목표({lengthHint.target.toLocaleString()}자)와 {Math.round(((lengthHint.chars - lengthHint.target) / lengthHint.target) * 100)}% 차이 납니다.
                 <button
                   className="btn px-2 py-0.5 text-xs"
-                  onClick={() => runStream(`/api/sections/${section.id}/adjust`, { targetChars: lengthHint.target }, "adjust")}
+                  onClick={() => startJob(`/api/sections/${section.id}/adjust`, { targetChars: lengthHint.target }, "adjust")}
                 >
                   {lengthHint.chars < lengthHint.target ? "목표만큼 늘리기" : "목표만큼 줄이기"}
                 </button>
@@ -1180,8 +1180,18 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
         {/* 원고 */}
         <div className="relative flex min-h-0 flex-1 flex-col">
-        {streaming && live && (
-          <WritingOverlay status={streaming} text={live.text} chars={live.chars} target={live.target} step={batchStep} onStop={() => abortRef.current?.abort()} />
+        {locked && job && (
+          <WritingOverlay
+            status={job.status}
+            text={job.md.slice(-600)}
+            chars={job.chars}
+            target={job.target}
+            step={job.batch ? { ...job.batch, label: job.label } : null}
+            onStop={() => {
+              if (job.batch) stopBatch();
+              stopJob(section.id);
+            }}
+          />
         )}
         <div ref={scrollRef} className="editor-desk min-h-0 flex-1 overflow-auto py-6" style={{ overflowAnchor: "none" }}>
           <div style={{ zoom }} className="mx-auto w-fit">
@@ -1230,7 +1240,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               )}
               <div
                 ref={contentRef}
-                className={`book-editor relative ${streaming ? "streaming-caret" : ""}`}
+                className="book-editor relative"
                 style={{ "--body-pt": `${bodySizePt}pt`, "--body-lh": lineHeight, "--para-gap": `${paraSpacingMm}mm` } as React.CSSProperties}
               >
                 <EditorContent editor={editor} />
@@ -1256,6 +1266,21 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 </span>
               )}
             </div>
+            {/* 이어쓰기 중: 본문은 계속 고칠 수 있고, AI 글은 다 쓰면 그때의 본문 끝에 붙는다 */}
+            {writing && writing.mode === "continue" && (
+              <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 font-sans text-xs text-amber-900" style={{ width: "154mm" }}>
+                <div className="flex items-center gap-2">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
+                  <b>AI가 이 절 끝에 이어 쓰는 중</b>
+                  <span className="text-amber-700">· {writing.chars.toLocaleString()}자 · {writing.status}</span>
+                  <button className="ml-auto rounded bg-red-700 px-2 py-0.5 text-white hover:bg-red-800" onClick={() => stopJob(section.id)}>
+                    ■ 중지
+                  </button>
+                </div>
+                <p className="mt-1.5 line-clamp-3 whitespace-pre-line font-book text-[12px] leading-5 text-stone-600">{writing.md.replace(/⟦주:[^⟧]*⟧/g, "").replace(/[#*>]/g, "").slice(-240) || "첫 문장을 구상하고 있습니다…"}</p>
+                <p className="mt-1 text-[11px] text-amber-700">그동안 위 본문을 고쳐도 됩니다. 다 쓰면 그때의 본문 끝에 이어 붙입니다.</p>
+              </div>
+            )}
             <p className="mt-2 text-center font-sans text-[10px] text-stone-400">
               이 절 {pg?.pages ?? 1}쪽 · 쪽 나눔은 화면 계산값이며 최종 쪽수는 펼침면 미리보기(실제 조판)가 기준입니다
             </p>
@@ -1310,19 +1335,28 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <div className="min-h-0 flex-1 overflow-hidden">
           {tab === "ai" && (
             <div className="h-full space-y-4 overflow-auto p-3 text-sm">
-              {candidate !== null && (
+              {candidateText !== null && (
                 <div className="rounded-lg border border-violet-200 bg-violet-50 p-2">
                   <div className="mb-1 flex items-center justify-between text-xs font-semibold text-violet-800">
-                    새 버전 후보 {streaming && "(작성 중…)"}
-                    <span className="font-normal">{candidate.length.toLocaleString()}자</span>
+                    새 버전 후보 {candidateWriting && "(작성 중…)"}
+                    <span className="font-normal">{candidateText.length.toLocaleString()}자</span>
                   </div>
-                  <div className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-book text-[12px] leading-5">{candidate}</div>
-                  {!streaming && (
+                  <label className="mb-1 flex items-center gap-1 text-[11px] text-violet-800">
+                    <input type="checkbox" checked={candCompare} onChange={(e) => setCandCompare(e.target.checked)} /> 지금 본문과 비교 (바뀐 말만 표시)
+                  </label>
+                  {candCompare && editor ? (
+                    <div className="max-h-96 overflow-auto rounded bg-white p-2 font-book text-[12px] leading-5">
+                      <ParagraphDiff before={docParagraphs(editor.getJSON() as JNode)} after={docParagraphs(markdownToDoc(candidateText))} />
+                    </div>
+                  ) : (
+                    <div className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-book text-[12px] leading-5">{candidateText}</div>
+                  )}
+                  {!candidateWriting && (
                     <div className="mt-2 flex gap-2">
                       <button className="btn-primary px-2 py-1 text-xs" onClick={acceptCandidate}>
                         이 버전 사용
                       </button>
-                      <button className="btn px-2 py-1 text-xs" onClick={() => setCandidate(null)}>
+                      <button className="btn px-2 py-1 text-xs" onClick={dropCandidate}>
                         버리기
                       </button>
                     </div>
@@ -1458,24 +1492,83 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           currentPages={targetPages}
           cpp={cpp}
           onClose={() => setBatchOpen(false)}
-          onStart={runBatch}
+          onStart={startBatch}
         />
       )}
 
       {/* 드래그 선택 → 각주 말풍선 */}
-      {bubble && !fnEdit && !streaming && (
+      {bubble && !fnEdit && !streaming && !rewritePreview && (
         <div
           data-fn-ui
           className="fixed z-40 flex items-center gap-0.5 rounded-lg border border-stone-200 bg-white p-0.5 font-sans shadow-lg"
           style={{ left: Math.max(8, bubble.x - 8), top: Math.max(8, bubble.y - 40) }}
           onMouseDown={(e) => e.preventDefault()}
         >
+          {(Object.keys(REWRITE_LABEL) as RewriteAction[]).map((a) => (
+            <button key={a} className="rounded-md px-2 py-1 text-xs text-violet-800 hover:bg-violet-50 disabled:opacity-50" disabled={!!rewriteBusy || !!fnBusy} onClick={() => rewrite(a)}>
+              {rewriteBusy === a ? "…" : REWRITE_LABEL[a]}
+            </button>
+          ))}
+          <span className="mx-0.5 h-4 w-px bg-stone-200" />
           <button className="rounded-md px-2 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50" disabled={!!fnBusy} onClick={() => addFootnote(true)}>
             {fnBusy === "one" ? "각주 쓰는 중…" : "✦ AI 각주"}
           </button>
           <button className="rounded-md px-2 py-1 text-xs text-stone-600 hover:bg-stone-100 disabled:opacity-50" disabled={!!fnBusy} onClick={() => addFootnote(false)}>
             직접 각주
           </button>
+        </div>
+      )}
+
+      {/* 선택 영역 AI 결과 — 원문과 비교해 보고 적용 */}
+      {rewritePreview && (
+        <div
+          data-fn-ui
+          role="dialog"
+          aria-label="선택 영역 AI 결과"
+          className="fixed z-50 w-[440px] max-w-[92vw] rounded-xl border border-violet-200 bg-white p-3 font-sans shadow-2xl"
+          style={{
+            left: Math.min(Math.max(8, rewritePreview.x - 60), (typeof window !== "undefined" ? window.innerWidth : 1200) - 460),
+            top: Math.min(rewritePreview.y + 10, (typeof window !== "undefined" ? window.innerHeight : 800) - 320),
+          }}
+          onKeyDown={(e) => e.key === "Escape" && cancelRewrite()}
+        >
+          <div className="mb-2 flex items-center gap-2 text-xs">
+            <b className="text-violet-800">✦ {REWRITE_LABEL[rewritePreview.action]}</b>
+            <span className="text-stone-400">
+              {rewritePreview.selection.length.toLocaleString()}자 → {rewritePreview.text.length.toLocaleString()}자
+            </span>
+            <button className="ml-auto text-stone-400 hover:text-stone-700" aria-label="닫기" onClick={cancelRewrite}>
+              ✕
+            </button>
+          </div>
+          <div className="max-h-64 overflow-auto rounded-lg bg-stone-50 p-2 font-book text-[12.5px] leading-6">
+            {rewritePreview.action === "example" ? (
+              <p className="whitespace-pre-wrap text-green-800">{rewritePreview.text}</p>
+            ) : (
+              <InlineDiff before={rewritePreview.selection} after={rewritePreview.text.replace(/\*\*|⟦주:[^⟧]*⟧/g, "")} />
+            )}
+          </div>
+          {rewritePreview.action === "example" && <p className="mt-1 text-[11px] text-stone-500">선택한 문단 뒤에 새 문단으로 넣습니다.</p>}
+          <div className="mt-2 flex items-center gap-2">
+            <button autoFocus className="btn-primary px-3 py-1 text-xs" onClick={applyRewrite}>
+              적용
+            </button>
+            <button
+              className="btn px-3 py-1 text-xs"
+              disabled={!!rewriteBusy}
+              onClick={() => {
+                const p = rewritePreview;
+                setRewritePreview(null);
+                requestRewrite(p.action, p.from, p.to, p.req);
+              }}
+            >
+              {rewriteBusy ? "다시 쓰는 중…" : "다시"}
+            </button>
+            <button className="btn-ghost px-3 py-1 text-xs" onClick={cancelRewrite}>
+              취소
+            </button>
+            <span className="ml-auto text-[11px] text-stone-400">적용 전 원고는 버전 기록에 남습니다</span>
+          </div>
         </div>
       )}
 
@@ -1500,6 +1593,9 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     </div>
   );
 }
+
+/** 선택 영역 글자를 문단 사이 줄바꿈으로 이어 읽는다 */
+const NL = "\n";
 
 /** n번째 텍스트 블록 첫 글자 위치 (같은 말이 여러 번 나올 때는 문단 처음으로 간다) */
 function textblockStart(editor: Editor, index: number) {

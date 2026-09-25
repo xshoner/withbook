@@ -1,6 +1,7 @@
 import "server-only";
 import path from "node:path";
 import { prisma } from "./db";
+import { purgeTrash } from "./trash";
 
 export const dataDir = () => path.resolve(/* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"));
 let lastCheck = "";
@@ -16,6 +17,10 @@ export async function dailyMaintenance() {
   try {
     const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000);
     await prisma.project.deleteMany({ where: { deletedAt: { lt: cutoff } } });
+  } catch {}
+  // 지운 장·절(휴지통)도 30일이 지나면 비운다
+  try {
+    await purgeTrash(30);
   } catch {}
 }
 

@@ -51,7 +51,12 @@
    `NEXT_PUBLIC_*`·`APP_ACCESS_MODE`는 빌드 때 화면에 들어가므로 값을 바꾸면 다시 배포한다.
 5. Supabase → Authentication → URL Configuration의 Site URL을 `https://withbook.vercel.app`으로 둔다.
 6. **스키마 반영**: 표·열·인덱스가 바뀌면(예: `AiLog.userId`, 목차·버전·사용 기록 인덱스) 로컬에서 `npm run db:push`로 Supabase에 반영한다(`DIRECT_URL` 사용). 배포 전에 한 번 실행한다.
-7. **상태 확인**: `GET /api/health` → `{ ok, db, storage, time }` (로그인 없이 열림, 값은 참/거짓만). 문제가 있으면 503.
+7. **글꼴**: KoPub TTF를 WOFF2로 바꿔(약 1/3 크기) 함께 올린다. 화면·조판은 WOFF2를 먼저 받고 없으면 TTF를 쓴다.
+   ```sh
+   npx ttf2woff2 < public/fonts/KoPubBatangLight.ttf > public/fonts/KoPubBatangLight.woff2   # 세 글꼴 모두
+   node --env-file=.env scripts/upload-fonts.mjs   # fonts 버킷에 1년 캐시로 올림
+   ```
+8. **상태 확인**: `GET /api/health` → `{ ok, db, storage, time }` (로그인 없이 열림, 값은 참/거짓만). 문제가 있으면 503.
 
 ## Vercel 제약과 대응
 
@@ -71,7 +76,7 @@ npm run dev
 
 ## 백업
 
-- 원고 입력은 자동 저장(순차 큐·오프라인 복구본). 절마다 버전 기록: 자동 저장 최근 30개 · 직접 저장 최근 30개 · 그 밖(AI 집필·교정·복원 등) 최근 50개.
+- 원고 입력은 자동 저장(순차 큐·오프라인 복구본). 절마다 버전 기록(원고 전체를 담으므로 DB 용량을 위해 제한): 자동 저장 최근 10개 + 그 이전 14일은 하루 1개 · 직접 저장 30개 · AI 초안 원본 3개 · 그 밖(AI 집필 전·교정 전·복원 전 등) 30개.
 - 프로젝트 ZIP: [내보내기 → 백업]. DB 전체 백업은 Supabase(유료 플랜 일일 백업/PITR) 또는 `pg_dump`로 한다.
 - 휴지통 프로젝트는 30일 뒤 자동 삭제.
 
