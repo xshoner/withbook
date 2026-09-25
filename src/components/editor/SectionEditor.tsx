@@ -33,6 +33,7 @@ import { recoverPending, settleSection, useAutosave, type SaveState } from "./us
 import FindPanel from "./FindPanel";
 import type { BatchItem, SectionRef } from "./BatchWriteDialog";
 import { BATCH_MAX } from "./batch";
+import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
 import WritingOverlay from "./WritingOverlay";
 import FootnotePopover from "./FootnotePopover";
 import ToolGroup from "./ToolGroup";
@@ -113,7 +114,24 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [candCompare, setCandCompare] = useState(false);
   const [lengthHint, setLengthHint] = useState<null | { chars: number; target: number }>(null);
   const [tab, setTab] = useState<"ai" | "versions" | "proof" | "notes">("ai");
-  const [extra, setExtra] = useState("");
+  // 추가 지시: [다른 절에서도 계속 쓰기]를 켜 두면 절을 옮겨도 남고, 집필에 쓴 지시는 최근 목록에서 다시 고를 수 있다
+  const [extraMem, setExtraMem] = useState<ExtraMemory>({ keep: false, text: "", recent: [] });
+  const [extra, setExtraText] = useState("");
+  useEffect(() => {
+    const m = loadExtra(project.id);
+    setExtraMem(m);
+    if (m.keep) setExtraText(m.text);
+  }, [project.id]);
+  const updateExtraMem = (m: ExtraMemory) => {
+    setExtraMem(m);
+    saveExtra(project.id, m);
+  };
+  const setExtra = (text: string) => {
+    setExtraText(text);
+    if (extraMem.keep) updateExtraMem({ ...extraMem, text });
+  };
+  /** 집필을 시작할 때 쓴 지시를 최근 목록에 남긴다 */
+  const noteExtraUsed = () => extra.trim() && updateExtraMem(rememberExtra({ ...extraMem, text: extraMem.keep ? extra : extraMem.text }, extra));
   const [proofLevel, setProofLevel] = useState<"proof" | "light">("proof");
   const [proof, setProof] = useState<AppliedChange[] | null>(null);
   const [proofBusy, setProofBusy] = useState(false);
@@ -554,6 +572,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       return toastError(e, "스케치 저장 실패: ");
     }
     const tree = onTreeChanged; // 편집기가 닫혀도 목차를 새로 고친다
+    noteExtraUsed();
     runBatch(
       items.map((it) => ({
         sectionId: it.id,
@@ -577,6 +596,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       setTab("ai");
       setPanelOpen(true);
     }
+    noteExtraUsed();
     startJob(`/api/sections/${section.id}/write`, { targetPages, mode, extraInstruction: extra }, mode);
   };
 
@@ -1364,13 +1384,45 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 </div>
               )}
               <div>
-                <label className="label">이번 집필에만 적용할 추가 지시</label>
+                <label className="label" htmlFor="extra-instruction">
+                  집필 추가 지시
+                </label>
                 <textarea
+                  id="extra-instruction"
                   className="input min-h-[88px] text-xs"
                   placeholder="예: 사례를 교육 현장 위주로, 마지막은 질문으로 끝내기"
                   value={extra}
                   onChange={(e) => setExtra(e.target.value)}
                 />
+                <label className="mt-1 flex items-center gap-1.5 text-[11px] text-stone-600" title="끄면 이 절에서만 쓰고, 다른 절을 열면 비워집니다">
+                  <input
+                    type="checkbox"
+                    checked={extraMem.keep}
+                    onChange={(e) => updateExtraMem({ ...extraMem, keep: e.target.checked, text: e.target.checked ? extra : "" })}
+                  />
+                  다른 절에서도 계속 쓰기
+                </label>
+                {extraMem.recent.length > 0 && (
+                  <div className="mt-2">
+                    <div className="mb-1 text-[11px] text-stone-500">최근 쓴 지시 — 눌러서 채우기</div>
+                    <ul className="space-y-1">
+                      {extraMem.recent.map((r) => (
+                        <li key={r} className={`group flex items-start gap-1 rounded border px-2 py-1 text-[11px] leading-4 ${r === extra.trim() ? "border-amber-400 bg-amber-50" : "border-stone-200 bg-white hover:bg-stone-50"}`}>
+                          <button className="min-w-0 flex-1 text-left text-stone-700" title={r} onClick={() => setExtra(r)}>
+                            <span className="line-clamp-2">{r}</span>
+                          </button>
+                          <button
+                            className="shrink-0 text-stone-300 hover:text-red-600 group-focus-within:text-stone-400 group-hover:text-stone-400"
+                            aria-label="최근 목록에서 지우기"
+                            onClick={() => updateExtraMem({ ...extraMem, recent: extraMem.recent.filter((x) => x !== r) })}
+                          >
+                            ✕
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="label">교정 강도</label>
