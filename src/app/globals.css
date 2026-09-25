@@ -329,3 +329,7 @@ body {
     visibility: hidden;
   }
 }
+
+/* 바로 가기로 찾아간 문장 강조 — 잠깐 보였다 사라진다 */
+.locate-flash { animation: locate-flash 2.6s ease-out forwards; }
+@keyframes locate-flash { 0%, 55% { opacity: 1; } 100% { opacity: 0; } }

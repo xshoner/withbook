@@ -177,8 +177,13 @@ export default function ChecksDialog({
                               <span className="text-stone-400">{m.after}</span>
                             </div>
                             <div className="mt-1 flex flex-wrap gap-2 text-[11px]">
-                              <button className="text-stone-600 hover:underline" onClick={() => onGoto(s.sectionId, m.paragraph, m.marker)}>
-                                위치로
+                              <button
+                                className="rounded bg-stone-800 px-2 py-0.5 font-semibold text-white hover:bg-stone-700"
+                                title={`${s.label} ${s.title}의 이 문장으로 바로 갑니다`}
+                                // 표시 바로 앞 글자까지 넘겨 같은 문단에 표시가 여러 개여도 정확한 문장으로 간다 (각주 안 표시는 문단으로)
+                                onClick={() => onGoto(s.sectionId, m.paragraph, m.offset >= 0 ? m.before.slice(-15) + m.marker : "")}
+                              >
+                                바로가기 →
                               </button>
                               <button className="text-green-700 hover:underline disabled:opacity-40" disabled={!!busy} onClick={() => act(s.sectionId, m, "remove")}>
                                 {busy === key ? "처리 중…" : m.kind === "check" ? "확인함 (표시 지우기)" : "표시 지우기"}
@@ -248,8 +253,8 @@ function Go({
   children?: React.ReactNode;
 }) {
   return (
-    <button className="text-stone-500 hover:text-stone-800 hover:underline" title={where} onClick={() => onGoto(sid, p, t)}>
-      {children ?? "위치로"}
+    <button className="shrink-0 rounded bg-stone-800 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-stone-700" title={`${where} — 이 문장으로 바로 갑니다`} onClick={() => onGoto(sid, p, t)}>
+      {children ?? "바로가기 →"}
     </button>
   );
 }

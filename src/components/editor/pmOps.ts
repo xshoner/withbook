@@ -90,3 +90,24 @@ export function selectInBlock(editor: Editor, index: number, text: string) {
   editor.chain().focus().setTextSelection(r).scrollIntoView().run();
   return true;
 }
+
+/**
+ * n번째 텍스트 블록에서 text가 든 문장 전체의 문서 위치 (확인 표시·검색 결과로 바로 가기).
+ * text가 여러 번 나오면 첫 번째, 없으면 문단 전체.
+ * 문장은 text의 끝 글자를 기준으로 고른다 — 확인 표시는 앞 문맥(앞 문장 끝이 섞일 수 있다) 뒤에 표시를 붙여 넘기기 때문이다.
+ */
+export function sentenceRangeAround(editor: Editor, index: number, text: string): { from: number; to: number } | null {
+  const b = textblockAt(editor.state.doc, index);
+  if (!b) return null;
+  const t = blockText(b.node);
+  const at = text ? t.indexOf(text) : -1;
+  if (at < 0) return { from: offsetToPos(b.node, b.pos, 0), to: offsetToPos(b.node, b.pos, t.length, true) };
+  const anchor = at + text.length - 1;
+  const END = /[.!?。…](["'”’」』)\]]*)\s/g;
+  let start = 0;
+  for (let m; (m = END.exec(t)) && m.index + m[0].length <= anchor; ) start = m.index + m[0].length;
+  END.lastIndex = anchor;
+  const next = END.exec(t);
+  const end = next ? next.index + next[0].length - 1 : t.length;
+  return { from: offsetToPos(b.node, b.pos, start), to: offsetToPos(b.node, b.pos, Math.max(start, end), true) };
+}

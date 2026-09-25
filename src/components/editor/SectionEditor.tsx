@@ -28,7 +28,7 @@ import { Figure } from "./Figure";
 import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
 import ProofPanel, { type AppliedChange } from "./ProofPanel";
-import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, textblockAt } from "./pmOps";
+import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround } from "./pmOps";
 import { recoverPending, registerCommit, settleSection, useAutosave, type SaveState } from "./useAutosave";
 import FindPanel from "./FindPanel";
 import type { BatchItem, SectionRef } from "./BatchWriteDialog";
@@ -400,17 +400,40 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const { bodySizePt, lineHeight, paraSpacingMm } = project.layout;
   useEffect(() => schedulePaginate(0), [zoom, schedulePaginate, bodySizePt, lineHeight, paraSpacingMm]);
 
-  // 확인 표시·책 전체 검색에서 고른 자리로 이동
+  // 확인 표시·문체 점검·책 전체 검색에서 고른 자리로 바로 가기 — 그 문장 전체를 골라 화면 가운데에 보이고 잠깐 강조한다.
+  // 쪽 나눔 계산이 스크롤 위치를 되돌려 놓을 수 있으므로 계산이 끝난 뒤에 한 번 더 맞춘다.
+  const [flash, setFlash] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   useEffect(() => {
     if (!editor || !locate) return;
-    const t = window.setTimeout(() => {
+    const timers: number[] = [];
+    const go = (final: boolean) => {
       if (editor.isDestroyed) return;
-      if (!selectInBlock(editor, locate.paragraph, locate.text)) {
-        const r = findInBlock(editor, locate.paragraph, locate.text);
-        if (r === "many") editor.chain().focus().setTextSelection(textblockStart(editor, locate.paragraph)).scrollIntoView().run();
+      const r = sentenceRangeAround(editor, locate.paragraph, locate.text);
+      if (!r) return;
+      editor.chain().focus().setTextSelection(r).run();
+      const sc = scrollRef.current;
+      if (!sc || !sheetRef.current) return;
+      const a = editor.view.coordsAtPos(r.from);
+      const box = sc.getBoundingClientRect();
+      sc.scrollTo({ top: sc.scrollTop + (a.top - box.top) - box.height / 3, behavior: final ? "smooth" : "auto" });
+      if (final) {
+        // 스크롤이 끝난 뒤 좌표로 강조 상자를 그린다 (지면 기준)
+        timers.push(
+          window.setTimeout(() => {
+            if (editor.isDestroyed || !sheetRef.current) return;
+            const h = sheetRef.current.getBoundingClientRect();
+            const a2 = editor.view.coordsAtPos(r.from);
+            const z2 = editor.view.coordsAtPos(r.to);
+            const zoomF = h.width / sheetRef.current.offsetWidth || 1;
+            setFlash({ top: (a2.top - h.top) / zoomF - 3, left: 0, width: sheetRef.current.offsetWidth, height: (Math.max(z2.bottom, a2.bottom) - a2.top) / zoomF + 6 });
+            timers.push(window.setTimeout(() => setFlash(null), 2600));
+          }, 450),
+        );
       }
-    }, 120);
-    return () => window.clearTimeout(t);
+    };
+    timers.push(window.setTimeout(() => go(false), 150));
+    timers.push(window.setTimeout(() => go(true), 1300)); // 쪽 나눔(250ms~1.2s) 뒤
+    return () => timers.forEach((t) => window.clearTimeout(t));
   }, [editor, locate]);
 
   function updateCaretPage(ed: Editor) {
@@ -1338,6 +1361,13 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               >
                 <EditorContent editor={editor} />
               </div>
+              {flash && (
+                <div
+                  aria-hidden
+                  className="locate-flash pointer-events-none absolute z-10 rounded bg-amber-300/40 ring-2 ring-amber-500"
+                  style={{ top: flash.top, left: flash.left, width: flash.width, height: flash.height }}
+                />
+              )}
               {/* 마지막 쪽 아래 각주 */}
               {pg && pg.lastNotes.length > 0 && (
                 <div className="pointer-events-none absolute" style={{ left: `${geom.padX}mm`, right: `${geom.padX}mm`, bottom: `${geom.bottom}mm` }}>
@@ -1736,11 +1766,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 /** 선택 영역 글자를 문단 사이 줄바꿈으로 이어 읽는다 */
 const NL = "\n";
 
-/** n번째 텍스트 블록 첫 글자 위치 (같은 말이 여러 번 나올 때는 문단 처음으로 간다) */
-function textblockStart(editor: Editor, index: number) {
-  const b = textblockAt(editor.state.doc, index);
-  return b ? b.pos + 1 : 0;
-}
 
 /** 한글 등 입력 조합이 끝날 때까지 */
 function compositionDone(editor: Editor): Promise<void> {
