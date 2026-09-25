@@ -7,6 +7,7 @@ import { numberChapters, parseLayout } from "../layout";
 import { editStats, pickLearningPairs, type EditPair } from "../style/edits";
 import { chat, chatStream, extractJson, type ChatOptions } from "./client";
 import { buildMessages } from "./prompts";
+import { singleFlight } from "./single-flight";
 
 /* ---------------- 공통 텍스트 조립 ---------------- */
 
@@ -232,21 +233,28 @@ export async function designToc(
 /* ---------------- 요약 (앞 내용 연결용) ---------------- */
 
 type SummaryTarget = { id: string; label: string; title: string; content: string; summary: string | null; summaryHash: string | null };
+const pendingSectionSummary = singleFlight<string>();
 
 async function ensureSectionSummary(projectId: string, c: { label: string; kind: string }, s: SummaryTarget): Promise<string> {
   const text = docPlainText(parseDoc(s.content));
   if (!text.trim()) return "";
   const h = hashText(text);
   if (s.summary && s.summaryHash === h) return s.summary;
-  const { messages } = await buildMessages("section-summary", {
-    chapterNo: chapterName(c),
-    sectionNo: s.label,
-    sectionTitle: s.title,
-    content: text.slice(0, 20000),
+  const summary = await pendingSectionSummary(`${projectId}:${s.id}:${h}`, async () => {
+    // Another request may have finished since this book snapshot was loaded.
+    const latest = await prisma.section.findUnique({ where: { id: s.id }, select: { summary: true, summaryHash: true } });
+    if (latest?.summary && latest.summaryHash === h) return latest.summary;
+    const { messages } = await buildMessages("section-summary", {
+      chapterNo: chapterName(c),
+      sectionNo: s.label,
+      sectionTitle: s.title,
+      content: text.slice(0, 20000),
+    });
+    const r = await chat({ purpose: "summary", projectId, messages, temperature: 0.3, maxTokens: 5000 });
+    const summary = r.text.trim();
+    await prisma.section.updateMany({ where: { id: s.id, content: s.content }, data: { summary, summaryHash: h } });
+    return summary;
   });
-  const r = await chat({ purpose: "summary", projectId, messages, temperature: 0.3, maxTokens: 5000 });
-  const summary = r.text.trim();
-  await prisma.section.update({ where: { id: s.id }, data: { summary, summaryHash: h } });
   s.summary = summary;
   s.summaryHash = h;
   return summary;
@@ -359,7 +367,7 @@ const outlineSchema = z.object({
 /** 새 파트를 시작할 수 있는 마지막 시점 — AI 호출 예산(요청 시작 후 240초, client.ts) 안에 파트 하나(보통 1분 안팎)를 끝낼 수 있게 */
 const PART_START_BUDGET_MS = 150_000;
 
-/** 이 모델은 본문 전에 생각(추론) 토큰을 쓰므로 넉넉하게 잡되, 필요한 만큼만 */
+/** 추론 토큰을 사용하는 모델도 본문을 마칠 수 있도록 출력 여유를 둔다. */
 const writeTokens = (chars: number) => Math.min(Math.round(chars * 2.2 + 6000), 32000);
 
 async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undefined>, onText: (t: string) => void): AsyncGenerator<WriteEvent> {
@@ -417,7 +425,7 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
   const count = (t: string) => (total += t.length);
 
   if (opts.targetPages <= 5) {
-    yield { t: "status", v: "구상 중… 첫 문장이 나오기까지 30초~1분 걸릴 수 있습니다" };
+    yield { t: "status", v: "구상 중… 문체와 앞뒤 흐름을 살펴보고 있습니다" };
     const { messages, instructionIncluded } = await buildMessages("section-write", baseVars);
     yield* pipe(
       chatStream({ purpose: "section_write", projectId, messages, temperature: 0.7, maxTokens: writeTokens(targetChars), signal: opts.signal, instructionIncluded }),
@@ -446,7 +454,7 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
         break;
       }
       const part = parts[p];
-      yield { t: "status", v: `집필 중… (${p + 1}/${parts.length}) ${part.heading} — 파트마다 첫 문장까지 30초 정도 걸립니다` };
+      yield { t: "status", v: `집필 중… (${p + 1}/${parts.length}) ${part.heading}` };
       if (part.heading) {
         const h = `${written ? "\n\n" : ""}## ${part.heading}\n\n`;
         written += h;

@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "../db";
 import { getRequestContext } from "../request-context";
 import { baseUrlProblem, endpointOf, loadAiSettings, resolvedKey } from "./settings";
+import { scopeForPurpose, type AiScope } from "./routing";
 
 export { extractJson } from "./extract-json";
 
@@ -14,6 +15,8 @@ export type ChatMessage = { role: "system" | "user" | "assistant"; content: stri
 
 export type ChatOptions = {
   purpose: string;
+  /** Saved connection to test; normal calls route by purpose. */
+  connectionScope?: AiScope;
   projectId?: string | null;
   messages: ChatMessage[];
   temperature?: number;
@@ -58,8 +61,8 @@ function deadlineOf(opts: ChatOptions) {
   return (ctx?.startedAt ?? Date.now()) + AI_BUDGET_MS;
 }
 
-async function config() {
-  const s = await loadAiSettings();
+async function config(opts: ChatOptions) {
+  const s = await loadAiSettings(opts.connectionScope ?? scopeForPurpose(opts.purpose));
   const key = resolvedKey(s);
   if (!s.baseUrl || !key) throw new AiError(`AI 연결 설정이 없습니다. [책 설정 → AI 설정]에서 주소와 키(${s.keyName})를 확인하세요.`, 0);
   const bad = baseUrlProblem(s.baseUrl);
@@ -67,7 +70,7 @@ async function config() {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (s.authScheme === "bearer") headers.Authorization = `Bearer ${key}`;
   else headers["x-api-key"] = key;
-  return { url: endpointOf(s.baseUrl), headers, model: s.model, provider: s.provider, maxOut: s.maxOutputTokens };
+  return { url: endpointOf(s.baseUrl), headers, model: s.model, provider: s.provider, maxOut: s.maxOutputTokens, reasoningEffort: s.reasoningEffort };
 }
 
 const sleep = (ms: number, signal?: AbortSignal) =>
@@ -234,7 +237,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string, Usa
   let status = "ok";
   let err: string | undefined;
   try {
-    const { url, headers, model, provider, maxOut } = await config();
+    const { url, headers, model, provider, maxOut, reasoningEffort } = await config(opts);
     const maxTokens = Math.min(opts.maxTokens ?? 4000, maxOut);
     const res = await post(
       url,
@@ -243,6 +246,7 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string, Usa
         model,
         messages: opts.messages,
         temperature: opts.temperature ?? 0.7,
+        ...(provider === "gemini" && reasoningEffort && reasoningEffort !== "default" ? { reasoning_effort: reasoningEffort } : {}),
         // OpenAI 최신 모델은 max_completion_tokens만 받는다
         ...(provider === "openai" ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
         stream: true,

@@ -1,6 +1,7 @@
 import "server-only";
 import { getSetting, setSetting } from "../app-settings";
 import { aiBaseUrlError, aiKeyNameError } from "../security";
+import { type AiScope, updatedApiKey } from "./routing";
 
 /**
  * AI 연결 설정 — DB(AppSetting "ai")에 저장하고, 없으면 .env 값을 쓴다.
@@ -18,11 +19,12 @@ export type AiSettings = {
   authScheme: AuthScheme;
   apiKey: string;
   maxOutputTokens: number; // 한 번 호출의 최대 출력 토큰 상한
+  reasoningEffort?: "default" | "low" | "medium" | "high";
 };
 
 export const PROVIDERS: Record<AiProvider, { label: string; baseUrl: string; keyName: string; model: string; authScheme: AuthScheme }> = {
   gateway: { label: "Letsur 게이트웨이", baseUrl: "https://gw.letsur.ai", keyName: "LLM_API_KEY", model: "claude-fable-5-1", authScheme: "x-api-key" },
-  gemini: { label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", keyName: "GEMINI_API_KEY", model: "gemini-2.5-flash", authScheme: "bearer" },
+  gemini: { label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", keyName: "GEMINI_API_KEY", model: "gemini-3.8-flash", authScheme: "bearer" },
   openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", keyName: "OPENAI_API_KEY", model: "gpt-5", authScheme: "bearer" },
   anthropic: { label: "Anthropic Claude", baseUrl: "https://api.anthropic.com/v1", keyName: "ANTHROPIC_API_KEY", model: "claude-sonnet-5", authScheme: "bearer" },
   custom: { label: "직접 입력 (OpenAI 호환)", baseUrl: "", keyName: "LLM_API_KEY", model: "", authScheme: "bearer" },
@@ -41,10 +43,11 @@ function fromEnv(): AiSettings {
 }
 
 /** 저장된 설정(없으면 .env). apiKey가 비어 있으면 keyName 환경변수를 쓴다. */
-export async function loadAiSettings(): Promise<AiSettings & { source: "file" | "env" }> {
-  const raw = await getSetting<Partial<AiSettings>>("ai");
-  if (raw) return { ...normalize({ ...fromEnv(), ...raw } as AiSettings), source: "file" };
-  return { ...fromEnv(), source: "env" };
+export async function loadAiSettings(scope: AiScope = "default"): Promise<AiSettings & { source: "file" | "env"; inherited: boolean }> {
+  const raw = await getSetting<Partial<AiSettings>>(scope === "default" ? "ai" : `ai:${scope}`);
+  if (raw) return { ...normalize({ ...fromEnv(), ...raw } as AiSettings), source: "file", inherited: false };
+  if (scope !== "default") return { ...await loadAiSettings(), inherited: true };
+  return { ...fromEnv(), source: "env", inherited: false };
 }
 
 function normalize(s: AiSettings): AiSettings {
@@ -57,6 +60,7 @@ function normalize(s: AiSettings): AiSettings {
     authScheme: s.authScheme === "bearer" ? "bearer" : "x-api-key",
     apiKey: String(s.apiKey ?? "").trim().slice(0, 500),
     maxOutputTokens: Math.min(200000, Math.max(1000, Number(s.maxOutputTokens) || 32000)),
+    reasoningEffort: ["low", "medium", "high"].includes(s.reasoningEffort ?? "") ? s.reasoningEffort : "default",
   };
 }
 
@@ -87,8 +91,8 @@ export function maskKey(k: string) {
 }
 
 /** 화면에 보낼 설정 — 키는 가린다 */
-export async function publicAiSettings() {
-  const s = await loadAiSettings();
+export async function publicAiSettings(scope: AiScope = "default") {
+  const s = await loadAiSettings(scope);
   const key = resolvedKey(s);
   return {
     provider: s.provider,
@@ -98,6 +102,9 @@ export async function publicAiSettings() {
     endpoint: s.baseUrl ? endpointOf(s.baseUrl) : "",
     authScheme: s.authScheme,
     maxOutputTokens: s.maxOutputTokens,
+    reasoningEffort: s.reasoningEffort ?? "default",
+    scope,
+    inherited: s.inherited,
     source: s.source,
     hasKey: Boolean(key),
     keyFrom: s.apiKey ? "saved" : key ? "env" : "none",
@@ -107,12 +114,12 @@ export async function publicAiSettings() {
 }
 
 /** 새 설정 저장. apiKey가 비어 있으면 기존 저장 키를 유지한다(keepKey). */
-export async function saveAiSettings(input: Partial<AiSettings> & { clearKey?: boolean }) {
-  const cur = await loadAiSettings();
+export async function saveAiSettings(input: Partial<AiSettings> & { clearKey?: boolean }, scope: AiScope = "default") {
+  const cur = await loadAiSettings(scope);
   const next = normalize({
     ...cur,
     ...input,
-    apiKey: input.clearKey ? "" : input.apiKey?.trim() ? input.apiKey : cur.apiKey,
+    apiKey: updatedApiKey(cur, input),
   } as AiSettings);
   const bad = (m: string) => Object.assign(new Error(m), { status: 400 });
   if (!next.baseUrl) throw bad("기본 주소(Base URL)를 입력하세요.");
@@ -121,6 +128,17 @@ export async function saveAiSettings(input: Partial<AiSettings> & { clearKey?: b
   const keyErr = aiKeyNameError(next.keyName);
   if (keyErr) throw bad(keyErr);
   if (!next.model) throw Object.assign(new Error("호출 모델을 입력하세요."), { status: 400 });
-  await setSetting("ai", next);
+  await setSetting(scope === "default" ? "ai" : `ai:${scope}`, next);
   return next;
+}
+
+export async function resetAiSettings(scope: AiScope) {
+  if (scope === "default") throw Object.assign(new Error("기본 연결은 해제할 수 없습니다."), { status: 400 });
+  await setSetting(`ai:${scope}`, null);
+}
+
+export async function copyAiSettings(from: AiScope, to: AiScope) {
+  const source = await loadAiSettings(from);
+  // Copy on the server: never send the original key back to the browser.
+  await saveAiSettings({ ...source, clearKey: !source.apiKey }, to);
 }
