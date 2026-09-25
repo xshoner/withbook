@@ -66,13 +66,16 @@ export function useAutosave(sectionId: string | null, onSaved?: (result: SaveRes
       window.removeEventListener("online", online);
       document.removeEventListener("visibilitychange", hidden);
       q.stopTimer();
-      void q.flush();
+      // 저장이 끝나고 다른 편집기가 이 절을 다시 열지 않았으면 큐를 지운다 (열어 본 절마다 쌓이지 않게)
+      void q.flush().then(() => {
+        if (sectionId && q.idle() && queues.get(sectionId) === q) queues.delete(sectionId);
+      });
     };
-  }, [q]);
+  }, [q, sectionId]);
   return { state, markDirty, flush };
 }
 
-export async function recoverPending(sectionId: string, _serverUpdatedAt: string): Promise<Draft | null> {
+export async function recoverPending(sectionId: string): Promise<Draft | null> {
   // Server and browser clocks cannot establish whether a draft was acknowledged.
   const active = queues.get(sectionId);
   if (active?.draft) return active.draft;

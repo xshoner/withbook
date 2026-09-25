@@ -1,5 +1,6 @@
 import "server-only";
 import { getSetting, setSetting } from "../app-settings";
+import { aiBaseUrlError, aiKeyNameError } from "../security";
 
 /**
  * AI 연결 설정 — DB(AppSetting "ai")에 저장하고, 없으면 .env 값을 쓴다.
@@ -50,7 +51,7 @@ function normalize(s: AiSettings): AiSettings {
   const provider = (Object.keys(PROVIDERS) as AiProvider[]).includes(s.provider) ? s.provider : "custom";
   return {
     provider,
-    keyName: String(s.keyName ?? "").trim().replace(/[^A-Za-z0-9_]/g, "").slice(0, 64) || "LLM_API_KEY",
+    keyName: String(s.keyName ?? "").trim().toUpperCase().replace(/[^A-Z0-9_]/g, "").slice(0, 64) || "LLM_API_KEY",
     model: String(s.model ?? "").trim().slice(0, 120),
     baseUrl: String(s.baseUrl ?? "").trim().replace(/\/+$/, "").slice(0, 300),
     authScheme: s.authScheme === "bearer" ? "bearer" : "x-api-key",
@@ -60,9 +61,12 @@ function normalize(s: AiSettings): AiSettings {
 }
 
 export function resolvedKey(s: AiSettings) {
-  // 키가 아닌 환경변수(DB 주소·접속 비밀번호 등)를 AI 서버로 보내지 않도록 …KEY 이름만 읽는다
-  return s.apiKey || (/_KEY$/.test(s.keyName) ? process.env[s.keyName] : "") || "";
+  // 키가 아닌 환경변수(DB 주소·Supabase 비밀 키 등)를 AI 서버로 보내지 않도록 허용된 …_API_KEY 이름만 읽는다
+  return s.apiKey || (aiKeyNameError(s.keyName) ? "" : process.env[s.keyName]) || "";
 }
+
+/** 호출 직전 주소 검사 — 예전에 저장된 값도 막는다. 문제가 있으면 오류 문구 */
+export const baseUrlProblem = (baseUrl: string) => aiBaseUrlError(baseUrl);
 
 /** 기본 주소 → Chat Completions 주소. 버전 경로가 없으면(게이트웨이) /v1을 붙인다. */
 export function endpointOf(baseUrl: string) {
@@ -110,8 +114,12 @@ export async function saveAiSettings(input: Partial<AiSettings> & { clearKey?: b
     ...input,
     apiKey: input.clearKey ? "" : input.apiKey?.trim() ? input.apiKey : cur.apiKey,
   } as AiSettings);
-  if (!next.baseUrl) throw Object.assign(new Error("기본 주소(Base URL)를 입력하세요."), { status: 400 });
-  if (!/^https?:\/\//.test(next.baseUrl)) throw Object.assign(new Error("기본 주소는 http:// 또는 https://로 시작해야 합니다."), { status: 400 });
+  const bad = (m: string) => Object.assign(new Error(m), { status: 400 });
+  if (!next.baseUrl) throw bad("기본 주소(Base URL)를 입력하세요.");
+  const urlErr = aiBaseUrlError(next.baseUrl);
+  if (urlErr) throw bad(urlErr);
+  const keyErr = aiKeyNameError(next.keyName);
+  if (keyErr) throw bad(keyErr);
   if (!next.model) throw Object.assign(new Error("호출 모델을 입력하세요."), { status: 400 });
   await setSetting("ai", next);
   return next;

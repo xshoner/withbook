@@ -1,12 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { ROLES } from "./lib/auth";
 import { validRenderToken } from "./lib/render-token";
 import { checkAccess, webMode } from "./lib/security";
 
-/** 로그인 없이 열 수 있는 경로: 첫 화면(로그인), 글꼴 */
-const PUBLIC = [/^\/$/, /^\/api\/fonts\//, /^\/icon\.svg$/];
-/** 로그인 허용 역할 — Supabase 계정의 app_metadata.role (사용자가 스스로 바꿀 수 없는 값) */
-const ROLES = new Set(["superadmin", "editor"]);
+/** 로그인 없이 열 수 있는 경로: 첫 화면(로그인), 글꼴, 상태 확인 */
+const PUBLIC = [/^\/$/, /^\/api\/fonts\//, /^\/icon\.svg$/, /^\/api\/health$/];
 
 export async function proxy(request: NextRequest) {
   const denied = checkAccess(request);

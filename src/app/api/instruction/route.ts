@@ -1,4 +1,4 @@
-import { fail, handle, ok } from "@/lib/api";
+import { fail, handle, ok, requireRole } from "@/lib/api";
 import { getSetting, setSetting } from "@/lib/app-settings";
 import { loadInstruction } from "@/lib/ai/prompts";
 
@@ -12,7 +12,9 @@ export const GET = handle(async () => {
   return ok({ path: saved ? "앱 설정(DB)에 저장된 규칙" : "instruction.md 파일", text, history });
 });
 
+/** 저장은 관리자(superadmin)만 */
 export const PUT = handle(async (req: Request) => {
+  requireRole("superadmin");
   const { text } = await req.json();
   if (typeof text !== "string" || !text.trim()) return fail("내용이 비어 있습니다.");
   if (text.length > 200_000) return fail("내용이 너무 깁니다.");

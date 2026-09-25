@@ -1,5 +1,17 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
+
+/** 순서 번호를 1부터 다시 매긴다 (같은 트랜잭션 안에서) */
+async function renumberSections(tx: Prisma.TransactionClient, chapterId: string) {
+  const rest = await tx.section.findMany({ where: { chapterId }, orderBy: { order: "asc" }, select: { id: true, order: true } });
+  for (const [i, r] of rest.entries()) if (r.order !== i + 1) await tx.section.update({ where: { id: r.id }, data: { order: i + 1 } });
+}
+async function renumberChapters(tx: Prisma.TransactionClient, projectId: string) {
+  const rest = await tx.chapter.findMany({ where: { projectId }, orderBy: { order: "asc" }, select: { id: true, order: true } });
+  for (const [i, r] of rest.entries()) if (r.order !== i + 1) await tx.chapter.update({ where: { id: r.id }, data: { order: i + 1 } });
+}
+const TX = { timeout: 20_000 };
 
 /**
  * 목차 편집 — op 단위로 즉시 저장
@@ -24,32 +36,32 @@ export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/project
   switch (b.op) {
     case "addChapter": {
       const kind = ["front", "body", "back"].includes(b.kind) ? b.kind : "body";
-      const max = await prisma.chapter.aggregate({ where: { projectId }, _max: { order: true } });
-      const c = await prisma.chapter.create({
-        data: {
-          projectId,
-          kind,
-          order: (max._max.order ?? 0) + 1,
-          title: b.title?.trim() || (kind === "body" ? "새 장" : kind === "front" ? "머리말" : "맺음말"),
-          sections: { create: [{ order: 1, title: kind === "body" ? "새 절" : b.title?.trim() || "본문" }] },
-        },
-      });
+      const c = await prisma.$transaction(async (tx) => {
+        const max = await tx.chapter.aggregate({ where: { projectId }, _max: { order: true } });
+        return tx.chapter.create({
+          data: {
+            projectId,
+            kind,
+            order: (max._max.order ?? 0) + 1,
+            title: b.title?.trim() || (kind === "body" ? "새 장" : kind === "front" ? "머리말" : "맺음말"),
+            sections: { create: [{ order: 1, title: kind === "body" ? "새 절" : b.title?.trim() || "본문" }] },
+          },
+        });
+      }, TX);
       return ok({ id: c.id });
     }
     case "addSection": {
       await ownsChapter(b.chapterId);
-      const secs = await prisma.section.findMany({ where: { chapterId: b.chapterId }, orderBy: { order: "asc" } });
-      let order = secs.length + 1;
-      if (b.afterId) {
-        const i = secs.findIndex((s) => s.id === b.afterId);
+      const s = await prisma.$transaction(async (tx) => {
+        const secs = await tx.section.findMany({ where: { chapterId: b.chapterId }, orderBy: { order: "asc" }, select: { id: true } });
+        let order = secs.length + 1;
+        const i = b.afterId ? secs.findIndex((s) => s.id === b.afterId) : -1;
         if (i >= 0) {
           order = i + 2;
-          await prisma.$transaction(
-            secs.slice(i + 1).map((s, k) => prisma.section.update({ where: { id: s.id }, data: { order: order + 1 + k } })),
-          );
+          for (const [k, sec] of secs.slice(i + 1).entries()) await tx.section.update({ where: { id: sec.id }, data: { order: order + 1 + k } });
         }
-      }
-      const s = await prisma.section.create({ data: { chapterId: b.chapterId, order, title: b.title?.trim() || "새 절" } });
+        return tx.section.create({ data: { chapterId: b.chapterId, order, title: b.title?.trim() || "새 절" } });
+      }, TX);
       return ok({ id: s.id });
     }
     case "renameChapter":
@@ -70,15 +82,21 @@ export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/project
     }
     case "deleteChapter":
       await ownsChapter(b.chapterId);
-      await prisma.chapter.delete({ where: { id: b.chapterId } });
+      await prisma.$transaction(async (tx) => {
+        await tx.chapter.delete({ where: { id: b.chapterId } });
+        await renumberChapters(tx, projectId);
+      }, TX);
       return ok({ ok: true });
     case "deleteSection": {
       const s = await ownsSection(b.sectionId);
-      const count = await prisma.section.count({ where: { chapterId: s.chapterId } });
-      if (count <= 1) return fail("장에는 절이 최소 1개 있어야 합니다. 장을 삭제하세요.");
-      await prisma.section.delete({ where: { id: b.sectionId } });
-      const rest = await prisma.section.findMany({ where: { chapterId: s.chapterId }, orderBy: { order: "asc" } });
-      await prisma.$transaction(rest.map((r, i) => prisma.section.update({ where: { id: r.id }, data: { order: i + 1 } })));
+      const done = await prisma.$transaction(async (tx) => {
+        const count = await tx.section.count({ where: { chapterId: s.chapterId } });
+        if (count <= 1) return false;
+        await tx.section.delete({ where: { id: b.sectionId } });
+        await renumberSections(tx, s.chapterId);
+        return true;
+      }, TX);
+      if (!done) return fail("장에는 절이 최소 1개 있어야 합니다. 장을 삭제하세요.");
       return ok({ ok: true });
     }
     case "reorderChapters": {
@@ -101,12 +119,15 @@ export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/project
     case "moveSection": {
       const s = await ownsSection(b.sectionId);
       await ownsChapter(b.toChapterId);
-      const count = await prisma.section.count({ where: { chapterId: s.chapterId } });
-      if (count <= 1) return fail("장의 마지막 절은 옮길 수 없습니다.");
-      const max = await prisma.section.aggregate({ where: { chapterId: b.toChapterId }, _max: { order: true } });
-      await prisma.section.update({ where: { id: b.sectionId }, data: { chapterId: b.toChapterId, order: (max._max.order ?? 0) + 1 } });
-      const rest = await prisma.section.findMany({ where: { chapterId: s.chapterId }, orderBy: { order: "asc" } });
-      await prisma.$transaction(rest.map((r, i) => prisma.section.update({ where: { id: r.id }, data: { order: i + 1 } })));
+      const done = await prisma.$transaction(async (tx) => {
+        const count = await tx.section.count({ where: { chapterId: s.chapterId } });
+        if (count <= 1) return false;
+        const max = await tx.section.aggregate({ where: { chapterId: b.toChapterId }, _max: { order: true } });
+        await tx.section.update({ where: { id: b.sectionId }, data: { chapterId: b.toChapterId, order: (max._max.order ?? 0) + 1 } });
+        await renumberSections(tx, s.chapterId);
+        return true;
+      }, TX);
+      if (!done) return fail("장의 마지막 절은 옮길 수 없습니다.");
       return ok({ ok: true });
     }
   }

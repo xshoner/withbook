@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { dataDir } from "./backup";
 import { supabaseAdmin, storageConfigured } from "./supabase/admin";
+import { webMode } from "./security";
 
 /**
  * 파일 저장소 — 웹 배포(Supabase 설정 있음)는 Supabase Storage, 로컬은 data/storage 폴더.
@@ -28,8 +29,11 @@ export async function putObject(bucket: Bucket, key: string, data: Buffer, conte
 }
 
 export async function getObject(bucket: Bucket, key: string): Promise<Buffer | null> {
-  // 예전(로컬) 이미지 경로 호환: 절대 경로면 디스크에서 읽는다
-  if (path.isAbsolute(key)) return fs.readFile(key).catch(() => null);
+  // 예전(로컬) 이미지 경로 호환: 절대 경로면 디스크에서 읽는다 — 로컬 모드에서만 (웹 배포는 서버 파일을 읽지 않는다)
+  if (path.isAbsolute(key)) {
+    if (storageConfigured() || webMode()) return null;
+    return fs.readFile(key).catch(() => null);
+  }
   if (storageConfigured()) {
     const { data, error } = await supabaseAdmin().storage.from(bucket).download(safeKey(key));
     if (error || !data) return null;

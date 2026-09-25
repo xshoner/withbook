@@ -36,14 +36,38 @@ async function launchBrowser() {
   return chromium.launch({ executablePath: browserPath(), headless: true });
 }
 
-export async function renderPdf(url: string): Promise<PdfResult> {
+/**
+ * 시간 예산 (Vercel maxDuration 300초 안): 브라우저 실행부터 조판 완료까지 합쳐 최대 250초,
+ * 그중 페이지 열기(goto)는 최대 60초. 남은 시간은 PDF 인쇄·후처리·업로드 몫이다.
+ */
+export const PDF_BUDGET_MS = 250_000;
+const GOTO_MAX_MS = 60_000;
+const MIN_LAYOUT_MS = 10_000;
+
+export class PdfTimeoutError extends Error {
+  readonly expose = true;
+  readonly httpStatus = 504;
+  constructor(stage: "open" | "layout") {
+    super(
+      stage === "open"
+        ? "조판 페이지를 제한 시간 안에 열지 못했습니다. 잠시 후 다시 시도하세요."
+        : "조판이 제한 시간(약 4분) 안에 끝나지 않았습니다. 장·절 단위로 나눠 출력하거나 이미지 수를 줄인 뒤 다시 시도하세요.",
+    );
+    this.name = "PdfTimeoutError";
+  }
+}
+
+const isTimeout = (e: any) => e?.name === "TimeoutError" || /Timeout .*exceeded/i.test(String(e?.message ?? ""));
+
+export async function renderPdf(url: string, opts: { projectId?: string; budgetMs?: number } = {}): Promise<PdfResult> {
+  const deadline = Date.now() + (opts.budgetMs ?? PDF_BUDGET_MS);
   const browser = await launchBrowser();
   try {
     const origin = new URL(url).origin;
     // 글꼴은 Supabase Storage 공개 주소로 넘어가므로 그 출처도 허용한다
     const fontOrigin = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).origin : "";
     const page = await browser.newPage();
-    const token = makeRenderToken();
+    const token = makeRenderToken(5 * 60_000, opts.projectId ?? "");
     await page.route("**/*", (route) => {
       const req = route.request();
       const target = new URL(req.url());
@@ -52,8 +76,17 @@ export async function renderPdf(url: string): Promise<PdfResult> {
       const ok = target.protocol === "data:" || (fontOrigin && target.origin === fontOrigin && target.pathname.startsWith("/storage/v1/object/public/fonts/"));
       return ok ? route.continue() : route.abort();
     });
-    await page.goto(url, { waitUntil: "load", timeout: 120_000 });
-    await page.waitForFunction("window.__PAGED_DONE === true", null, { timeout: 300_000, polling: 250 });
+    const left = () => deadline - Date.now();
+    try {
+      await page.goto(url, { waitUntil: "load", timeout: Math.max(1_000, Math.min(GOTO_MAX_MS, left() - MIN_LAYOUT_MS)) });
+    } catch (e) {
+      throw isTimeout(e) ? new PdfTimeoutError("open") : e;
+    }
+    try {
+      await page.waitForFunction("window.__PAGED_DONE === true", null, { timeout: Math.max(MIN_LAYOUT_MS, left()), polling: 250 });
+    } catch (e) {
+      throw isTimeout(e) ? new PdfTimeoutError("layout") : e;
+    }
     const info = await page.evaluate("window.__PAGED_INFO");
     const err = await page.evaluate("window.__PAGED_ERROR");
     if (err) throw new Error("조판 오류: " + err);

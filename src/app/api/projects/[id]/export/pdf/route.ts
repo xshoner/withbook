@@ -21,6 +21,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   if (b.scope === "chapter" && b.targetId) q.set("scope", "chapter"), q.set("cid", b.targetId);
   if (b.scope === "section" && b.targetId) q.set("scope", "section"), q.set("sid", b.targetId);
   if (b.padEven) q.set("padEven", "1");
-  const { pdf, check } = await renderPdf(`${origin}/book/${id}?${q}`);
+  // 조판 시간 초과는 PdfTimeoutError(504, 한국어 안내)로 handle()이 그대로 전달한다
+  const { pdf, check } = await renderPdf(`${origin}/book/${id}?${q}`, { projectId: id });
   return deliverFile(pdf, `${book.project.title}_${size === "trim" ? "148x210" : "154x216"}.pdf`, "application/pdf", { check });
 });

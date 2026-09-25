@@ -74,3 +74,26 @@ export function chapterLabel(fmt: NumberFormat, n: number) {
 export function sectionLabel(fmt: NumberFormat, ch: number, sec: number) {
   return fmt === "formal" ? String(sec).padStart(2, "0") : `${ch}.${sec}`;
 }
+
+const KIND_ORDER: Record<string, number> = { front: 0, body: 1, back: 2 };
+
+/** 앞붙이 → 본문 → 뒷붙이 순서로 정렬하고 본문 장·절에만 번호를 붙인다 (편집 화면·서버 공통) */
+export type Numbered<C extends { sections: object[] }> = Omit<C, "sections"> & {
+  no: number;
+  label: string;
+  sections: (C["sections"][number] & { no: number; label: string })[];
+};
+
+export function numberChapters<C extends { kind: string; order: number; sections: object[] }>(chapters: C[], fmt: NumberFormat): Numbered<C>[] {
+  const sorted = [...chapters].sort((a, b) => (KIND_ORDER[a.kind] ?? 1) - (KIND_ORDER[b.kind] ?? 1) || a.order - b.order);
+  let n = 0;
+  return sorted.map((c) => {
+    const no = c.kind === "body" ? ++n : 0;
+    return {
+      ...c,
+      no,
+      label: no ? chapterLabel(fmt, no) : "",
+      sections: c.sections.map((s, i) => ({ ...s, no: i + 1, label: no ? sectionLabel(fmt, no, i + 1) : "" })),
+    } as Numbered<C>;
+  });
+}

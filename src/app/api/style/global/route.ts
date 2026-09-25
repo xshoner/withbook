@@ -1,4 +1,4 @@
-import { fail, handle, ok } from "@/lib/api";
+import { fail, handle, ok, requireRole } from "@/lib/api";
 import { analyzeStyle } from "@/lib/ai/tasks";
 import { addReferenceFile, buildCorpus, listReferenceFiles, loadReferenceDocs, removeReferenceFile } from "@/lib/style/reference";
 import { readGlobalStyle, writeGlobalStyle } from "@/lib/style/global";
@@ -12,8 +12,9 @@ export const GET = handle(async () => {
   return ok({ dir, files, global: g });
 });
 
-/** 자료 전체(기존 + 새로 올린 파일)로 기본 문체 프로필을 다시 학습 */
+/** 자료 전체(기존 + 새로 올린 파일)로 기본 문체 프로필을 다시 학습 — 변경 작업(POST·PUT·DELETE)은 관리자(superadmin)만 */
 export const POST = handle(async () => {
+  requireRole("superadmin");
   const docs = await loadReferenceDocs();
   if (!docs.length) return ok({ error: "문체 학습 자료에서 읽을 수 있는 글을 찾지 못했습니다." });
   const profile = await analyzeStyle(buildCorpus(docs));
@@ -24,6 +25,7 @@ export const POST = handle(async () => {
 
 /** 학습 자료 추가 (multipart files) */
 export const PUT = handle(async (req: Request) => {
+  requireRole("superadmin");
   const form = await req.formData();
   const files = await readUploads(form, "files", 50 * 1024 * 1024);
   if (!files.length) return fail("올릴 파일이 없습니다.");
@@ -33,6 +35,7 @@ export const PUT = handle(async (req: Request) => {
 
 /** 학습 자료 삭제 (?name=) */
 export const DELETE = handle(async (req: Request) => {
+  requireRole("superadmin");
   const name = new URL(req.url).searchParams.get("name") ?? "";
   if (!name) return fail("파일 이름이 없습니다.");
   await removeReferenceFile(name);

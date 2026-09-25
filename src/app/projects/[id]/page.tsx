@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import BookSearchDialog from "@/components/BookSearchDialog";
+import ChecksDialog from "@/components/ChecksDialog";
 import ExportDialog from "@/components/ExportDialog";
 import Paginator from "@/components/Paginator";
 import PreviewPane from "@/components/PreviewPane";
@@ -12,7 +14,7 @@ import type { SaveState } from "@/components/editor/useAutosave";
 import { flushAllPending } from "@/components/editor/useAutosave";
 import type { PagedInfo, ProjectTree, TreeSection } from "@/components/types";
 import { api, fmtTime } from "@/lib/client";
-import { chapterLabel, sectionLabel } from "@/lib/layout";
+import { numberChapters } from "@/lib/layout";
 
 export default function Workspace() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +28,11 @@ export default function Workspace() {
   const [previewKey, setPreviewKey] = useState(0);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [exportOpen, setExportOpen] = useState(false);
+  const [dialog, setDialog] = useState<null | { kind: "search"; q: string } | { kind: "checks" }>(null);
+  const [checkCount, setCheckCount] = useState<number | null>(null);
+  // 서버에서 원고를 고치면(바꾸기·확인 표시·장 퇴고) 편집 화면을 다시 불러온다
+  const [editorNonce, setEditorNonce] = useState(0);
+  const [locate, setLocate] = useState<{ sid: string; paragraph: number; text: string; nonce: number } | null>(null);
   const [err, setErr] = useState("");
   const cppRef = useRef(700);
 
@@ -67,17 +74,7 @@ export default function Workspace() {
   /* 번호 매기기 (앞붙이 → 본문 → 뒷붙이) */
   const chapters = useMemo(() => {
     if (!tree) return [];
-    const order = { front: 0, body: 1, back: 2 } as const;
-    const sorted = [...tree.chapters].sort((a, b) => order[a.kind] - order[b.kind] || a.order - b.order);
-    let n = 0;
-    return sorted.map((c) => {
-      const no = c.kind === "body" ? ++n : 0;
-      return {
-        ...c,
-        label: no ? chapterLabel(tree.layout.numberFormat, no) : "",
-        sections: c.sections.map((s, i) => ({ ...s, label: no ? sectionLabel(tree.layout.numberFormat, no, i + 1) : "" })),
-      };
-    });
+    return numberChapters(tree.chapters, tree.layout.numberFormat);
   }, [tree]);
 
   const flat = useMemo(() => chapters.flatMap((c) => c.sections.map((s) => ({ c, s }))), [chapters]);
@@ -148,8 +145,46 @@ export default function Workspace() {
     [id],
   );
 
-  const onSaved = useCallback(() => setMeasureKey((k) => k + 1), []);
+  /**
+   * 저장마다 책 전체를 다시 조판하지 않는다 — 마지막 조판 때보다 분량이 3%(최소 150자) 넘게 바뀌었을 때만 다시 잰다.
+   * 작은 변화는 절을 옮길 때 한 번에 반영한다.
+   */
+  const staleRef = useRef(false);
+  const infoRef = useRef<PagedInfo | null>(null);
+  infoRef.current = info;
+  const onSaved = useCallback((sid: string, chars: number) => {
+    const measured = infoRef.current?.sections[sid]?.chars;
+    if (measured === undefined || Math.abs(chars - measured) > Math.max(150, measured * 0.03)) {
+      staleRef.current = false;
+      setMeasureKey((k) => k + 1);
+    } else staleRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!staleRef.current) return;
+    staleRef.current = false;
+    setMeasureKey((k) => k + 1);
+  }, [current]);
   const onSaveState = useCallback((s: SaveState) => setSave(s), []);
+
+  useEffect(() => {
+    api<{ total: number }>(`/api/projects/${id}/checks`).then((r) => setCheckCount(r.total)).catch(() => {});
+  }, [id]);
+
+  /** 서버에서 절 본문을 고친 뒤 — 목차 글자 수·쪽 번호를 새로 받고, 여는 절이 바뀌었으면 다시 불러온다 */
+  const onServerEdited = useCallback(
+    (sectionIds?: string[]) => {
+      load();
+      setMeasureKey((k) => k + 1);
+      if (!sectionIds || (current && sectionIds.includes(current))) setEditorNonce((n) => n + 1);
+    },
+    [load, current],
+  );
+
+  const gotoText = useCallback((sid: string, paragraph: number, text: string) => {
+    setView("edit");
+    setCurrent(sid);
+    setLocate({ sid, paragraph, text, nonce: Date.now() });
+  }, []);
 
   if (err) return <div className="p-10 text-red-600">{err}</div>;
   if (!tree) return <div className="p-10 text-stone-400">불러오는 중…</div>;
@@ -213,6 +248,13 @@ export default function Workspace() {
             펼침면 미리보기
           </button>
         </div>
+        <button
+          className={`btn ${checkCount ? "border-red-300 text-red-100" : ""}`}
+          onClick={() => setDialog({ kind: "checks" })}
+          title="AI가 남긴 [확인 필요]·[이미지 제안] 표시를 모아 처리합니다"
+        >
+          확인할 것{checkCount ? ` ${checkCount}` : ""}
+        </button>
         <button className="btn" onClick={async () => {
           if (!await flushAllPending()) return alert("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
           setExportOpen(true);
@@ -232,17 +274,17 @@ export default function Workspace() {
           cpp={tree.charsPerPage}
           info={info}
           targetPages={tree.targetPages}
-          onSelect={(sid) => {
-            setCurrent(sid);
-            if (view === "preview") setPreviewKey((k) => k + 1);
-          }}
+          onSelect={setCurrent}
           onOp={onOp}
         />
         {view === "preview" ? (
           <PreviewPane projectId={id} focus={current} reloadKey={previewKey} onInfo={onInfo} />
         ) : cur ? (
           <SectionEditor
-            key={cur.s.id}
+            key={`${cur.s.id}:${editorNonce}`}
+            locate={locate?.sid === cur.s.id ? locate : null}
+            onServerEdited={() => onServerEdited()}
+            onBookSearch={(q) => setDialog({ kind: "search", q })}
             project={tree}
             chapter={cur.c}
             section={cur.s}
@@ -284,6 +326,32 @@ export default function Workspace() {
         )}
       </div>
       {view === "edit" && <Paginator projectId={id} trigger={measureKey} onInfo={onInfo} />}
+      {dialog?.kind === "search" && (
+        <BookSearchDialog
+          projectId={id}
+          initialQuery={dialog.q}
+          onClose={() => setDialog(null)}
+          onGoto={(sid, p, t) => {
+            setDialog(null);
+            gotoText(sid, p, t);
+          }}
+          beforeEdit={flushAllPending}
+          onEdited={onServerEdited}
+        />
+      )}
+      {dialog?.kind === "checks" && (
+        <ChecksDialog
+          projectId={id}
+          onClose={() => setDialog(null)}
+          onGoto={(sid, p, t) => {
+            setDialog(null);
+            gotoText(sid, p, t);
+          }}
+          beforeEdit={flushAllPending}
+          onEdited={onServerEdited}
+          onCount={setCheckCount}
+        />
+      )}
       {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} />}
     </div>
   );

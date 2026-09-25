@@ -76,4 +76,7 @@ export class AutosaveQueue {
   }
 
   stopTimer() { clearTimeout(this.timer); }
+
+  /** 보낼 것도, 보는 편집기도 없으면 버려도 된다 */
+  idle() { return !this.draft && !this.running && this.listeners.size === 0; }
 }

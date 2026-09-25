@@ -17,16 +17,17 @@ export default function PreviewPane({ projectId, focus, reloadKey, onInfo }: { p
 
   const src = useMemo(() => {
     const q = new URLSearchParams({ mode: "preview", view, gTrim: guides.trim ? "1" : "0", gSafe: guides.safe ? "1" : "0", gBody: guides.body ? "1" : "0" });
-    if (focus) q.set("focus", focus);
     q.set("t", String(reloadKey + nonce));
     return `/book/${projectId}?${q}`;
-    // 가이드·보기 변경은 postMessage로 처리하므로 초기값만 URL에 반영
+    // 가이드·보기·선택 절 변경은 postMessage로 처리하므로 초기값만 URL에 반영 (목차 클릭에 다시 조판하지 않는다)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, focus, reloadKey, nonce]);
+  }, [projectId, reloadKey, nonce]);
 
   useEffect(() => setLoading(true), [src]);
 
   const post = (m: object) => ref.current?.contentWindow?.postMessage(m, location.origin);
+  const focusRef = useRef(focus);
+  focusRef.current = focus;
 
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -35,15 +36,24 @@ export default function PreviewPane({ projectId, focus, reloadKey, onInfo }: { p
       onInfo(e.data.info);
       setLoading(false);
       post({ type: "zoom", z: zoom });
-      if (focus && e.data.info.sections[focus]) {
-        const idx = e.data.info.sections[focus].startIdx;
-        setSpread(Math.floor(idx / 2));
+      const f = focusRef.current;
+      if (f && e.data.info.sections[f]) {
+        post({ type: "focus", sid: f });
+        setSpread(Math.floor(e.data.info.sections[f].startIdx / 2));
       }
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus, zoom]);
+  }, [zoom]);
+
+  // 목차에서 다른 절을 고르면 이미 조판된 쪽에서 그 절로 옮겨 간다
+  useEffect(() => {
+    if (!focus || !info?.sections[focus]) return;
+    post({ type: "focus", sid: focus });
+    setSpread(Math.floor(info.sections[focus].startIdx / 2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
 
   useEffect(() => post({ type: "zoom", z: zoom }), [zoom]);
   useEffect(() => post({ type: "guides", ...guides }), [guides]);

@@ -354,24 +354,29 @@ window.__afterPaged = function () {
     if (pn && s && s.start > 0) pn.textContent = s.start;
   });
 
-  if (C.focus) {
-    const s = info.sections[C.focus];
-    if (s) {
-      for (let k = s.startIdx - 1; k <= s.endIdx - 1; k++) pages[k] && pages[k].classList.add('focus');
-      setTimeout(() => pages[s.startIdx - 1] && pages[s.startIdx - 1].scrollIntoView({ block: 'start' }), 50);
-    }
-  }
+  if (C.focus) setTimeout(() => focusSection(C.focus, false), 50);
 
   window.__PAGED_INFO = info;
   window.__PAGED_DONE = true;
   if (window.parent !== window) window.parent.postMessage({ type: 'paged', mode: C.mode, info }, location.origin);
 };
 
+/** 절 쪽 강조 + 그 절 첫 쪽으로 이동 (다시 조판하지 않고 목차 선택을 따라간다) */
+function focusSection(sid, smooth) {
+  const s = window.__PAGED_INFO && window.__PAGED_INFO.sections[sid];
+  const pages = [...document.querySelectorAll('.pagedjs_page')];
+  pages.forEach((p) => p.classList.remove('focus'));
+  if (!s) return;
+  for (let k = s.startIdx - 1; k <= s.endIdx - 1; k++) pages[k] && pages[k].classList.add('focus');
+  pages[s.startIdx - 1] && pages[s.startIdx - 1].scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
+}
+
 window.addEventListener('message', (e) => {
   if (e.origin !== location.origin) return;
   const m = e.data || {};
   const pages = [...document.querySelectorAll('.pagedjs_page')];
   if (m.type === 'goto' && pages[m.index]) pages[m.index].scrollIntoView({ block: 'start', behavior: 'smooth' });
+  if (m.type === 'focus') focusSection(m.sid, true);
   if (m.type === 'guides') ['trim', 'safe', 'body'].forEach((k) => document.body.classList.toggle('g-' + k, !!m[k]));
   if (m.type === 'zoom') document.body.style.zoom = m.z;
   if (m.type === 'view') document.body.classList.toggle('single', m.view === 'single');

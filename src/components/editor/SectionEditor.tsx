@@ -1,7 +1,7 @@
 "use client";
 
 import Placeholder from "@tiptap/extension-placeholder";
-import { NodeSelection } from "@tiptap/pm/state";
+import { NodeSelection, type Transaction } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,12 +25,15 @@ import { Figure } from "./Figure";
 import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
 import ProofPanel, { type AppliedChange } from "./ProofPanel";
-import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock } from "./pmOps";
+import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, textblockAt } from "./pmOps";
 import { recoverPending, settleSection, useAutosave, type SaveState } from "./useAutosave";
 import VersionsPanel from "./VersionsPanel";
 import FindPanel from "./FindPanel";
 import BatchWriteDialog, { BATCH_MAX, type BatchItem, type SectionRef } from "./BatchWriteDialog";
 import WritingOverlay from "./WritingOverlay";
+import ChapterReviseDialog from "./ChapterReviseDialog";
+import FootnotePopover from "./FootnotePopover";
+import ToolGroup from "./ToolGroup";
 
 type Props = {
   project: ProjectTree;
@@ -38,7 +41,7 @@ type Props = {
   section: TreeSection & { label: string };
   pageInfo?: SectionPageInfo;
   onMeta: (patch: Partial<TreeSection>) => void;
-  onSaved: () => void;
+  onSaved: (sectionId: string, chars: number) => void;
   onRename: (title: string) => void;
   onRenameChapter: (title: string) => void;
   onTargetPages: (n: number) => void;
@@ -46,6 +49,12 @@ type Props = {
   onLayout: (patch: Partial<LayoutSettings>) => void;
   allSections: SectionRef[];
   onTreeChanged: () => void;
+  /** 서버에서 절 본문을 고친 뒤(장 퇴고 등) 편집 화면을 다시 불러온다 */
+  onServerEdited: () => void;
+  /** 책 전체 찾기 창 열기 */
+  onBookSearch: (query: string) => void;
+  /** 이 위치로 이동해 선택 (확인 표시·검색 결과에서) — nonce가 바뀔 때마다 */
+  locate?: { paragraph: number; text: string; nonce: number } | null;
 };
 
 type Loaded = { content: string; sketch: string; status: string; updatedAt: string; recovered: boolean };
@@ -57,7 +66,7 @@ export default function SectionEditor(props: Props) {
     let alive = true;
     settleSection(props.section.id).then(() => api(`/api/sections/${props.section.id}`))
       .then(async (s) => {
-        const rec = await recoverPending(props.section.id, s.updatedAt);
+        const rec = await recoverPending(props.section.id);
         if (!alive) return;
         setData({
           content: rec?.content ?? s.content,
@@ -77,7 +86,7 @@ export default function SectionEditor(props: Props) {
   return <EditorCore {...props} data={data} />;
 }
 
-function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onSaveState, onLayout, allSections, onTreeChanged, data }: Props & { data: Loaded }) {
+function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onSaveState, onLayout, allSections, onTreeChanged, onServerEdited, onBookSearch, locate, data }: Props & { data: Loaded }) {
   const cpp = project.charsPerPage || 700;
   const [sketch, setSketch] = useState(data.sketch);
   const [sketchOpen, setSketchOpen] = useState(!data.content || isDocEmpty(parseDoc(data.content)));
@@ -90,6 +99,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [streaming, setStreaming] = useState<string | null>(null);
   const [modeAsk, setModeAsk] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const revisedRef = useRef(false);
   const [batchStep, setBatchStep] = useState<{ i: number; n: number; label: string } | null>(null);
   const [live, setLive] = useState<{ text: string; chars: number; target: number } | null>(null);
   const [candidate, setCandidate] = useState<string | null>(null);
@@ -122,10 +133,42 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const sketchRef = useRef(sketch);
   sketchRef.current = sketch;
 
-  const { state: saveState, markDirty, flush } = useAutosave(section.id, (r) => {
+  const { state: saveState, markDirty, flush: flushQueue } = useAutosave(section.id, (r) => {
     onMeta({ charCount: r.charCount, status: r.status, updatedAt: r.updatedAt });
-    onSaved();
+    onSaved(section.id, r.charCount);
   });
+  /**
+   * 입력마다 문서 전체를 JSON으로 바꾸고 글자를 세면 긴 절에서 타자가 무거워진다 → 입력이 250ms 멈추면 한 번에 한다.
+   * 저장·AI 작업 전에는 commitEdit()으로 밀린 입력을 먼저 반영한다.
+   */
+  const editTimer = useRef<number | undefined>(undefined);
+  const editorRef = useRef<Editor | null>(null);
+  const commitEdit = useCallback(() => {
+    if (editTimer.current === undefined) return;
+    window.clearTimeout(editTimer.current);
+    editTimer.current = undefined;
+    const ed = editorRef.current;
+    if (!ed || ed.isDestroyed || streamingRef.current) return;
+    const doc = ed.getJSON() as JNode;
+    const st = isDocEmpty(doc) ? (sketchRef.current.trim() ? "sketch" : "empty") : "editing";
+    setStatus(st);
+    setCounts({ chars: charCount(doc), noSpace: charCountNoSpace(doc) });
+    markDirty({ content: JSON.stringify(doc), status: st });
+  }, [markDirty]);
+  const flush = useCallback(() => {
+    commitEdit();
+    return flushQueue();
+  }, [commitEdit, flushQueue]);
+  useEffect(() => {
+    const hide = () => document.visibilityState === "hidden" && commitEdit();
+    window.addEventListener("pagehide", commitEdit);
+    document.addEventListener("visibilitychange", hide);
+    return () => {
+      window.removeEventListener("pagehide", commitEdit);
+      document.removeEventListener("visibilitychange", hide);
+      commitEdit(); // 절을 옮겨도 밀린 입력을 저장 큐에 넣는다
+    };
+  }, [commitEdit]);
   useEffect(() => onSaveState(saveState), [saveState, onSaveState]);
   useEffect(() => {
     if (data.recovered) markDirty({ content: data.content, sketch: data.sketch, status: data.status });
@@ -187,11 +230,9 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     },
     onUpdate: ({ editor }) => {
       if (streamingRef.current) return;
-      const doc = editor.getJSON() as JNode;
-      const st = statusFor(doc);
-      setStatus(st);
-      setCounts({ chars: charCount(doc), noSpace: charCountNoSpace(doc) });
-      markDirty({ content: JSON.stringify(doc), status: st });
+      editorRef.current = editor;
+      window.clearTimeout(editTimer.current);
+      editTimer.current = window.setTimeout(commitEdit, 250);
     },
     onSelectionUpdate: ({ editor }) => {
       updateCaretPage(editor);
@@ -203,6 +244,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       else updateFloating(editor);
     },
   });
+
+  editorRef.current = editor;
 
   /* ---------- 쪽 나눔 (실제 조판처럼 쪽마다 끊고 사이를 띄운다) ---------- */
   const margins = project.layout.margins;
@@ -228,12 +271,23 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     [pageInfo, pageNo],
   );
 
+  // 마지막 쪽 계산 뒤 처음 바뀐 문서 위치 (null = 처음부터 다시 — 글자 크기·확대·쪽 번호가 바뀐 경우)
+  const dirtyFrom = useRef<number | null>(null);
   const runPaginate = useCallback(() => {
     if (!editor || editor.isDestroyed || !sheetRef.current || !scrollRef.current || !contentRef.current) return false;
     if (editor.view.composing) return false; // 한글 조합 중에는 건드리지 않는다
     const sc = scrollRef.current;
     const keep = sc.scrollTop;
-    const r = paginate(editor.view, { sheet: sheetRef.current, measureHost: contentRef.current, geom, docWidthMm: DOC.width, leadMm, label: pageLabel });
+    const r = paginate(editor.view, {
+      sheet: sheetRef.current,
+      measureHost: contentRef.current,
+      geom,
+      docWidthMm: DOC.width,
+      leadMm,
+      label: pageLabel,
+      dirtyFrom: dirtyFrom.current,
+    });
+    dirtyFrom.current = null;
     sc.scrollTop = keep;
     setPg(r);
     updateCaretPage(editor);
@@ -244,14 +298,16 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const pgTimer = useRef<number | undefined>(undefined);
   const pgSince = useRef(0);
   const schedulePaginate = useCallback(
-    (delay = 250) => {
+    (delay = 250, changedAt?: number) => {
+      // 문서 편집이면 바뀐 자리부터, 그 밖(설정·확대·글꼴)은 처음부터
+      dirtyFrom.current = changedAt === undefined ? 0 : dirtyFrom.current === null ? changedAt : Math.min(dirtyFrom.current, changedAt);
       const now = Date.now();
       if (!pgSince.current) pgSince.current = now;
       window.clearTimeout(pgTimer.current);
       const wait = Math.max(0, Math.min(delay, pgSince.current + 1200 - now)); // 계속 바뀌어도 1.2초마다는 다시 잰다
       pgTimer.current = window.setTimeout(() => {
         if (runPaginate()) pgSince.current = 0;
-        else pgTimer.current = window.setTimeout(() => schedulePaginate(400), 400);
+        else pgTimer.current = window.setTimeout(() => schedulePaginate(400, dirtyFrom.current ?? 0), 400);
       }, wait);
     },
     [runPaginate],
@@ -259,12 +315,16 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   useEffect(() => {
     if (!editor) return;
-    const onTr = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+    const onTr = ({ transaction }: { transaction: Transaction }) => {
       if (!transaction.docChanged) return;
       setDocTick((t) => t + 1);
-      schedulePaginate();
+      // 이전에 기록한 위치를 이번 변경에 맞춰 옮기고, 이번에 바뀐 가장 앞 위치와 비교한다
+      if (dirtyFrom.current) dirtyFrom.current = transaction.mapping.map(dirtyFrom.current, -1);
+      let at = Infinity;
+      transaction.mapping.maps.forEach((m, i) => m.forEach((_a, _b, start) => (at = Math.min(at, transaction.mapping.slice(i + 1).map(start, -1)))));
+      schedulePaginate(250, Number.isFinite(at) ? at : 0);
     };
-    const onCompEnd = () => schedulePaginate(150);
+    const onCompEnd = () => schedulePaginate(150, dirtyFrom.current ?? editor.state.selection.from);
     editor.on("transaction", onTr);
     editor.view.dom.addEventListener("compositionend", onCompEnd);
     schedulePaginate(0);
@@ -281,6 +341,19 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   }, [editor, schedulePaginate]);
   const { bodySizePt, lineHeight, paraSpacingMm } = project.layout;
   useEffect(() => schedulePaginate(0), [zoom, schedulePaginate, bodySizePt, lineHeight, paraSpacingMm]);
+
+  // 확인 표시·책 전체 검색에서 고른 자리로 이동
+  useEffect(() => {
+    if (!editor || !locate) return;
+    const t = window.setTimeout(() => {
+      if (editor.isDestroyed) return;
+      if (!selectInBlock(editor, locate.paragraph, locate.text)) {
+        const r = findInBlock(editor, locate.paragraph, locate.text);
+        if (r === "many") editor.chain().focus().setTextSelection(textblockStart(editor, locate.paragraph)).scrollIntoView().run();
+      }
+    }, 120);
+    return () => window.clearTimeout(t);
+  }, [editor, locate]);
 
   function updateCaretPage(ed: Editor) {
     if (!contentRef.current || ed.isDestroyed) return;
@@ -334,16 +407,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (ed.isDestroyed) return;
     const sel = ed.state.selection;
     setSelEmpty(sel.empty);
+    // 값이 같으면 이전 객체를 그대로 둔다 — 커서만 움직일 때 편집기 전체가 다시 그려지지 않게
     if (sel instanceof NodeSelection && sel.node.type.name === "footnote") {
       const c = ed.view.coordsAtPos(sel.from);
-      setFnEdit({ pos: sel.from, x: c.left, y: c.bottom });
+      setFnEdit((f) => (f && f.pos === sel.from && f.x === c.left && f.y === c.bottom ? f : { pos: sel.from, x: c.left, y: c.bottom }));
       setBubble(null);
       return;
     }
     if (ed.view.hasFocus()) setFnEdit(null);
     if (!sel.empty && ed.isEditable && !(sel instanceof NodeSelection)) {
       const a = ed.view.coordsAtPos(sel.from);
-      setBubble({ x: a.left, y: a.top });
+      setBubble((b) => (b && b.x === a.left && b.y === a.top ? b : { x: a.left, y: a.top }));
     } else setBubble(null);
   }
 
@@ -362,6 +436,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const commitDoc = useCallback(
     async (st: string) => {
       if (!editor) return;
+      window.clearTimeout(editTimer.current);
+      editTimer.current = undefined;
       const doc = editor.getJSON() as JNode;
       setStatus(st);
       setCounts({ chars: charCount(doc), noSpace: charCountNoSpace(doc) });
@@ -383,6 +459,37 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
    * AI 스트리밍 집필. 집필 중에는 편집 화면을 건드리지 않고(흔들림 방지) 가운데 진행 창에만 흐름을 보여 주다가,
    * 다 쓰면 한 번에 본문에 넣는다. 새 버전 비교(newVersion)는 오른쪽 패널에 흘려 보여 준다.
    */
+  /** 집필 스트림을 읽어 마크다운을 모은다. 한도(truncated)·시간(partial)으로 끊기면 알림을 띄운다. */
+  async function readWrite(url: string, body: object, signal: AbortSignal, onText: (md: string) => void, onStatus: (v: string) => void) {
+    let md = "";
+    let last = 0;
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+    await readStream(res, (e) => {
+      if (e.t === "status" && e.v === "truncated") {
+        setNotice("AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다.");
+        return;
+      }
+      if (e.t === "status" && e.v === "partial") {
+        setNotice("긴 절이라 한 번에 쓸 수 있는 시간(약 5분)을 넘겨 앞부분까지만 썼습니다. [집필하기 → 뒤에 이어쓰기]로 나머지를 이어 쓰세요.");
+        return;
+      }
+      if (e.t === "status") onStatus(e.v ?? "");
+      if (e.t === "delta") {
+        md += e.v ?? "";
+        if (Date.now() - last > 250) {
+          last = Date.now();
+          onText(md);
+        }
+      }
+      if (e.t === "error") throw new Error(e.v);
+    });
+    return md;
+  }
+
+  /** AI가 쓴 초안 원본을 남긴다 — 작가 수정률과 [작가 수정에서 문체 배우기]의 기준 */
+  const recordAiOutput = (sectionId: string, content: string) =>
+    api(`/api/sections/${sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
+
   async function runStream(url: string, body: object, mode: "overwrite" | "continue" | "newVersion" | "adjust", outer?: AbortController) {
     if (!editor) return;
     if (!await flush()) return alert("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
@@ -397,37 +504,29 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     setLengthHint(null);
     setSketchOpen(false);
     let md = "";
-    let last = 0;
     const docOf = () => (mode === "continue" ? appendDocs(base, markdownToDoc(md, figures)) : markdownToDoc(md, figures));
-    const progress = () => {
-      if (mode === "newVersion") return setCandidate(md);
-      setLive((l) => (l ? { ...l, text: md.slice(-600), chars: charCount(markdownToDoc(md)) } : l));
-    };
     try {
-      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
-      await readStream(res, (e) => {
-        if (e.t === "status" && e.v === "truncated") {
-          setNotice("AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다.");
-          return;
-        }
-        if (e.t === "status") setStreaming(e.v ?? "");
-        if (e.t === "delta") {
-          if (!md) setStreaming((s) => (s && s.startsWith("구상") ? "집필 중…" : s));
-          md += e.v ?? "";
-          if (Date.now() - last > 250) {
-            last = Date.now();
-            progress();
-          }
-        }
-        if (e.t === "error") throw new Error(e.v);
-      });
+      md = await readWrite(
+        url,
+        body,
+        ctrl.signal,
+        (text) => {
+          md = text;
+          setStreaming((s) => (s && s.startsWith("구상") ? "집필 중…" : s));
+          if (mode === "newVersion") return setCandidate(text);
+          setLive((l) => (l ? { ...l, text: text.slice(-600), chars: charCount(markdownToDoc(text)) } : l));
+        },
+        (v) => setStreaming(v),
+      );
     } catch (e: any) {
       if (!ctrl.signal.aborted) alert("AI 오류: " + e.message);
     } finally {
       if (editor.isDestroyed) {
         if (mode !== "newVersion" && md.trim()) {
-          markDirty({ content: JSON.stringify(docOf()), status: "ai_draft" });
+          const content = JSON.stringify(docOf());
+          markDirty({ content, status: "ai_draft" });
           await flush();
+          recordAiOutput(section.id, content);
         }
         return;
       }
@@ -448,6 +547,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       if (!outer) abortRef.current = null;
       if (mode !== "newVersion" && md.trim()) {
         await commitDoc("ai_draft");
+        recordAiOutput(section.id, JSON.stringify(editor.getJSON()));
         setVersionKey((k) => k + 1);
         checkLength(charCount(editor.getJSON() as JNode));
         fetch(`/api/sections/${section.id}/summarize`, { method: "POST" }).catch(() => {});
@@ -460,31 +560,24 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     setStreaming("준비 중…");
     setLive({ text: "", chars: 0, target: Math.round(it.targetPages * cpp) });
     let md = "";
-    let last = 0;
     try {
-      const res = await fetch(`/api/sections/${it.id}/write`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetPages: it.targetPages, mode: "overwrite", extraInstruction: extra }),
-        signal: ctrl.signal,
-      });
-      await readStream(res, (e) => {
-        if (e.t === "status" && e.v === "truncated") return;
-        if (e.t === "status") setStreaming(e.v ?? "");
-        if (e.t === "delta") {
-          md += e.v ?? "";
-          if (Date.now() - last > 250) {
-            last = Date.now();
-            setLive((l) => (l ? { ...l, text: md.slice(-600), chars: charCount(markdownToDoc(md)) } : l));
-          }
-        }
-        if (e.t === "error") throw new Error(e.v);
-      });
+      md = await readWrite(
+        `/api/sections/${it.id}/write`,
+        { targetPages: it.targetPages, mode: "overwrite", extraInstruction: extra },
+        ctrl.signal,
+        (text) => {
+          md = text;
+          setLive((l) => (l ? { ...l, text: text.slice(-600), chars: charCount(markdownToDoc(text)) } : l));
+        },
+        (v) => setStreaming(v),
+      );
     } catch (e) {
       if (!ctrl.signal.aborted) throw e; // 중지했으면 쓴 데까지 저장
     }
     if (!md.trim()) return;
-    await api(`/api/sections/${it.id}`, { method: "PUT", json: { content: JSON.stringify(markdownToDoc(md)), status: "ai_draft" } });
+    const content = JSON.stringify(markdownToDoc(md));
+    await api(`/api/sections/${it.id}`, { method: "PUT", json: { content, status: "ai_draft" } });
+    recordAiOutput(it.id, content);
     fetch(`/api/sections/${it.id}/summarize`, { method: "POST" }).catch(() => {});
   }
 
@@ -557,6 +650,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     setDoc(markdownToDoc(candidate), true);
     setCandidate(null);
     await commitDoc("ai_draft");
+    recordAiOutput(section.id, JSON.stringify(editor.getJSON()));
     setVersionKey((k) => k + 1);
     checkLength(charCount(editor.getJSON() as JNode));
     fetch(`/api/sections/${section.id}/summarize`, { method: "POST" }).catch(() => {});
@@ -887,6 +981,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           <button className="btn" disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy} onClick={runProofread}>
             {proofBusy ? "교정 중…" : "교정·교열"}
           </button>
+          <button
+            className="btn"
+            disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy}
+            onClick={async () => {
+              if (!(await flush())) return alert("원고 저장을 완료한 뒤 다시 시도하세요.");
+              setReviseOpen(true);
+            }}
+            title="이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
+          >
+            장 퇴고
+          </button>
           {streaming ? (
             <button className="btn-primary bg-red-700 hover:bg-red-800" onClick={() => abortRef.current?.abort()}>
               ■ 중지
@@ -1013,7 +1118,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                   {tb("직접 각주", () => addFootnote(false), false, "선택한 단어(또는 커서 위치)에 각주를 달고 내용을 직접 입력합니다")}
                   {tb(fnBusy === "auto" ? "찾는 중…" : "자동 각주", autoFootnote, false, "AI가 이 절의 중요 키워드를 골라 각주를 답니다")}
                 </ToolGroup>
-                <FindPanel editor={editor} />
+                <FindPanel editor={editor} onBookSearch={onBookSearch} disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy} />
               </div>
             </>
           )}
@@ -1329,6 +1434,22 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         </div>
       </aside>
 
+      {reviseOpen && (
+        <ChapterReviseDialog
+          chapterId={chapter.id}
+          chapterName={`${chapter.label} ${chapter.title}`.trim()}
+          beforeRun={flush}
+          onApplied={(ids) => {
+            if (ids.length) revisedRef.current = true;
+          }}
+          onClose={() => {
+            setReviseOpen(false);
+            // 서버에서 고친 원고를 다시 불러온다 (창을 닫을 때 — 적용 결과 안내를 읽을 수 있게)
+            if (revisedRef.current) onServerEdited();
+          }}
+        />
+      )}
+
       {batchOpen && (
         <BatchWriteDialog
           sections={allSections}
@@ -1380,58 +1501,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   );
 }
 
-function FootnotePopover(props: {
-  x: number;
-  y: number;
-  number: number;
-  attrs: FootnoteAttrs;
-  busy: boolean;
-  onChange: (v: string) => void;
-  onRegen: () => void;
-  onDelete: () => void;
-  onClose: () => void;
-}) {
-  const { attrs } = props;
-  const left = Math.min(Math.max(8, props.x - 150), (typeof window !== "undefined" ? window.innerWidth : 1200) - 330);
-  const top = Math.min(props.y + 8, (typeof window !== "undefined" ? window.innerHeight : 800) - 230);
-  return (
-    <div data-fn-ui className="fixed z-50 w-80 rounded-lg border border-stone-200 bg-white p-3 font-sans shadow-2xl" style={{ left, top }}>
-      <div className="mb-1.5 flex items-center gap-1.5 text-xs">
-        <b className={attrs.auto ? "text-violet-700" : "text-amber-700"}>각주 {props.number > 0 ? props.number : ""})</b>
-        <span className="min-w-0 flex-1 truncate text-stone-600">{attrs.term}</span>
-        {attrs.auto && <span className="rounded bg-violet-100 px-1 text-[10px] text-violet-700">AI</span>}
-        <button className="px-1 text-stone-400 hover:text-stone-700" onClick={props.onClose} title="닫기 (Esc)">
-          ✕
-        </button>
-      </div>
-      <textarea
-        autoFocus={!attrs.note}
-        className="input min-h-[84px] resize-y p-2 text-xs leading-5"
-        placeholder="각주 내용을 입력하세요 (쪽 아래에 인쇄됩니다)"
-        value={attrs.note}
-        onChange={(e) => props.onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") props.onClose();
-        }}
-      />
-      <div className="mt-2 flex items-center gap-2 text-xs">
-        <button className="btn px-2 py-1 text-xs" disabled={props.busy} onClick={props.onRegen}>
-          {props.busy ? "쓰는 중…" : attrs.note ? "✦ AI로 다시 쓰기" : "✦ AI로 쓰기"}
-        </button>
-        <button className="ml-auto text-red-600 hover:underline" onClick={props.onDelete}>
-          각주 삭제
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** 도구줄 기능 묶음 — 왼쪽 색 이름표 + 칸막이로 나눈 버튼들 */
-function ToolGroup({ label, tone, title, children }: { label: string; tone: string; title?: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-stretch overflow-hidden rounded-md border border-stone-300 bg-white shadow-sm" title={title}>
-      <span className={`flex items-center px-1.5 text-[11px] font-semibold tracking-tight text-white ${tone}`}>{label}</span>
-      <div className="flex items-center divide-x divide-stone-200">{children}</div>
-    </div>
-  );
+/** n번째 텍스트 블록 첫 글자 위치 (같은 말이 여러 번 나올 때는 문단 처음으로 간다) */
+function textblockStart(editor: Editor, index: number) {
+  const b = textblockAt(editor.state.doc, index);
+  return b ? b.pos + 1 : 0;
 }

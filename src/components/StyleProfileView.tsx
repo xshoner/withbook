@@ -12,6 +12,7 @@ const LISTS: [string, string][] = [
   ["tone", "어조"],
   ["devices", "자주 쓰는 장치"],
   ["signaturePhrases", "자주 쓰는 표현"],
+  ["prefer", "작가가 고쳐 쓰는 방식 (수정에서 배움)"],
   ["avoid", "쓰지 않는 것"],
   ["sampleExcerpts", "문체 참고 발췌"],
 ];

@@ -123,6 +123,7 @@ function StyleTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m:
           <p className="text-sm text-stone-500">아직 문체 프로필이 없습니다. 아래에서 학습하세요.</p>
         )}
       </div>
+      <EditLearnCard p={p} reload={reload} flash={flash} />
       <div className="card space-y-4 p-6">
         <h2 className="font-semibold">문체 다시 학습</h2>
         <button className="btn" disabled={!!busy} onClick={() => run("global")}>
@@ -362,6 +363,137 @@ function GlossaryTab({ id }: { id: string }) {
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+type Learned = { observations: string[]; avoid: string[]; prefer: string[]; signaturePhrases: string[]; sampleExcerpts: string[]; pairs: number; editRate: number | null };
+type EditStats = { overall: number | null; sections: { sectionId: string; title: string; rate: number; aiChars: number }[] };
+
+const LEARN_KEYS: [keyof Learned & string, string][] = [
+  ["avoid", "앞으로 쓰지 않을 것"],
+  ["prefer", "작가가 고쳐 쓰는 방식 (따를 것)"],
+  ["signaturePhrases", "새로 발견한 고유 표현"],
+  ["sampleExcerpts", "문체 참고 발췌로 추가"],
+];
+
+/** 작가 수정에서 배우기 — AI 초안 원본과 작가가 고친 지금 원고를 비교해 문체 프로필에 더할 규칙을 제안 */
+function EditLearnCard({ p, reload, flash }: { p: any; reload: () => void; flash: (m: string) => void }) {
+  const [stats, setStats] = useState<EditStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [learned, setLearned] = useState<Learned | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    api<EditStats>(`/api/projects/${p.id}/edit-stats`).then(setStats).catch(() => {});
+  }, [p.id]);
+
+  const learn = async () => {
+    setBusy(true);
+    try {
+      const r = await api<Learned>(`/api/projects/${p.id}/style/learn`, { method: "POST" });
+      setLearned(r);
+      setPicked(new Set(LEARN_KEYS.flatMap(([k]) => (r[k] as string[]).map((_, i) => `${k}:${i}`))));
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = async () => {
+    if (!learned) return;
+    const cur = p.styleProfile ? JSON.parse(p.styleProfile) : {};
+    const next = { ...cur };
+    for (const [k] of LEARN_KEYS) {
+      const add = (learned[k] as string[]).filter((_, i) => picked.has(`${k}:${i}`));
+      if (!add.length) continue;
+      const base: string[] = Array.isArray(cur[k]) ? cur[k] : [];
+      const merged = [...base, ...add.filter((x) => !base.includes(x))];
+      // 발췌는 프롬프트에 앞 3개만 들어가므로 새 것을 앞에 둔다
+      next[k] = k === "sampleExcerpts" ? [...add, ...base.filter((x) => !add.includes(x))].slice(0, 6) : merged.slice(-20);
+    }
+    await api(`/api/projects/${p.id}`, { method: "PATCH", json: { styleProfile: next } });
+    setLearned(null);
+    await reload();
+    flash("문체 프로필에 반영했습니다. 다음 집필부터 적용됩니다.");
+  };
+
+  const top = stats?.sections.filter((s) => s.rate > 0).sort((a, b) => b.rate - a.rate).slice(0, 5) ?? [];
+  return (
+    <div className="card space-y-3 p-6">
+      <h2 className="font-semibold">작가 수정에서 배우기</h2>
+      <p className="text-xs leading-5 text-stone-500">
+        AI가 쓴 초안 원본과 작가가 직접 고친 지금 원고를 문장 단위로 비교합니다. 자주 고치는 표현을 찾아 문체 프로필에 더하면 다음 초안부터 덜 고쳐도 됩니다.
+      </p>
+      {stats && (
+        <div className="rounded-lg bg-stone-50 p-3 text-sm">
+          {stats.overall === null ? (
+            <span className="text-stone-500">아직 비교할 AI 초안이 없습니다. (이 기능 이후 AI로 집필한 절부터 기록됩니다)</span>
+          ) : (
+            <>
+              <div>
+                작가 수정률 <b className="text-lg">{stats.overall}%</b>
+                <span className="ml-2 text-xs text-stone-500">AI 초안 {stats.sections.length}개 절 기준 · 낮을수록 AI가 작가처럼 쓰고 있다는 뜻</span>
+              </div>
+              {top.length > 0 && (
+                <ul className="mt-1 text-xs text-stone-600">
+                  {top.map((s) => (
+                    <li key={s.sectionId}>
+                      {s.title} — {s.rate}%
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      <button className="btn-accent" disabled={busy || !stats?.overall} onClick={learn}>
+        {busy ? "수정 패턴 분석 중… (1분 안팎)" : "수정 패턴 분석하기"}
+      </button>
+      {learned && (
+        <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-4 text-sm">
+          <div className="text-xs text-stone-500">수정한 문장 {learned.pairs}쌍을 분석했습니다. 반영할 항목을 고르세요.</div>
+          {learned.observations.length > 0 && (
+            <ul className="list-disc pl-5 text-xs leading-5 text-stone-700">
+              {learned.observations.map((o, i) => (
+                <li key={i}>{o}</li>
+              ))}
+            </ul>
+          )}
+          {LEARN_KEYS.map(([k, label]) =>
+            (learned[k] as string[]).length ? (
+              <div key={k}>
+                <div className="mb-1 text-xs font-semibold text-stone-600">{label}</div>
+                {(learned[k] as string[]).map((x, i) => (
+                  <label key={i} className="flex items-start gap-2 py-0.5 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={picked.has(`${k}:${i}`)}
+                      onChange={(e) => {
+                        const n = new Set(picked);
+                        if (e.target.checked) n.add(`${k}:${i}`);
+                        else n.delete(`${k}:${i}`);
+                        setPicked(n);
+                      }}
+                    />
+                    <span className={k === "sampleExcerpts" ? "font-book text-[13px]" : ""}>{x}</span>
+                  </label>
+                ))}
+              </div>
+            ) : null,
+          )}
+          <div className="flex gap-2">
+            <button className="btn-primary" disabled={!picked.size} onClick={apply}>
+              고른 {picked.size}개를 프로필에 반영
+            </button>
+            <button className="btn" onClick={() => setLearned(null)}>
+              버리기
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

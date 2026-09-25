@@ -42,6 +42,8 @@ model TocReport {
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   json      String
   createdAt DateTime @default(now())
+
+  @@index([projectId])
 }
 
 model Chapter {
@@ -55,6 +57,8 @@ model Chapter {
   summary     String?
   summaryHash String?
   sections    Section[]
+
+  @@index([projectId, order])
 }
 
 model Section {
@@ -74,16 +78,20 @@ model Section {
   summaryHash String?
   updatedAt   DateTime  @updatedAt
   versions    Version[]
+
+  @@index([chapterId, order])
 }
 
 model Version {
   id        String   @id @default(cuid())
   sectionId String
   section   Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  reason    String // ai_write | proofread | manual | restore | length_adjust | rewrite
+  reason    String // autosave | manual | ai_write | proofread | restore | length_adjust | rewrite | footnote
   content   String
   charCount Int      @default(0)
   createdAt DateTime @default(now())
+
+  @@index([sectionId, createdAt])
 }
 
 model Asset {
@@ -96,6 +104,8 @@ model Asset {
   heightPx  Int
   path      String
   createdAt DateTime @default(now())
+
+  @@index([projectId])
 }
 
 model Glossary {
@@ -105,30 +115,40 @@ model Glossary {
   term      String
   preferred String
   note      String  @default("")
+
+  @@index([projectId])
 }
 
 model AiLog {
   id                  String   @id @default(cuid())
   projectId           String?
+  userId              String? // Supabase 계정 ID (로컬 모드·조판 브라우저는 비움)
   purpose             String
   promptTokens        Int      @default(0)
   completionTokens    Int      @default(0)
   cost                Float    @default(0)
   ms                  Int      @default(0)
-  status              String // ok | error | aborted
+  status              String // ok | truncated | error | aborted | deadline
   error               String?
   instructionIncluded Boolean  @default(false)
   createdAt           DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([userId, createdAt])
 }
 
-/** 앱 전역 설정 (AI 연결, instruction.md, 기본 문체 프로필 등) — key별 JSON 문자열 */
+/**
+ * 앱 전역 설정 (AI 연결, instruction.md, 기본 문체 프로필 등) — key별 JSON 문자열
+ */
 model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
 }
 
-/** 로그인 허용 사용자 (Supabase Auth 계정과 이메일로 연결). role: superadmin | editor */
+/**
+ * 로그인 허용 사용자 (Supabase Auth 계정과 이메일로 연결). role: superadmin | editor
+ */
 model AppUser {
   id        String   @id @default(cuid())
   email     String   @unique

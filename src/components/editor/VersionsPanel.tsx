@@ -13,6 +13,10 @@ const REASON: Record<string, string> = {
   length_adjust: "분량 조정 전",
   rewrite: "부분 수정 전",
   footnote: "자동 각주 전",
+  ai_output: "AI 초안 원본",
+  replace: "책 전체 바꾸기 전",
+  check: "확인 표시 처리 전",
+  chapter_revise: "장 퇴고 전",
 };
 
 type V = { id: string; reason: string; charCount: number; createdAt: string };

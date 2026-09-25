@@ -112,6 +112,7 @@ export const PageBreaks = Extension.create({
                 Decoration.widget(b.pos, () => gapDom(b, m.geom), {
                   side: -1,
                   ignoreSelection: true,
+                  brk: b,
                   key: `${b.id}:${b.kind}:${b.fill.toFixed(2)}:${b.indent}:${b.mb}:${b.foot}:${b.head}:${noteKey(b.notes)}`,
                 }),
               );
@@ -130,6 +131,16 @@ export const PageBreaks = Extension.create({
 
 function apply(view: EditorView, breaks: PageBreak[], geom: PageGeom) {
   view.dispatch(view.state.tr.setMeta(key, { breaks, geom }).setMeta("addToHistory", false));
+}
+
+/** 지금 붙어 있는 끊음 (편집으로 옮겨진 위치 반영, 문서 순서) */
+function currentBreaks(view: EditorView): PageBreak[] {
+  const set = key.getState(view.state)?.set;
+  if (!set) return [];
+  return set
+    .find()
+    .map((d) => ({ ...(d.spec.brk as PageBreak), pos: d.from }))
+    .sort((a, b) => a.pos - b.pos);
 }
 
 type Line = { top: number; bottom: number; mid: number };
@@ -164,7 +175,8 @@ function findCrossing(view: EditorView, from: number, pageTop: number, bottom: n
   let res: Crossing | null = null;
   let heading: { pos: number; top: number } | null = null; // 쪽 끝에 홀로 남을 소제목
   const EPS = 0.5;
-  view.state.doc.descendants((node, pos) => {
+  const doc = view.state.doc;
+  doc.nodesBetween(Math.min(from, doc.content.size), doc.content.size, (node, pos) => {
     if (res) return false;
     if (pos + node.nodeSize <= from) return false;
     if (node.isTextblock) {
@@ -232,7 +244,8 @@ function footnoteRefs(view: EditorView) {
 }
 
 /**
- * 쪽 나눔을 다시 계산한다. 모든 장식을 걷어낸 뒤 첫 쪽부터 차례로 끊는다(각 끊음마다 실제 배치를 다시 잰다).
+ * 쪽 나눔을 다시 계산한다. 첫 쪽부터 차례로 끊는다(각 끊음마다 실제 배치를 다시 잰다).
+ * dirtyFrom을 주면 그 자리가 든 블록보다 앞의 끊음은 그대로 두고(한 쪽 여유), 그 뒤부터만 다시 끊는다 — 긴 절에서 입력이 무거워지지 않게.
  * 쪽마다 그 쪽에 번호가 있는 각주의 높이만큼 본문 영역을 줄인다.
  * leadMm: 첫 쪽에서 앞 내용이 차지하는 높이, measureHost: 각주 높이를 잴 본문 폭 요소
  */
@@ -245,10 +258,20 @@ export function paginate(
     docWidthMm: number;
     leadMm: number;
     label: (k: number) => { foot: string; head: string };
+    /** 이 위치부터 바뀌었다 (없으면 처음부터) */
+    dirtyFrom?: number | null;
   },
 ): PaginateResult {
   const { sheet, geom } = opts;
-  apply(view, [], geom);
+  let kept: PageBreak[] = [];
+  if (opts.dirtyFrom != null && opts.dirtyFrom > 0) {
+    const doc = view.state.doc;
+    const $p = doc.resolve(Math.min(opts.dirtyFrom, doc.content.size));
+    const blockStart = $p.depth > 0 ? $p.before(1) : $p.pos;
+    kept = currentBreaks(view).filter((b) => b.pos < blockStart);
+    kept = kept.slice(0, Math.max(0, kept.length - 1));
+  }
+  apply(view, kept, geom);
   const sr = sheet.getBoundingClientRect();
   const mm = sr.width / opts.docWidthMm; // 화면 px / mm
   const zoom = mm / (96 / 25.4);
@@ -263,11 +286,23 @@ export function paginate(
 
   let pageTop = sr.top + geom.top * mm;
   let bottom = pageTop + geom.body * mm;
-  const breaks: PageBreak[] = [];
+  const breaks: PageBreak[] = [...kept];
   let from = 0;
+  const last = kept[kept.length - 1];
+  if (last) {
+    const box = view.dom.querySelector(`[data-pg="${last.id}"] .pg-box`) as HTMLElement | null;
+    if (box) {
+      pageTop = box.getBoundingClientRect().top + (last.fill + geom.bottom + geom.gap + geom.top) * mm;
+      bottom = pageTop + geom.body * mm;
+      from = last.pos;
+    } else {
+      breaks.length = 0; // 장식을 찾지 못하면 처음부터
+      apply(view, [], geom);
+    }
+  }
   let lastNotes: PageNote[] = [];
   try {
-    for (let k = 0; k < 400; k++) {
+    for (let k = breaks.length; k < 400; k++) {
       const top0 = pageTop + (k === 0 ? opts.leadMm * mm : 0);
       // 각주 영역 높이와 끊는 자리가 서로 맞물리므로 몇 번 되풀이해 맞춘다
       const refs = footnoteRefs(view).filter((f) => f.mid >= pageTop - 1);
