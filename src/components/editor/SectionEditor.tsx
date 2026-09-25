@@ -10,6 +10,7 @@ import { api } from "@/lib/client";
 import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
 import { clearJob, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, useLastWriteTiming, type JobMode } from "./aiJobs";
 import { scheduleOutlinePreparation, scheduleSummaryPreparation } from "./preparation";
+import { MAX_SINGLE_WRITE_CHARS } from "@/lib/ai/write-plan";
 import { attachFile } from "@/lib/upload-client";
 import {
   appendDocs,
@@ -200,9 +201,9 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   }, [commitEdit, flushQueue]);
   useEffect(() => {
     // Avoid speculative requests until a long section has a sketch and all edits are saved.
-    if (targetPages <= 5 || !sketch.trim() || writing || tab !== "ai" || !["idle", "saved"].includes(saveState.kind)) return;
+    if (targetPages * cpp <= MAX_SINGLE_WRITE_CHARS || !sketch.trim() || writing || tab !== "ai" || !["idle", "saved"].includes(saveState.kind)) return;
     return scheduleOutlinePreparation(section.id, { targetPages, extraInstruction: extra });
-  }, [section.id, targetPages, sketch, extra, Boolean(writing), tab, saveState.kind, saveState.at]);
+  }, [section.id, targetPages, cpp, sketch, extra, Boolean(writing), tab, saveState.kind, saveState.at]);
   useEffect(() => {
     const hide = () => document.visibilityState === "hidden" && commitEdit();
     window.addEventListener("pagehide", commitEdit);
@@ -1362,12 +1363,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <div className="min-h-0 flex-1 overflow-hidden">
           {tab === "ai" && (
             <div className="h-full space-y-4 overflow-auto p-3 text-sm">
-              <p className="text-[11px] leading-4 text-stone-400">저장 후 입력이 20초간 멈추면 요약을 미리 갱신합니다. 스케치가 있는 5쪽 초과 절은 개요도 준비합니다.</p>
+              <p className="text-[11px] leading-4 text-stone-400">집필은 최신 원문과 준비된 요약을 바로 참고합니다. 입력이 20초간 멈추면 요약을 갱신하고, 스케치가 있는 {MAX_SINGLE_WRITE_CHARS.toLocaleString()}자 초과 절의 개요를 미리 준비합니다.</p>
               {lastTiming && <details className="rounded border border-stone-200 p-2 text-xs text-stone-500">
                 <summary className="cursor-pointer">최근 집필 {(lastTiming.totalMs / 1000).toFixed(1)}초 · 첫 본문 {lastTiming.firstTextMs === null ? "없음" : `${(lastTiming.firstTextMs / 1000).toFixed(1)}초`}</summary>
                 <dl className="mt-2 grid grid-cols-2 gap-1">
                   <dt>원고 불러오기</dt><dd>{(lastTiming.loadMs / 1000).toFixed(1)}초</dd>
-                  <dt>앞 내용 정리</dt><dd>{(lastTiming.summaryMs / 1000).toFixed(1)}초</dd>
+                  <dt>앞 문맥 선택</dt><dd>{(lastTiming.summaryMs / 1000).toFixed(1)}초</dd>
                   <dt>집필 개요{lastTiming.outlineCached ? " (재사용)" : ""}</dt><dd>{(lastTiming.outlineMs / 1000).toFixed(1)}초</dd>
                   <dt>본문 생성</dt><dd>{(lastTiming.generationMs / 1000).toFixed(1)}초</dd>
                 </dl>

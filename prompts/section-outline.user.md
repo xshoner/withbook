@@ -1,8 +1,9 @@
 지금 쓸 부분: {{chapterNo}} 「{{chapterTitle}}」 > {{sectionNo}} 「{{sectionTitle}}」
 이 절의 요지(목차 설계): {{sectionGist}}
 
-[앞 내용 요약 — 흐름을 이어 간다]
+[앞선 원고의 문맥 — 출처가 표시된 최신 요약과 원문 발췌]
 {{previousSummaries}}
+앞에서 다룬 주장·사례와 겹치지 않게 구성한다. 수치·인용·고유명사는 원문을 기준으로 삼고 발췌되지 않은 내용은 추측하지 않는다.
 
 [바로 앞 절의 마지막 부분 — 여기서 자연스럽게 이어진다]
 {{previousTail}}

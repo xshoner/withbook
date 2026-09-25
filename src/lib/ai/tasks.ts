@@ -2,14 +2,15 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../db";
-import { flatSections, loadBook, type Book, type BookChapter, type BookSection } from "../book";
+import { flatSections, loadBook, type Book, type BookSection } from "../book";
 import { charCount, docPlainText, docToMarkdown, findFootnotes, hashText, parseDoc, textblocks } from "../doc/doc";
 import { numberChapters, parseLayout } from "../layout";
 import { editStats, pickLearningPairs, type EditPair } from "../style/edits";
 import { chat, chatStream, extractJson, type ChatOptions } from "./client";
 import { buildMessages } from "./prompts";
 import { singleFlight } from "./single-flight";
-import { collectRecentContext } from "./recent-context";
+import { writingContext } from "./writing-context";
+import { groupWriteParts, singleWriteLimit, writeTokens } from "./write-plan";
 import { WriteClock, type WriteTiming } from "./write-timing";
 import { getSetting, setSetting } from "../app-settings";
 import { loadAiSettings } from "./settings";
@@ -277,65 +278,26 @@ export async function summarizeSection(sectionId: string) {
   const chapters = numberChapters(project.chapters, parseLayout(project.layout).numberFormat);
   const c = chapters.find((x) => x.sections.some((s) => s.id === sectionId));
   const label = c?.sections.find((s) => s.id === sectionId)?.label ?? "";
-  const summary = await ensureSectionSummary(sec.chapter.projectId, c ?? { label: "", kind: "body" }, { ...sec, label });
-  // Warm the chapter only when its section summaries are already current.
-  // Never fan out into other uncached sections from an idle preparation request.
-  const chapter = await prisma.chapter.findUnique({ where: { id: sec.chapterId }, include: { sections: { orderBy: { order: "asc" } } } });
-  if (chapter && c && chapter.sections.every((s) => {
-    const text = docPlainText(parseDoc(s.content));
-    return !text.trim() || Boolean(s.summary && s.summaryHash === hashText(text));
-  })) {
-    const numbered = { ...chapter, label: c.label, sections: chapter.sections.map((s) => ({ ...s, label: c.sections.find((row) => row.id === s.id)?.label ?? "" })) };
-    await ensureChapterSummary(sec.chapter.projectId, numbered);
-  }
-  return summary;
-}
-
-const pendingChapterSummary = singleFlight<string>();
-async function ensureChapterSummary(projectId: string, c: Pick<BookChapter, "id" | "label" | "kind" | "title" | "summary" | "summaryHash"> & { sections: SummaryTarget[] }): Promise<string> {
-  const sums = await mapLimit(c.sections, 3, (s) => ensureSectionSummary(projectId, c, s));
-  const parts = c.sections.map((s, i) => (sums[i] ? `${s.label || "-"} ${s.title}: ${sums[i]}` : "")).filter(Boolean);
-  if (!parts.length) return "";
-  const joined = parts.join("\n");
-  const h = hashText(joined);
-  if (c.summary && c.summaryHash === h) return c.summary;
-  const summary = await pendingChapterSummary(`${projectId}:${c.id}:${h}`, async () => {
-    const latest = await prisma.chapter.findUnique({ where: { id: c.id }, select: { summary: true, summaryHash: true } });
-    if (latest?.summary && latest.summaryHash === h) return latest.summary;
-    const { messages } = await buildMessages("chapter-summary", {
-      chapterNo: chapterName(c),
-      chapterTitle: c.title,
-      sectionSummaries: joined,
-    });
-    const r = await chat({ purpose: "chapter_summary", projectId, messages, temperature: 0.3, maxTokens: 6000 });
-    const summary = r.text.trim();
-    await prisma.chapter.updateMany({
-      where: { id: c.id, AND: c.sections.map((s) => ({ sections: { some: { id: s.id, content: s.content } } })) },
-      data: { summary, summaryHash: h },
-    });
-    return summary;
-  });
-  c.summary = summary;
-  c.summaryHash = h;
-  return summary;
+  return ensureSectionSummary(sec.chapter.projectId, c ?? { label: "", kind: "body" }, { ...sec, label });
 }
 
 /**
- * 가까운 절부터 필요한 2,500자만 확보한다. 예산이 차면 오래된 장은 조회·생성하지 않는다.
+ * 집필 경로에서는 요약 생성·DB 쓰기를 하지 않는다. 최신 원문과 검증된 요약을 즉시 조립한다.
  */
-async function previousSummaries(book: Book, chapterIdx: number, sectionIdx: number, signal?: AbortSignal) {
-  const cur = book.chapters[chapterIdx];
-  const items = [
-    ...cur.sections.slice(0, sectionIdx).reverse().map((s) => async () => {
-      const summary = await ensureSectionSummary(book.project.id, cur, s);
-      return summary ? `[${s.label || ""} ${s.title}] ${summary}` : "";
+async function previousSummaries(book: Book, chapterIdx: number, sectionIdx: number, signal?: AbortSignal, extraInstruction = "") {
+  signal?.throwIfAborted();
+  const current = book.chapters[chapterIdx].sections[sectionIdx];
+  const sources = book.chapters.slice(0, chapterIdx + 1).flatMap((c, ci) =>
+    (ci === chapterIdx ? c.sections.slice(0, sectionIdx) : c.sections).map((s) => {
+      const doc = parseDoc(s.content);
+      const text = docPlainText(doc);
+      return { id: s.id, label: `${chapterName(c)} ${s.label}`, title: s.title,
+        paragraphs: textblocks(doc).map(b => b.text).filter(t => t.trim()),
+        summary: s.summary && s.summaryHash === hashText(text) ? s.summary : null,
+      };
     }),
-    ...book.chapters.slice(0, chapterIdx).reverse().map((c) => async () => {
-      const summary = await ensureChapterSummary(book.project.id, c);
-      return summary ? `[${chapterName(c)} ${c.title}] ${summary}` : "";
-    }),
-  ];
-  return collectRecentContext(items, 2500, signal);
+  );
+  return writingContext(sources, `${current.title}\n${current.gist}\n${current.sketch}\n${extraInstruction}`);
 }
 
 function tailOf(content: string, maxChars = 800) {
@@ -349,7 +311,7 @@ function tailOf(content: string, maxChars = 800) {
     tail.unshift(blocks[i]);
     len += blocks[i].length;
   }
-  return tail.join("\n\n");
+  return tail.join("\n\n").slice(-maxChars);
 }
 
 /* ---------------- 절 집필 ---------------- */
@@ -376,7 +338,7 @@ const outlineSchema = z.object({
         heading: z.string(),
         points: z.array(z.string()).default([]),
         sketchItems: z.array(z.string()).default([]),
-        chars: z.coerce.number(),
+        chars: z.coerce.number().finite().positive(),
       }),
     )
     .min(1),
@@ -415,17 +377,14 @@ async function preparedOutline(sectionId: string, projectId: string, vars: Recor
 
 /** Prepares only the outline, never a draft or a version of the manuscript. */
 export async function prepareSection(sectionId: string, opts: WriteOptions) {
-  if (opts.targetPages <= 5) return { ready: false };
-  const { projectId, baseVars } = await writeContext(sectionId, opts, new WriteClock());
+  const { projectId, baseVars, targetChars, callLimit } = await writeContext(sectionId, opts, new WriteClock());
+  if (targetChars <= callLimit) return { ready: false };
   const result = await preparedOutline(sectionId, projectId, baseVars);
   return { ready: true, cached: result.cached };
 }
 
 /** 새 파트를 시작할 수 있는 마지막 시점 — AI 호출 예산(요청 시작 후 240초, client.ts) 안에 파트 하나(보통 1분 안팎)를 끝낼 수 있게 */
 const PART_START_BUDGET_MS = 150_000;
-
-/** 추론 토큰을 사용하는 모델도 본문을 마칠 수 있도록 출력 여유를 둔다. */
-const writeTokens = (chars: number) => Math.min(Math.round(chars * 2.2 + 6000), 32000);
 
 async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undefined>, onText: (t: string) => void): AsyncGenerator<WriteEvent> {
   let r = await gen.next();
@@ -439,7 +398,7 @@ async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undef
 
 async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteClock) {
   const loadStarted = Date.now();
-  const book = await sectionInBook(sectionId);
+  const [book, writingSettings] = await Promise.all([sectionInBook(sectionId), loadAiSettings("writing")]);
   const projectId = book.project.id;
 
   const flat = flatSections(book);
@@ -452,7 +411,7 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
 
   clock.loadMs = Date.now() - loadStarted;
   const summaryStarted = Date.now();
-  const prevSummaries = await previousSummaries(book, ci, si, opts.signal);
+  const prevSummaries = await previousSummaries(book, ci, si, opts.signal, opts.extraInstruction);
   clock.summaryMs = Date.now() - summaryStarted;
 
   const cpp = book.project.charsPerPage || 700;
@@ -479,7 +438,7 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
     mode_continue: opts.mode === "continue",
     existingContent: opts.mode === "continue" ? docToMarkdown(existing).md.slice(-6000) : "",
   };
-  return { projectId, baseVars, targetChars };
+  return { projectId, baseVars, targetChars, callLimit: singleWriteLimit(writingSettings.maxOutputTokens) };
 }
 
 export async function* writeSection(sectionId: string, opts: WriteOptions): AsyncGenerator<WriteEvent> {
@@ -487,8 +446,8 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
   const clock = new WriteClock();
   let result = "aborted";
   try {
-    yield { t: "status", v: "앞 내용 정리 중…" };
-    const { projectId, baseVars, targetChars } = await writeContext(sectionId, opts, clock);
+    yield { t: "status", v: "앞선 원고의 문맥을 불러오는 중…" };
+    const { projectId, baseVars, targetChars, callLimit } = await writeContext(sectionId, opts, clock);
     opts.signal?.throwIfAborted();
     let total = 0;
     const count = (t: string) => { clock.text(); total += t.length; };
@@ -499,7 +458,7 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
       }
     };
 
-    if (opts.targetPages <= 5) {
+    if (targetChars <= callLimit) {
       yield { t: "status", v: "구상 중… 문체와 앞뒤 흐름을 살펴보고 있습니다" };
       const { messages, instructionIncluded } = await buildMessages("section-write", baseVars);
       clock.startGeneration();
@@ -514,9 +473,9 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
       const outline = await preparedOutline(sectionId, projectId, baseVars);
       clock.outlineMs = Date.now() - outlineStarted;
       clock.outlineCached = outline.cached;
-      const parts = outline.parts;
+      const groups = groupWriteParts(outline.parts, targetChars, callLimit);
       let written = "";
-      for (let p = 0; p < parts.length; p++) {
+      for (let p = 0; p < groups.length; p++) {
         if (opts.signal?.aborted) break;
         if (p > 0 && Date.now() - started > PART_START_BUDGET_MS) {
           // 한 번의 요청으로 쓸 수 있는 시간을 넘기기 전에 멈춘다 — 쓴 데까지는 그대로 넣고 [이어쓰기]로 계속
@@ -524,29 +483,34 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
           result = "partial";
           break;
         }
-        const part = parts[p];
-        yield { t: "status", v: `집필 중… (${p + 1}/${parts.length}) ${part.heading}` };
-        if (part.heading) {
-          const h = `${written ? "\n\n" : ""}## ${part.heading}\n\n`;
-          written += h;
-          yield { t: "delta", v: h };
-        }
+        const group = groups[p];
+        const chars = group.reduce((sum, part) => sum + part.chars, 0);
+        yield { t: "status", v: `집필 중… (${p + 1}/${groups.length}) ${group.map(part => part.heading).filter(Boolean).join(" · ")}` };
+        if (written) { written += "\n\n"; yield { t: "delta", v: "\n\n" }; }
         const lastPara = written.trim().split(/\n+/).filter((l) => l.trim() && !l.startsWith("## ")).slice(-1)[0] ?? "";
         const partInfo = [
-          `[이번 파트] ${part.heading || "(소제목 없음)"} / 다룰 내용: ${part.points.join("; ") || "(개요 없음)"} / 배정된 스케치: ${part.sketchItems.join("; ") || "(없음)"} / 분량 약 ${part.chars}자`,
+          "[이번 호출에서 순서대로 쓸 부분 — 아래 배정된 내용만 작성]",
+          ...group.map(part => `${part.continuation ? "앞 소제목의 나머지 내용" : part.heading || "소제목 없음"} / 다룰 내용: ${part.points.join("; ") || "앞 논의를 이어 전개"} / 배정된 스케치: ${part.sketchItems.join("; ") || "(없음)"} / 분량 약 ${part.chars}자`),
           p > 0 ? `앞 파트 마지막 문단: ${lastPara}\n절 도입부를 다시 쓰지 말고 앞 파트에서 자연스럽게 이어 쓴다.` : "이 파트는 절의 도입부다.",
-          p === parts.length - 1 ? "이 파트에서 절을 마무리한다." : "이 파트에서 절을 마무리하지 않는다.",
-          "소제목은 앱이 붙이므로 출력하지 않는다.",
+          p === groups.length - 1 ? "이번 호출의 마지막 부분에서 절을 마무리한다." : "이번 호출에서 절 전체를 마무리하지 않는다.",
+          "배정된 소제목이 있으면 ## 소제목 형식으로 한 번씩 출력한다. '앞 소제목의 나머지 내용'에는 소제목을 반복하지 않는다. 책의 절 제목은 출력하지 않는다.",
         ].join("\n");
-        const { messages, instructionIncluded } = await buildMessages("section-write", { ...baseVars, partInfo });
+        const { messages, instructionIncluded } = await buildMessages("section-write", {
+          ...baseVars, targetPages: opts.targetPages * chars / targetChars,
+          targetChars: chars, minChars: Math.round(chars * 0.9), maxChars: Math.round(chars * 1.1),
+          sketch: group.flatMap(part => part.sketchItems).join("\n") || baseVars.sketch,
+          partInfo,
+        });
         clock.startGeneration();
         yield* track(pipe(
-          chatStream({ purpose: "section_write_part", projectId, messages, temperature: 0.7, maxTokens: writeTokens(part.chars), signal: opts.signal, instructionIncluded }),
+          chatStream({ purpose: "section_write_part", projectId, messages, temperature: 0.7, maxTokens: writeTokens(chars), signal: opts.signal, instructionIncluded }),
           (t) => {
             count(t);
             written += t;
           },
         ));
+        // Once a response is cut short, later parts would skip unfinished material.
+        if (result === "truncated") break;
       }
     }
     if (opts.signal?.aborted) result = "aborted";
