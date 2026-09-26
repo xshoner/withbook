@@ -101,3 +101,45 @@ test('print check flags low resolution and text outside the safe area', () => {
   assert.ok(issues.some((i) => i.level === 'error' && /DPI/.test(i.message)));
   assert.ok(issues.some((i) => /안전 영역/.test(i.message)));
 });
+
+test('edit mask maps the canvas rectangle into image fractions', async () => {
+  const { maskFraction } = await import('../src/lib/cover/spec.ts');
+  const box = { x: 0, y: 0, w: 200, h: 100 };
+  const img = { widthPx: 2000, heightPx: 1000, fit: 'cover', posX: 50, posY: 50, zoom: 1 };
+  assert.deepEqual(maskFraction(img, box, { x: 50, y: 25, w: 100, h: 50 }), { x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
+  // 확대하면 같은 캔버스 사각형이 그림에서 더 작은 부분이 된다
+  const z = maskFraction({ ...img, zoom: 2 }, box, { x: 50, y: 25, w: 100, h: 50 });
+  assert.ok(Math.abs(z.w - 0.25) < 1e-9 && Math.abs(z.x - 0.375) < 1e-9);
+  assert.equal(maskFraction(img, box, { x: 300, y: 0, w: 10, h: 10 }), null);
+});
+
+test('edit frame letterboxes the original ratio inside a different request size', async () => {
+  const { editFrame } = await import('../src/lib/cover/spec.ts');
+  const f = editFrame('1536x1024', 6078, 2552); // 펼침면(2.38:1)을 3:2 요청에 넣기
+  assert.equal(f.cw, 1536);
+  assert.ok(Math.abs(f.cw / f.ch - 6078 / 2552) < 0.01);
+  assert.equal(f.ox, 0);
+  assert.ok(f.oy > 0 && f.oy + f.ch <= 1024);
+  const same = editFrame('3840x1600', 3840, 1600);
+  assert.deepEqual([same.cw, same.ch, same.ox, same.oy], [3840, 1600, 0, 0]);
+});
+
+test('edit prompt keeps everything but the request', async () => {
+  const { buildEditPrompt } = await import('../src/lib/cover/spec.ts');
+  const d = defaultCover({ targetPages: 200 });
+  const p = buildEditPrompt(d, 'full', '하늘을 노을빛으로', true);
+  assert.match(p, /요청하지 않은 부분.*그대로 유지/);
+  assert.match(p, /투명하게 지정한 부분만/);
+  assert.match(p, /\[수정 요청\]\n하늘을 노을빛으로$/);
+  assert.match(p, /책등/);
+});
+
+test('text background keeps padding and radius within limits', () => {
+  const d = normalizeCover({ elements: [{ id: 't1', kind: 'text', panel: 'back', bg: '#000000', bgOpacity: 0.5, bgPad: 99, bgRadius: -3 }] });
+  const el = d.elements[0];
+  assert.equal(el.bg, '#000000');
+  assert.equal(el.bgOpacity, 0.5);
+  assert.equal(el.bgPad, 20);
+  assert.equal(el.bgRadius, 0);
+  assert.equal(normalizeCover({ elements: [{ id: 't2', kind: 'text' }] }).elements[0].bgPad, 1.5);
+});

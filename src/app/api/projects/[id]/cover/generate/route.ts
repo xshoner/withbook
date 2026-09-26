@@ -1,10 +1,8 @@
 import sharp from "sharp";
 import { fail, handle, ok } from "@/lib/api";
 import { prisma } from "@/lib/db";
-import { assetKey } from "@/lib/backup";
-import { putObject } from "@/lib/storage";
 import { generateImage } from "@/lib/ai/image";
-import { addCoverHistory } from "@/lib/cover/store";
+import { printJpeg, storeCoverImage } from "@/lib/cover/image-store";
 import { type Region, buildImagePrompt, coverLayout, normalizeCover, pxAt300, regionBox, requestSize } from "@/lib/cover/spec";
 
 export const maxDuration = 300;
@@ -39,31 +37,13 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   const meta = await src.metadata();
   const W = pxAt300(box.w);
   const H = pxAt300(box.h);
-  const out = await src
-    .resize(W, H, { fit: "cover", position: "centre", kernel: "lanczos3" })
-    .flatten({ background: design.bgColor })
-    .jpeg({ quality: 92, chromaSubsampling: "4:4:4", mozjpeg: true })
-    .withMetadata({ density: 300 })
-    .toBuffer();
-
-  const a = await prisma.asset.create({ data: { projectId: id, filename: `cover-ai-${region}.jpg`, mime: "image/jpeg", widthPx: W, heightPx: H, path: "" } });
-  const key = assetKey(id, a.id, ".jpg");
-  try {
-    await putObject("assets", key, out, "image/jpeg");
-  } catch (e) {
-    await prisma.asset.delete({ where: { id: a.id } });
-    throw e;
-  }
-  await prisma.asset.update({ where: { id: a.id }, data: { path: key } });
-  const item = { assetId: a.id, widthPx: W, heightPx: H, region, at: new Date().toISOString() };
-  const history = await addCoverHistory(id, item);
+  const out = await printJpeg(src.resize(W, H, { fit: "cover", position: "centre", kernel: "lanczos3" }), design.bgColor);
+  const saved = await storeCoverImage(id, out, W, H, region);
   return ok({
-    ...item,
-    src: `/api/assets/${a.id}`,
+    ...saved,
     spineMm: l.spine,
     model: gen.model,
     requested: gen.size,
     native: { width: meta.width ?? 0, height: meta.height ?? 0 },
-    history,
   });
 });

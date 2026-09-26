@@ -74,6 +74,8 @@ export type TextEl = {
   /** 글 상자 배경 (빈 값이면 없음) */
   bg: string;
   bgOpacity: number; // 0~1
+  bgPad: number; // 배경이 글 둘레로 넘치는 폭 mm (글 위치는 그대로)
+  bgRadius: number; // 배경 모서리 둥글기 mm
   shadow: boolean;
 };
 
@@ -105,7 +107,7 @@ export type CoverDesign = {
   bgColor: string;
   images: Partial<Record<Region, CoverImage>>;
   elements: CoverEl[];
-  ai: { system: string; instruction: string; withTitle: boolean; requestSize: string; history: { assetId: string; widthPx: number; heightPx: number; region: Region; at: string }[] };
+  ai: { system: string; instruction: string; withTitle: boolean; requestSize: string; history: { assetId: string; widthPx: number; heightPx: number; region: Region; at: string; edit?: boolean }[] };
   updatedAt?: string;
 };
 
@@ -300,6 +302,8 @@ export function textDefaults(): Omit<TextEl, "id" | "panel"> {
     vertical: false,
     bg: "",
     bgOpacity: 0.8,
+    bgPad: 1.5,
+    bgRadius: 0,
     shadow: false,
   };
 }
@@ -368,6 +372,8 @@ function normEl(v: any): CoverEl | null {
     vertical: Boolean(v.vertical),
     bg: v.bg ? color(v.bg, "") : "",
     bgOpacity: num(v.bgOpacity, 0, 1, d.bgOpacity),
+    bgPad: num(v.bgPad, 0, 20, d.bgPad),
+    bgRadius: num(v.bgRadius, 0, 20, d.bgRadius),
     shadow: Boolean(v.shadow),
   };
 }
@@ -399,7 +405,7 @@ export function normalizeCover(v: any): CoverDesign {
       history: hist
         .filter((h: any) => h && id(h.assetId) && REGIONS.includes(h.region))
         .slice(-24)
-        .map((h: any) => ({ assetId: h.assetId, widthPx: num(h.widthPx, 1, 100000, 1), heightPx: num(h.heightPx, 1, 100000, 1), region: h.region, at: str(h.at, 40) })),
+        .map((h: any) => ({ assetId: h.assetId, widthPx: num(h.widthPx, 1, 100000, 1), heightPx: num(h.heightPx, 1, 100000, 1), region: h.region, at: str(h.at, 40), ...(h.edit ? { edit: true } : {}) })),
     },
     ...(typeof v?.updatedAt === "string" ? { updatedAt: v.updatedAt } : {}),
   };
@@ -486,6 +492,55 @@ export function buildImagePrompt(d: CoverDesign, book: BookInfo, region: Region)
   if (d.ai.instruction.trim()) {
     lines.push("", "[작가 지시 — 가장 우선]", d.ai.instruction.trim());
   }
+  return lines.join("\n");
+}
+
+/* ---------------- AI 그림 수정 ---------------- */
+
+export type Rect = { x: number; y: number; w: number; h: number };
+
+/** 펼침면 좌표(mm)의 사각형 → 그림 안 비율(0~1). 그림 밖이면 null */
+export function maskFraction(img: Pick<CoverImage, "widthPx" | "heightPx" | "fit" | "posX" | "posY" | "zoom">, box: Box, r: Rect) {
+  const at = placeImage(img, box);
+  const x0 = Math.max(0, (r.x - at.x) / at.w);
+  const y0 = Math.max(0, (r.y - at.y) / at.h);
+  const x1 = Math.min(1, (r.x + r.w - at.x) / at.w);
+  const y1 = Math.min(1, (r.y + r.h - at.y) / at.h);
+  if (x1 - x0 <= 0.001 || y1 - y0 <= 0.001) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/**
+ * 수정 요청 크기 안에 원본 비율 그대로 들어갈 자리 (가운데, 남는 곳은 여백으로 채워 보낸다).
+ * 받은 그림에서 이 자리만 잘라 원본 크기로 되돌린다.
+ */
+export function editFrame(size: string, iw: number, ih: number) {
+  const m = /^(\d+)x(\d+)$/.exec(size);
+  const RW = m ? Number(m[1]) : iw;
+  const RH = m ? Number(m[2]) : ih;
+  const a = iw / ih;
+  const cw = Math.min(RW, Math.round(RH * a));
+  const ch = Math.min(RH, Math.round(cw / a));
+  return { RW, RH, cw, ch, ox: Math.floor((RW - cw) / 2), oy: Math.floor((RH - ch) / 2) };
+}
+
+/** 수정 프롬프트 — 바꿀 것만 바꾸고 나머지(구도·색·글자·영역 배치)는 그대로 두게 한다 */
+export function buildEditPrompt(d: CoverDesign, region: Region, request: string, masked: boolean) {
+  const l = coverLayout(d);
+  const lines = [
+    "너는 전문적인 책 표지 디자이너다. 주어진 표지 그림을 아래 [수정 요청]대로만 고친다.",
+    "- 요청하지 않은 부분(전체 구도, 색감, 그림체, 인물·사물, 글자, 여백)은 원본 그대로 유지한다.",
+    "- 그림의 크기·비율·영역 배치를 바꾸지 않는다. 테두리·액자·목업을 더하지 않는다.",
+    masked ? "- 투명하게 지정한 부분만 바꾸고, 그 경계가 주변과 자연스럽게 이어지게 한다." : "- 바꾼 부분이 주변과 자연스럽게 이어지게 한다.",
+  ];
+  if (region === "full") {
+    lines.push("", "[배치 — 그대로 유지]", `- 펼친 표지 ${l.sheetW} × ${l.sheetH}mm, 왼쪽부터:`);
+    for (const p of panelsOf(l)) lines.push(`  · ${PANEL_LABEL[p]}: ${pct(l.panels[p].x, l.sheetW)} ~ ${pct(l.panels[p].x + l.panels[p].w, l.sheetW)}`);
+    lines.push("- 책등의 세로 제목은 책등 띠 안에 둔다.");
+  } else {
+    lines.push("", `[배치] 이 그림은 ${REGION_LABEL[region]} 한 면이다.`);
+  }
+  lines.push("", "[수정 요청]", request.trim());
   return lines.join("\n");
 }
 

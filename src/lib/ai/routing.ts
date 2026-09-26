@@ -27,7 +27,7 @@ export function scopeForPurpose(purpose: string): AiScope {
   if (["style_analyze", "style_learn"].includes(purpose)) return "style";
   if (["footnote", "footnote_auto"].includes(purpose)) return "footnote";
   if (purpose === "factcheck") return "factcheck";
-  if (purpose === "cover_image") return "cover";
+  if (purpose === "cover_image" || purpose === "cover_image_edit") return "cover";
   return "default";
 }
 

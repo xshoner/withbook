@@ -26,6 +26,7 @@ import {
   type Region,
   TEXT_PRESETS,
   type TextEl,
+  type Rect,
   buildImagePrompt,
   coverIssues,
   coverLayout,
@@ -63,7 +64,12 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const [guides, setGuides] = useState<Guides>({ bleed: true, fold: true, safe: true, labels: true });
   const [zoom, setZoom] = useState<number | null>(null); // null = 화면에 맞춤
   const [fitZoom, setFitZoom] = useState(0.5);
-  const [busy, setBusy] = useState<"" | "save" | "export" | "ai" | "upload">("");
+  const [busy, setBusy] = useState<"" | "save" | "export" | "ai" | "edit" | "upload">("");
+  // 그림 수정 — 수정 요청과, 바꿀 부분(펼침면 mm, 선택)
+  const [editPrompt, setEditPrompt] = useState("");
+  const [maskMode, setMaskMode] = useState(false);
+  const [maskRect, setMaskRect] = useState<Rect | null>(null);
+  const maskDrag = useRef<{ x: number; y: number } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [snapX, setSnapX] = useState<number | null>(null);
   const undo = useRef<CoverDesign[]>([]);
@@ -270,8 +276,14 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     ? { title: project.title, subtitle: project.subtitle, author: project.author, topic: project.topic, keyMessage: project.keyMessage, audience: project.audience, tone: project.tone, chapters: project.chapters.filter((c) => c.kind === "body").map((c) => c.title) }
     : null;
 
+  // 영역을 바꾸면 지정한 부분은 버린다
   useEffect(() => {
-    if (busy !== "ai") return;
+    setMaskRect(null);
+    setMaskMode(false);
+  }, [region]);
+
+  useEffect(() => {
+    if (busy !== "ai" && busy !== "edit") return;
     const t0 = Date.now();
     setElapsed(0);
     const t = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 1000)), 1000);
@@ -297,6 +309,33 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
       toast.success(`${REGION_LABEL[region]} 그림을 만들었습니다 — 모델 출력 ${r.native.width}×${r.native.height}px → 인쇄용 ${r.widthPx}×${r.heightPx}px (300 DPI)`);
     } catch (e: any) {
       if (!ctrl.signal.aborted) toastError(e, "AI 제작 실패: ");
+    } finally {
+      aiAbort.current = null;
+      setBusy("");
+    }
+  };
+
+  /** 지금 그림을 수정 요청대로 고친다 — 위치·확대 설정은 그대로 두고 그림만 바꾼다 */
+  const runEdit = async () => {
+    if (!design) return;
+    const cur = design.images[region];
+    if (!cur || !editPrompt.trim()) return;
+    setBusy("edit");
+    setMaskMode(false);
+    const ctrl = new AbortController();
+    aiAbort.current = ctrl;
+    try {
+      const r = await api<{ assetId: string; widthPx: number; heightPx: number; masked: boolean; history: CoverDesign["ai"]["history"] }>(
+        `/api/projects/${projectId}/cover/edit`,
+        { method: "POST", json: { design, region, prompt: editPrompt, rect: maskRect }, signal: ctrl.signal },
+      );
+      update((d) => {
+        const old = d.images[region];
+        return { ...d, images: { ...d.images, [region]: { ...(old ?? cur), assetId: r.assetId, widthPx: r.widthPx, heightPx: r.heightPx } }, ai: { ...d.ai, history: r.history } };
+      });
+      toast.success(`${r.masked ? "지정한 부분을" : "그림을"} 고쳤습니다. 마음에 들지 않으면 되돌리기(Ctrl+Z)나 [만든 그림]에서 이전 그림을 고르세요.`);
+    } catch (e: any) {
+      if (!ctrl.signal.aborted) toastError(e, "그림 수정 실패: ");
     } finally {
       aiAbort.current = null;
       setBusy("");
@@ -371,6 +410,10 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         return;
       }
       if (typing) return;
+      if (e.key === "Escape" && maskMode) {
+        setMaskMode(false);
+        return;
+      }
       if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) doRedo();
@@ -589,6 +632,43 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     ✨ AI 제작 — {REGION_LABEL[region]}
                   </button>
                 )}
+                {regionImg && (
+                  <div className="space-y-2 rounded-lg border border-violet-200 bg-violet-50/40 p-2">
+                    <label className="label mb-0">이 그림 수정 — 다시 만들지 않고 고칠 것만 요청</label>
+                    <textarea
+                      className="input h-20 text-xs leading-5"
+                      placeholder={"예: 제목 글자를 더 굵고 크게. 하늘을 노을빛으로.\n책등 글자를 흰색으로, 앞날개 쪽 장식은 지워 줘."}
+                      value={editPrompt}
+                      onChange={(e) => setEditPrompt(e.target.value)}
+                      disabled={!!busy}
+                    />
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <button className={`px-2 text-xs ${maskMode ? "btn-primary" : "btn"}`} disabled={!!busy} onClick={() => setMaskMode(!maskMode)} title="캔버스에서 끌어 사각형으로 지정하면 그 부분만 바꿉니다">
+                        {maskMode ? "캔버스에서 끌어 지정하세요…" : maskRect ? "부분 다시 지정" : "고칠 부분 지정 (선택)"}
+                      </button>
+                      {maskRect && (
+                        <>
+                          <span className="text-violet-800">
+                            {maskRect.w.toFixed(0)} × {maskRect.h.toFixed(0)}mm만 수정
+                          </span>
+                          <button className="btn-ghost px-1 text-xs" onClick={() => setMaskRect(null)}>
+                            지우기
+                          </button>
+                        </>
+                      )}
+                      {!maskRect && !maskMode && <span className="text-stone-500">지정하지 않으면 그림 전체에서 요청한 것만 고칩니다.</span>}
+                    </div>
+                    {busy === "edit" ? (
+                      <button className="btn-primary w-full bg-red-700 hover:bg-red-800" onClick={() => aiAbort.current?.abort()}>
+                        ■ 고치는 중… {elapsed}초 — 멈추기
+                      </button>
+                    ) : (
+                      <button className="btn w-full border-violet-300 text-violet-900" disabled={!!busy || !editPrompt.trim()} onClick={runEdit}>
+                        ✏️ 수정 요청 보내기
+                      </button>
+                    )}
+                  </div>
+                )}
                 {design.ai.history.length > 0 && (
                   <div>
                     <label className="label">만든 그림 (눌러서 이 영역에 쓰기)</label>
@@ -602,7 +682,10 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                         >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img alt="" src={src(h.assetId)} className="h-16 w-full object-cover" loading="lazy" />
-                          <div className="truncate px-1 text-[10px] text-stone-500">{REGION_LABEL[h.region]}</div>
+                          <div className="truncate px-1 text-[10px] text-stone-500">
+                            {REGION_LABEL[h.region]}
+                            {h.edit ? " · 수정본" : ""}
+                          </div>
                         </button>
                       ))}
                     </div>
@@ -704,7 +787,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         <main ref={canvasRef} className="relative min-w-0 flex-1 overflow-auto" onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}>
           <div className="flex min-h-full min-w-full items-center justify-center p-6" onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}>
             <div className="relative shadow-xl" style={{ width: l.sheetW * PX_PER_MM * z, height: l.sheetH * PX_PER_MM * z, flex: "none" }}>
-              <div style={{ transform: `scale(${z})`, transformOrigin: "0 0", ["--z" as string]: z } as React.CSSProperties}>
+              <div style={{ position: "relative", width: `${l.sheetW}mm`, height: `${l.sheetH}mm`, transform: `scale(${z})`, transformOrigin: "0 0", ["--z" as string]: z } as React.CSSProperties}>
                 <CoverSheet
                   design={design}
                   assetSrc={src}
@@ -720,13 +803,21 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     if (!(e.target as HTMLElement).closest("[data-el]")) setSel(null);
                   }}
                 />
+                {(maskRect || maskMode) && tab === "ai" && (
+                  <MaskLayer sheetW={l.sheetW} sheetH={l.sheetH} z={z} active={maskMode} rect={maskRect} bounds={rbox} onDraw={setMaskRect} onDone={() => setMaskMode(false)} dragRef={maskDrag} />
+                )}
                 {snapX != null && <div style={{ position: "absolute", left: `${snapX}mm`, top: 0, height: `${l.sheetH}mm`, borderLeft: `calc(1px / ${z}) solid #f43f5e`, pointerEvents: "none" }} />}
               </div>
             </div>
           </div>
-          {busy === "ai" && (
+          {(busy === "ai" || busy === "edit") && (
             <div className="pointer-events-none absolute inset-x-0 top-3 mx-auto w-fit rounded-full bg-stone-900/85 px-4 py-1.5 text-sm text-white shadow">
-              AI가 {REGION_LABEL[region]}을 그리는 중… {elapsed}초
+              AI가 {REGION_LABEL[region]}을 {busy === "edit" ? "고치는" : "그리는"} 중… {elapsed}초
+            </div>
+          )}
+          {maskMode && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-20 mx-auto w-fit rounded-full bg-violet-700 px-4 py-1.5 text-sm text-white shadow">
+              {REGION_LABEL[region]} 안에서 고칠 부분을 끌어 사각형으로 지정하세요 (Esc 취소)
             </div>
           )}
         </main>
@@ -938,22 +1029,26 @@ function TextProps({ el, textRef, panels, onChange, onRemove }: { el: TextEl; te
         <span className="label">글자 색</span>
         <ColorField value={el.color} onChange={(c) => onChange({ color: c }, "color")} />
       </div>
-      <div className="space-y-1">
-        <label className="flex items-center gap-2 text-xs">
-          <input type="checkbox" checked={!!el.bg} onChange={(e) => onChange({ bg: e.target.checked ? "#ffffff" : "" })} />
-          글 상자 배경 (그림 위에서 잘 읽히게)
+      <div className="space-y-2 rounded-lg border border-stone-200 p-2">
+        <div className="flex items-center justify-between">
+          <span className="label mb-0">글 상자 배경색</span>
+          <button className={`px-2 py-0.5 text-[11px] ${!el.bg ? "btn-primary" : "btn"}`} onClick={() => onChange({ bg: "" })} title="배경 없음 (투명)">
+            없음
+          </button>
+        </div>
+        <ColorField value={el.bg || "#ffffff"} onChange={(c) => onChange({ bg: c }, "bg")} />
+        <label className={`block text-xs ${el.bg ? "" : "opacity-40"}`}>
+          <span className="flex justify-between text-stone-600">
+            배경 불투명도<span className="font-mono">{Math.round(el.bgOpacity * 100)}%</span>
+          </span>
+          <input type="range" className="w-full" min={0} max={1} step={0.05} disabled={!el.bg} value={el.bgOpacity} onChange={(e) => onChange({ bgOpacity: Number(e.target.value) }, "bgOpacity")} />
         </label>
-        {el.bg && (
-          <>
-            <ColorField value={el.bg} onChange={(c) => onChange({ bg: c }, "bg")} />
-            <label className="block text-xs">
-              <span className="flex justify-between text-stone-600">
-                배경 불투명도<span className="font-mono">{Math.round(el.bgOpacity * 100)}%</span>
-              </span>
-              <input type="range" className="w-full" min={0} max={1} step={0.05} value={el.bgOpacity} onChange={(e) => onChange({ bgOpacity: Number(e.target.value) }, "bgOpacity")} />
-            </label>
-          </>
-        )}
+        <div className={`grid grid-cols-2 gap-2 ${el.bg ? "" : "pointer-events-none opacity-40"}`}>
+          <NumField label="여백" suffix="mm" value={el.bgPad} step={0.5} min={0} max={20} onChange={(n) => onChange({ bgPad: n })} />
+          <NumField label="모서리" suffix="mm" value={el.bgRadius} step={0.5} min={0} max={20} onChange={(n) => onChange({ bgRadius: n })} />
+        </div>
+      </div>
+      <div className="space-y-1">
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={el.shadow} onChange={(e) => onChange({ shadow: e.target.checked })} />
           글자 그림자
@@ -997,6 +1092,45 @@ function ImageElProps({ el, panels, onChange, onRemove }: { el: ImageEl; panels:
         <NumField label="가로 위치" suffix="mm" value={el.x} onChange={(n) => onChange({ x: n })} />
         <NumField label="세로 위치" suffix="mm" value={el.y} onChange={(n) => onChange({ y: n })} />
       </div>
+    </div>
+  );
+}
+
+/** 그림 수정 범위 — 끌어서 사각형을 그리고(영역 안으로 제한), 지정한 부분을 보라색으로 보여 준다 */
+function MaskLayer({ sheetW, sheetH, z, active, rect, bounds, onDraw, onDone, dragRef }: { sheetW: number; sheetH: number; z: number; active: boolean; rect: Rect | null; bounds: Rect; onDraw: (r: Rect) => void; onDone: () => void; dragRef: React.MutableRefObject<{ x: number; y: number } | null> }) {
+  const toMm = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const b = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - b.left) / b.width) * sheetW;
+    const y = ((e.clientY - b.top) / b.height) * sheetH;
+    return { x: Math.min(bounds.x + bounds.w, Math.max(bounds.x, x)), y: Math.min(bounds.y + bounds.h, Math.max(bounds.y, y)) };
+  };
+  const draw = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const s = dragRef.current;
+    if (!s) return;
+    const p = toMm(e);
+    onDraw({ x: Math.min(s.x, p.x), y: Math.min(s.y, p.y), w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y) });
+  };
+  return (
+    <div
+      style={{ position: "absolute", inset: 0, cursor: active ? "crosshair" : undefined, pointerEvents: active ? "auto" : "none", zIndex: 5 }}
+      onPointerDown={(e) => {
+        if (!active) return;
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        dragRef.current = toMm(e);
+      }}
+      onPointerMove={draw}
+      onPointerUp={(e) => {
+        if (!dragRef.current) return;
+        draw(e);
+        dragRef.current = null;
+        onDone();
+      }}
+    >
+      {active && <div style={{ position: "absolute", left: `${bounds.x}mm`, top: `${bounds.y}mm`, width: `${bounds.w}mm`, height: `${bounds.h}mm`, outline: `calc(2px / ${z}) dashed rgba(124, 58, 237, .7)` }} />}
+      {rect && rect.w > 0 && rect.h > 0 && (
+        <div style={{ position: "absolute", left: `${rect.x}mm`, top: `${rect.y}mm`, width: `${rect.w}mm`, height: `${rect.h}mm`, background: "rgba(124, 58, 237, .18)", outline: `calc(2px / ${z}) solid rgba(124, 58, 237, .95)` }} />
+      )}
     </div>
   );
 }
