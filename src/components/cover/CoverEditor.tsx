@@ -14,7 +14,6 @@ import {
   type CoverDesign,
   type CoverEl,
   type CoverImage,
-  DEFAULT_SYSTEM_PROMPT,
   FONTS,
   type FontKey,
   type ImageEl,
@@ -70,6 +69,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const [maskMode, setMaskMode] = useState(false);
   const [maskRect, setMaskRect] = useState<Rect | null>(null);
   const maskDrag = useRef<{ x: number; y: number } | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [snapX, setSnapX] = useState<number | null>(null);
   const undo = useRef<CoverDesign[]>([]);
@@ -342,6 +342,37 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     }
   };
 
+  /** 만든 그림 삭제 — 서버에서 이미지(DB·저장소)를 지우고, 쓰던 영역에서도 뺀다 */
+  const deleteHistory = async (assetId: string) => {
+    if (!design) return;
+    const used = (Object.entries(design.images) as [Region, CoverImage | undefined][]).filter(([, i]) => i?.assetId === assetId).map(([r]) => REGION_LABEL[r]);
+    const ok = await confirmDialog(
+      used.length ? `이 그림은 지금 ${used.join(", ")}에 쓰고 있습니다. 삭제하면 그 영역에서도 빠지고 되돌릴 수 없습니다. 삭제할까요?` : "이 그림을 삭제할까요? 저장소에서도 지워져 되돌릴 수 없습니다.",
+      { okLabel: "삭제", danger: true },
+    );
+    if (!ok) return;
+    setDeleting(assetId);
+    try {
+      await api(`/api/projects/${projectId}/cover/images/${assetId}`, { method: "DELETE" });
+      const strip = (d: CoverDesign): CoverDesign => ({
+        ...d,
+        images: Object.fromEntries(Object.entries(d.images).filter(([, i]) => i?.assetId !== assetId)) as CoverDesign["images"],
+        ai: { ...d.ai, history: d.ai.history.filter((h) => h.assetId !== assetId) },
+      });
+      update(strip);
+      // 되돌리기 기록에도 지운 그림이 남지 않게 한다 (되돌리면 없는 파일을 가리키게 된다)
+      undo.current = undo.current.map(strip);
+      redo.current = redo.current.map(strip);
+      // 서버는 저장본에서도 지웠으므로 ‘저장됨’ 기준도 맞춘다
+      setSavedJson((j) => (j ? JSON.stringify(strip(JSON.parse(j))) : j));
+      toast.success("그림을 삭제했습니다.");
+    } catch (e) {
+      toastError(e, "삭제 실패: ");
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   /* ---------- 이미지 올리기 ---------- */
 
   const pickFile = (): Promise<File | null> =>
@@ -586,13 +617,22 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
             {tab === "ai" && (
               <>
                 <div>
-                  <div className="mb-1 flex items-center justify-between">
-                    <label className="label mb-0">기본 지시 (디자이너 역할)</label>
-                    <button className="btn-ghost text-[11px]" disabled={design.ai.system === DEFAULT_SYSTEM_PROMPT} onClick={() => update((d) => ({ ...d, ai: { ...d.ai, system: DEFAULT_SYSTEM_PROMPT } }))}>
-                      기본값으로
-                    </button>
+                  <label className="label">프롬프트 안</label>
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-stone-600">
+                    <span className="shrink-0">요청 크기</span>
+                    <input
+                      className="input py-0.5 font-mono text-[11px]"
+                      style={{ width: 96 }}
+                      value={design.ai.requestSize}
+                      onChange={(e) => update((d) => ({ ...d, ai: { ...d.ai, requestSize: e.target.value.trim() || "auto" } }), "ai.size")}
+                      title="auto 또는 가로x세로 (예: 1536x1024)"
+                    />
+                    <span className="font-mono text-stone-500">→ {requestSize(rbox, design.ai.requestSize)}</span>
                   </div>
-                  <textarea className="input h-40 text-xs leading-5" value={design.ai.system} onChange={(e) => update((d) => ({ ...d, ai: { ...d.ai, system: e.target.value } }), "ai.system")} />
+                  <pre className="h-56 overflow-auto whitespace-pre-wrap rounded border border-stone-200 bg-stone-50 p-2 text-[11px] leading-4 text-stone-600">
+                    {`[요청 크기] ${requestSize(rbox, design.ai.requestSize)}${design.ai.requestSize === "auto" ? " (auto: 영역 비율에 맞춘 최대 크기)" : ""} · 거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxAt300(rbox.w)}×${pxAt300(rbox.h)}px(300 DPI)로 저장\n\n${buildImagePrompt(design, book, region)}`}
+                  </pre>
+                  <p className="mt-1 text-[11px] text-stone-500">디자이너 역할 지시·책 정보·펼침면 배치는 자동으로 들어갑니다. 아래 추가 지시와 체크를 바꾸면 바로 반영됩니다.</p>
                 </div>
                 <div>
                   <label className="label">추가 지시 (이 책에서 강조할 것)</label>
@@ -602,7 +642,6 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     value={design.ai.instruction}
                     onChange={(e) => update((d) => ({ ...d, ai: { ...d.ai, instruction: e.target.value } }), "ai.instruction")}
                   />
-                  <p className="mt-1 text-[11px] text-stone-500">기본 지시 + 책 정보(제목·주제·핵심 메시지·독자·목차) + 펼침면 배치에 이 지시를 더해 요청합니다.</p>
                 </div>
                 <label className="flex items-start gap-2 text-xs">
                   <input type="checkbox" className="mt-0.5" checked={design.ai.withTitle} onChange={(e) => update((d) => ({ ...d, ai: { ...d.ai, withTitle: e.target.checked } }))} />
@@ -610,19 +649,6 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     제목·저자명을 그림에 넣기 <span className="text-stone-500">(앞표지 + 책등 세로). 끄면 글자 없는 배경을 만들고 제목은 [글·사진]의 글 상자로 올립니다.</span>
                   </span>
                 </label>
-                <details className="text-xs">
-                  <summary className="cursor-pointer text-stone-500">고급 · 보낼 프롬프트 보기</summary>
-                  <label className="label mt-2">요청 크기</label>
-                  <input
-                    className="input py-1 font-mono text-xs"
-                    value={design.ai.requestSize}
-                    onChange={(e) => update((d) => ({ ...d, ai: { ...d.ai, requestSize: e.target.value.trim() || "auto" } }), "ai.size")}
-                  />
-                  <p className="mt-1 text-[11px] text-stone-500">
-                    auto = 영역 비율에 맞춘 최대 크기 ({requestSize(rbox)}). 모델이 거부하면 {rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청합니다. 받은 그림은 영역에 맞춰 300 DPI 크기로 키워 저장합니다.
-                  </p>
-                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-stone-50 p-2 text-[11px] leading-4 text-stone-600">{buildImagePrompt(design, book, region)}</pre>
-                </details>
                 {busy === "ai" ? (
                   <button className="btn-primary w-full bg-red-700 hover:bg-red-800" onClick={() => aiAbort.current?.abort()}>
                     ■ 그리는 중… {elapsed}초 (1~3분) — 멈추기
@@ -674,19 +700,30 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     <label className="label">만든 그림 (눌러서 이 영역에 쓰기)</label>
                     <div className="grid grid-cols-2 gap-2">
                       {[...design.ai.history].reverse().map((h) => (
-                        <button
-                          key={h.assetId}
-                          className={`overflow-hidden rounded border ${Object.values(design.images).some((i) => i?.assetId === h.assetId) ? "border-amber-600 ring-2 ring-amber-200" : "border-stone-200"}`}
-                          title={`${REGION_LABEL[h.region]} · ${new Date(h.at).toLocaleString()}`}
-                          onClick={() => update((d) => ({ ...d, images: { ...d.images, [region]: { assetId: h.assetId, widthPx: h.widthPx, heightPx: h.heightPx, fit: "cover", posX: 50, posY: 50, zoom: 1, ai: true, spineMm: h.region === "full" ? l.spine : undefined } } }))}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img alt="" src={src(h.assetId)} className="h-16 w-full object-cover" loading="lazy" />
-                          <div className="truncate px-1 text-[10px] text-stone-500">
-                            {REGION_LABEL[h.region]}
-                            {h.edit ? " · 수정본" : ""}
-                          </div>
-                        </button>
+                        <div key={h.assetId} className="group relative">
+                          <button
+                            className={`block w-full overflow-hidden rounded border ${Object.values(design.images).some((i) => i?.assetId === h.assetId) ? "border-amber-600 ring-2 ring-amber-200" : "border-stone-200"}`}
+                            title={`${REGION_LABEL[h.region]} · ${new Date(h.at).toLocaleString()}`}
+                            disabled={deleting === h.assetId}
+                            onClick={() => update((d) => ({ ...d, images: { ...d.images, [region]: { assetId: h.assetId, widthPx: h.widthPx, heightPx: h.heightPx, fit: "cover", posX: 50, posY: 50, zoom: 1, ai: true, spineMm: h.region === "full" ? l.spine : undefined } } }))}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img alt="" src={src(h.assetId)} className={`h-16 w-full object-cover ${deleting === h.assetId ? "opacity-30" : ""}`} loading="lazy" />
+                            <div className="truncate px-1 text-left text-[10px] text-stone-500">
+                              {REGION_LABEL[h.region]}
+                              {h.edit ? " · 수정본" : ""}
+                            </div>
+                          </button>
+                          <button
+                            className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-[11px] leading-none text-white opacity-0 transition hover:bg-red-700 group-hover:opacity-100 focus:opacity-100"
+                            title="이 그림 삭제 (저장소에서도 지웁니다)"
+                            aria-label="그림 삭제"
+                            disabled={!!deleting || !!busy}
+                            onClick={() => deleteHistory(h.assetId)}
+                          >
+                            ✕
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>

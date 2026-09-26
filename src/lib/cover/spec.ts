@@ -107,7 +107,7 @@ export type CoverDesign = {
   bgColor: string;
   images: Partial<Record<Region, CoverImage>>;
   elements: CoverEl[];
-  ai: { system: string; instruction: string; withTitle: boolean; requestSize: string; history: { assetId: string; widthPx: number; heightPx: number; region: Region; at: string; edit?: boolean }[] };
+  ai: { instruction: string; withTitle: boolean; requestSize: string; history: { assetId: string; widthPx: number; heightPx: number; region: Region; at: string; edit?: boolean }[] };
   updatedAt?: string;
 };
 
@@ -265,7 +265,7 @@ export function defaultCover(project: { title?: string; subtitle?: string; autho
     bgColor: "#ffffff",
     images: {},
     elements: [],
-    ai: { system: DEFAULT_SYSTEM_PROMPT, instruction: "", withTitle: true, requestSize: "auto", history: [] },
+    ai: { instruction: "", withTitle: true, requestSize: "auto", history: [] },
   };
   return d;
 }
@@ -398,7 +398,6 @@ export function normalizeCover(v: any): CoverDesign {
     images,
     elements: (Array.isArray(v?.elements) ? v.elements : []).slice(0, 200).map(normEl).filter(Boolean) as CoverEl[],
     ai: {
-      system: str(v?.ai?.system, 8000, DEFAULT_SYSTEM_PROMPT) || DEFAULT_SYSTEM_PROMPT,
       instruction: str(v?.ai?.instruction, 4000),
       withTitle: v?.ai?.withTitle === undefined ? true : Boolean(v.ai.withTitle),
       requestSize: /^(auto|\d{3,5}x\d{3,5})$/.test(v?.ai?.requestSize ?? "") ? v.ai.requestSize : "auto",
@@ -446,11 +445,11 @@ export type BookInfo = { title: string; subtitle: string; author: string; topic:
 
 const pct = (v: number, total: number) => `${((v / total) * 100).toFixed(1)}%`;
 
-/** AI 제작 프롬프트 — 기본 지시(편집 가능) + 책 정보 + 배치 + 글자 지시 + 사용자 지시 */
+/** AI 제작 프롬프트 — 기본 지시(디자이너 역할, 고정) + 책 정보 + 배치 + 글자 지시 + 사용자 지시 */
 export function buildImagePrompt(d: CoverDesign, book: BookInfo, region: Region) {
   const l = coverLayout(d);
   const box = regionBox(l, region);
-  const lines: string[] = [d.ai.system.trim() || DEFAULT_SYSTEM_PROMPT, ""];
+  const lines: string[] = [DEFAULT_SYSTEM_PROMPT, ""];
 
   lines.push("[책 정보]");
   lines.push(`- 제목: ${book.title}`);
