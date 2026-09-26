@@ -27,10 +27,10 @@ import type { ProjectTree, SectionPageInfo, TreeChapter, TreeSection } from "../
 import { Figure } from "./Figure";
 import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
-import ProofPanel, { type AppliedChange } from "./ProofPanel";
+import type { AppliedChange } from "./ProofPanel";
+import FindPanel from "./FindPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround } from "./pmOps";
 import { recoverPending, registerCommit, settleSection, useAutosave, type SaveState } from "./useAutosave";
-import FindPanel from "./FindPanel";
 import type { BatchItem, SectionRef } from "./BatchWriteDialog";
 import { BATCH_MAX } from "./batch";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
@@ -38,12 +38,14 @@ import { startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
 import type { AutoItem, AutoOptions } from "@/lib/autowrite";
 import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, takeProofResult, useProofJobs } from "./proofJobs";
 import WritingOverlay from "./WritingOverlay";
-import FootnotePopover from "./FootnotePopover";
 import ToolGroup from "./ToolGroup";
 import Menu from "./Menu";
-import InlineDiff, { ParagraphDiff } from "../InlineDiff";
 
 // 열 때만 필요한 창·패널은 따로 불러온다
+const ProofPanel = dynamic(() => import("./ProofPanel"));
+const FootnotePopover = dynamic(() => import("./FootnotePopover"));
+const InlineDiff = dynamic(() => import("../InlineDiff"));
+const ParagraphDiff = dynamic(() => import("../InlineDiff").then((mod) => mod.ParagraphDiff));
 const VersionsPanel = dynamic(() => import("./VersionsPanel"));
 const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
 const BatchWriteDialog = dynamic(() => import("./BatchWriteDialog"));

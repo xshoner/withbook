@@ -8,6 +8,32 @@ export type ParaDiffRow = { type: "same" | "add" | "del"; text: string } | { typ
 
 const MAX_TOKENS = 3000;
 
+/** LCS lengths need only two rows; traceback needs one deletion bit per cell.
+ * Ties still prefer deletion, preserving the existing comparison exactly.
+ */
+function deletionSteps(a: string[], b: string[]): Uint8Array {
+  const m = b.length;
+  const steps = new Uint8Array(Math.ceil(a.length * m / 8));
+  let next = new Uint32Array(m + 1);
+  let row = new Uint32Array(m + 1);
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      if (a[i] === b[j]) row[j] = next[j + 1] + 1;
+      else if (next[j] >= row[j + 1]) {
+        row[j] = next[j];
+        const cell = i * m + j;
+        steps[Math.floor(cell / 8)] |= 1 << (cell % 8);
+      } else row[j] = row[j + 1];
+    }
+    [next, row] = [row, next];
+  }
+  return steps;
+}
+
+function isDeletion(steps: Uint8Array, cell: number): boolean {
+  return (steps[Math.floor(cell / 8)] & (1 << (cell % 8))) !== 0;
+}
+
 /** 어절 · 공백 · 문장부호(한 글자씩)로 쪼갠다 — 이어 붙이면 원문 그대로 */
 export function tokenize(s: string): string[] {
   return s.match(/\s+|[\p{L}\p{N}\p{M}_]+|[^\s\p{L}\p{N}\p{M}_]/gu) ?? [];
@@ -65,9 +91,7 @@ export function diffWords(a: string, b: string): WordDiff[] {
   } else {
     const n = xa.length;
     const m = xb.length;
-    const w = m + 1;
-    const dp = new Uint16Array((n + 1) * w);
-    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i * w + j] = xa[i] === xb[j] ? dp[(i + 1) * w + j + 1] + 1 : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+    const steps = deletionSteps(xa, xb);
     let i = 0;
     let j = 0;
     while (i < n && j < m) {
@@ -75,7 +99,7 @@ export function diffWords(a: string, b: string): WordDiff[] {
         parts.push({ type: "same", text: xa[i] });
         i++;
         j++;
-      } else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) parts.push({ type: "del", text: xa[i++] });
+      } else if (isDeletion(steps, i * m + j)) parts.push({ type: "del", text: xa[i++] });
       else parts.push({ type: "add", text: xb[j++] });
     }
     while (i < n) parts.push({ type: "del", text: xa[i++] });
@@ -109,8 +133,7 @@ const PAIR_MIN = 0.3;
 export function diffDocParagraphs(a: string[], b: string[]): ParaDiffRow[] {
   const n = a.length;
   const m = b.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const steps = deletionSteps(a, b);
   const rows: { type: "same" | "add" | "del"; text: string }[] = [];
   let i = 0;
   let j = 0;
@@ -119,7 +142,7 @@ export function diffDocParagraphs(a: string[], b: string[]): ParaDiffRow[] {
       rows.push({ type: "same", text: a[i] });
       i++;
       j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) rows.push({ type: "del", text: a[i++] });
+    } else if (isDeletion(steps, i * m + j)) rows.push({ type: "del", text: a[i++] });
     else rows.push({ type: "add", text: b[j++] });
   }
   while (i < n) rows.push({ type: "del", text: a[i++] });

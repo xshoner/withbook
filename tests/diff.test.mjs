@@ -73,3 +73,44 @@ test('diffDocParagraphs emits inserted paragraphs before a paired change in orde
   const rows = diffDocParagraphs(a, b);
   assert.deepEqual(rows.map((r) => r.type), ['add', 'change']);
 });
+
+// Independent full-matrix reference: catches traceback/tie-breaking regressions.
+function referenceRows(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--)
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const rows = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { rows.push({ type: 'same', text: a[i++] }); j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) rows.push({ type: 'del', text: a[i++] });
+    else rows.push({ type: 'add', text: b[j++] });
+  }
+  while (i < a.length) rows.push({ type: 'del', text: a[i++] });
+  while (j < b.length) rows.push({ type: 'add', text: b[j++] });
+  return rows;
+}
+
+test('compact traceback preserves LCS ties across repeated paragraphs and bit boundaries', () => {
+  let seed = 12345;
+  const rand = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+  // Distinct tokens never pair as changed paragraphs, so raw LCS rows are observable.
+  const values = ['가', '나', '다', '라'];
+  for (let t = 0; t < 1000; t++) {
+    const arr = () => Array.from({ length: Math.floor(rand() * 25) }, () => values[Math.floor(rand() * values.length)]);
+    const a = arr(), b = arr();
+    assert.deepEqual(diffDocParagraphs(a, b), referenceRows(a, b));
+    const words = diffWords(a.join(' '), b.join(' '));
+    assert.equal(side(words, 'del'), a.join(' '));
+    assert.equal(side(words, 'add'), b.join(' '));
+  }
+});
+
+test('long repeated-token comparisons retain both texts near the token limit', () => {
+  const a = '시작 ' + '가 나 '.repeat(700) + '끝';
+  const b = '다른 ' + '나 가 '.repeat(700) + '마침';
+  const d = diffWords(a, b);
+  assert.equal(side(d, 'del'), a);
+  assert.equal(side(d, 'add'), b);
+  assert.ok(d.some(p => p.type === 'same'));
+});

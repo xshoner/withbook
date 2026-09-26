@@ -128,6 +128,8 @@ class Writer {
   paras: string[] = [];
   pid = 0;
   images: Img[] = [];
+  private imageByAsset = new Map<string, Img>();
+  private pictureCount = 0;
   first = true;
   notes = 0;
   constructor(private book: Book, private assets: Map<string, Loaded> = new Map()) {}
@@ -168,11 +170,17 @@ class Writer {
     const a = n.attrs ?? {};
     const asset = a.assetId ? this.assets.get(String(a.assetId)) : undefined;
     if (!asset) return;
-    const data = asset.data;
-    const idx = this.images.length + 1;
-    const ext = path.extname(asset.path).slice(1) || "png";
-    const img: Img = { id: `image${idx}`, file: `BinData/image${idx}.${ext}`, mime: asset.mime, data, w: asset.widthPx, h: asset.heightPx };
-    this.images.push(img);
+    // Repeated figures share original bytes; each placement keeps its own ID and size.
+    const idx = ++this.pictureCount;
+    const assetId = String(a.assetId);
+    let img = this.imageByAsset.get(assetId);
+    if (!img) {
+      const imageIdx = this.images.length + 1;
+      const ext = path.extname(asset.path).slice(1) || "png";
+      img = { id: `image${imageIdx}`, file: `BinData/image${imageIdx}.${ext}`, mime: asset.mime, data: asset.data, w: asset.widthPx, h: asset.heightPx };
+      this.images.push(img);
+      this.imageByAsset.set(assetId, img);
+    }
     const layout = (a.layout ?? "fit") as FigureLayout;
     const wMm = layout === "fullbleed" ? 103 : printWidthMm(layout, a.widthMm, asset.widthPx, asset.heightPx);
     const W = mmToHwp(wMm);
