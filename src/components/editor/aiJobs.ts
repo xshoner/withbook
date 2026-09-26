@@ -93,16 +93,27 @@ export function waitJobIdle(sectionId: string): Promise<void> {
 /** 끝난 새 버전 후보·오류 기록을 치운다 */
 export function clearJob(sectionId: string) {
   if (jobs.get(sectionId)?.state === "running") return;
-  jobs.delete(sectionId);
+  forget(sectionId);
   emit();
 }
 
+/**
+ * 진행 중인 작업 객체(runJob이 쥐고 고치는 것). jobs에는 화면용 복사본을 넣는다 — 그래서 "지금 이 절의 작업인가"는 복사본이 아니라 이것과 비교한다.
+ * (예전에는 jobs의 값과 비교해 첫 갱신 뒤 복사본으로 바뀌면서 이후 진행·완료 상태가 화면에 반영되지 않았다)
+ */
+const live = new Map<string, AiJob>();
+
 function update(j: AiJob, patch: Partial<AiJob>) {
   Object.assign(j, patch);
-  if (jobs.get(j.sectionId) === j) {
+  if (live.get(j.sectionId) === j && jobs.has(j.sectionId)) {
     jobs.set(j.sectionId, { ...j }); // 새 객체 → 구독하는 화면이 다시 그린다
     emit();
   }
+}
+
+function forget(sectionId: string) {
+  jobs.delete(sectionId);
+  live.delete(sectionId);
 }
 
 /** 편집기가 없을 때 — 서버의 지금 본문을 기준으로 결과를 만들어 저장 큐로 저장 */
@@ -142,7 +153,8 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   if (o.signal) o.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   ctrls.set(o.sectionId, ctrl);
   const job: AiJob = { sectionId: o.sectionId, label: o.label, mode: o.mode, state: "running", status: "준비 중…", md: "", chars: 0, target: o.target, batch: o.batch, figures: o.figures ?? [], startedAt: Date.now(), auto: o.auto };
-  jobs.set(o.sectionId, job);
+  jobs.set(o.sectionId, { ...job });
+  live.set(o.sectionId, job);
   emit();
   let md = "";
   let last = 0;
@@ -199,7 +211,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
     update(job, { state: job.error ? "error" : "aborted" });
     if (job.error && !o.quiet) toast.error(`AI 오류 (${job.label}): ${job.error}`);
     if (job.mode !== "newVersion" || !job.error) {
-      jobs.delete(o.sectionId);
+      forget(o.sectionId);
       emit();
     }
     return job;
@@ -222,7 +234,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
     if (!job.error) job.error = e instanceof Error ? e.message : String(e);
     if (!o.quiet) toast.error(e instanceof Error ? e.message : String(e));
   }
-  jobs.delete(o.sectionId);
+  forget(o.sectionId);
   emit();
   if (content) {
     api(`/api/sections/${o.sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
