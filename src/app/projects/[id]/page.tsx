@@ -22,6 +22,7 @@ const BookSearchDialog = dynamic(() => import("@/components/BookSearchDialog"));
 const ChecksDialog = dynamic(() => import("@/components/ChecksDialog"));
 const ExportDialog = dynamic(() => import("@/components/ExportDialog"));
 const PreviewPane = dynamic(() => import("@/components/PreviewPane"));
+const AutoWritePanel = dynamic(() => import("@/components/editor/AutoWritePanel"));
 
 export default function Workspace() {
   const { id } = useParams<{ id: string }>();
@@ -472,6 +473,14 @@ export default function Workspace() {
           onCount={setCheckCount}
         />
       )}
+      <AutoWritePanel
+        projectId={id}
+        onGoto={(sid) => {
+          setView("edit");
+          setCurrent(sid);
+        }}
+        onEdited={onServerEdited}
+      />
       {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} />}
     </div>
   );

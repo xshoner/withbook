@@ -34,6 +34,8 @@ import FindPanel from "./FindPanel";
 import type { BatchItem, SectionRef } from "./BatchWriteDialog";
 import { BATCH_MAX } from "./batch";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
+import { startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
+import type { AutoItem, AutoOptions } from "@/lib/autowrite";
 import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, takeProofResult, useProofJobs } from "./proofJobs";
 import WritingOverlay from "./WritingOverlay";
 import FootnotePopover from "./FootnotePopover";
@@ -45,6 +47,7 @@ import InlineDiff, { ParagraphDiff } from "../InlineDiff";
 const VersionsPanel = dynamic(() => import("./VersionsPanel"));
 const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
 const BatchWriteDialog = dynamic(() => import("./BatchWriteDialog"));
+const AutoWriteDialog = dynamic(() => import("./AutoWriteDialog"));
 
 type Props = {
   project: ProjectTree;
@@ -109,6 +112,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [targetPages, setTargetPages] = useState<number>(section.targetPages || 3);
   const [modeAsk, setModeAsk] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
+  const [autoOpen, setAutoOpen] = useState(false);
+  // 전체 자동 집필의 팩트체크·검수가 이 절을 고치는 중이면 잠근다
+  const autoChecking = useAutoChecking(section.id);
+  const autoDriving = useAutoWrite().driving;
   const [reviseOpen, setReviseOpen] = useState(false);
   const revisedRef = useRef(false);
   const [candidate, setCandidate] = useState<string | null>(null);
@@ -302,8 +309,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   editorRef.current = editor;
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
-    editor.setEditable(!locked && !proofBusy, false); // false: update 이벤트를 내지 않아 상태가 '수정 중'으로 바뀌지 않게
-  }, [editor, locked, proofBusy]);
+    editor.setEditable(!locked && !proofBusy && !autoChecking, false); // false: update 이벤트를 내지 않아 상태가 '수정 중'으로 바뀌지 않게
+  }, [editor, locked, proofBusy, autoChecking]);
 
   /* ---------- 쪽 나눔 (실제 조판처럼 쪽마다 끊고 사이를 띄운다) ---------- */
   const margins = project.layout.margins;
@@ -634,6 +641,14 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       .then((done) => done.length && toast.success(`${done.length}개 절을 집필했습니다: ${done.join(", ")}`))
       .catch((e) => toastError(e, "AI 오류: "))
       .finally(tree);
+  }
+
+  /** 전체 자동 집필 — 진행은 autoWrite(편집기 밖)가 맡고, 진행 창은 편집 화면 오른쪽 아래에 뜬다 */
+  async function startAuto(items: AutoItem[], options: AutoOptions) {
+    setAutoOpen(false);
+    if (!(await flush())) return toast.error("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 시작해주세요.");
+    noteExtraUsed(options.extraInstruction);
+    startAutoRun(project.id, items, options).catch((e) => toastError(e, "전체 자동 집필: "));
   }
 
   const startWrite = (mode: "overwrite" | "continue" | "newVersion") => {
@@ -1122,6 +1137,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 >
                   ⧉ 다중 집필
                 </button>
+                <button
+                  className="btn border-violet-600 text-violet-800 hover:bg-violet-50"
+                  disabled={autoDriving || proofBusy || !!rewriteBusy}
+                  onClick={() => {
+                    setModeAsk(false);
+                    setAutoOpen(true);
+                  }}
+                  title={autoDriving ? "전체 자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : "첫 장부터 마지막 장까지 절마다 집필 → 팩트체크 → 검수를 AI가 자동으로 진행"}
+                >
+                  ⚡ 전체 자동 집필
+                </button>
               </div>
               {modeAsk && (
                 <div className="absolute right-0 top-10 z-30 w-64 rounded-lg border border-stone-200 bg-white p-2 shadow-xl">
@@ -1259,6 +1285,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           <div className="flex items-center gap-2 border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
             교정·교열 중 — 끝날 때까지 이 절은 잠겨 있습니다. 목차에서 다른 절로 옮겨 작업해도 교정은 계속되고, 끝나면 알려 드립니다.
+          </div>
+        )}
+        {autoChecking && (
+          <div className="flex items-center gap-2 border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-violet-700 border-t-transparent" />
+            전체 자동 집필이 이 절을 팩트체크·검수하는 중 — 끝나면 고친 원고를 다시 불러옵니다. 그동안 이 절은 잠겨 있습니다.
           </div>
         )}
         {(notice || lengthHint) && (
@@ -1647,6 +1679,16 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             // 서버에서 고친 원고를 다시 불러온다 (창을 닫을 때 — 적용 결과 안내를 읽을 수 있게)
             if (revisedRef.current) onServerEdited();
           }}
+        />
+      )}
+
+      {autoOpen && (
+        <AutoWriteDialog
+          projectId={project.id}
+          initialExtra={extra.trim() || (extraMem.keep ? extraMem.text : "") || extraMem.recent[0] || ""}
+          recentExtra={extraMem.recent}
+          onClose={() => setAutoOpen(false)}
+          onStart={startAuto}
         />
       )}
 

@@ -6,12 +6,14 @@ import { parseDoc } from "@/lib/doc/doc";
 import { findMarkers, resolveMarker } from "@/lib/doc/edit";
 import { editSections } from "@/lib/section-edit";
 
-/** 책 전체에 남은 [확인 필요]·[이미지 제안] 표시 목록 */
-export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/projects/[id]/checks">) => {
+/** 책 전체(sectionId를 주면 그 절)에 남은 [확인 필요]·[이미지 제안] 표시 목록 */
+export const GET = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]/checks">) => {
   const { id } = await ctx.params;
+  const only = new URL(req.url).searchParams.get("sectionId");
   const book = await loadBook(id);
   if (!book) return fail("프로젝트를 찾을 수 없습니다.", 404);
   const sections = flatSections(book)
+    .filter(({ section }) => !only || section.id === only)
     .map(({ chapter, section }) => ({
       sectionId: section.id,
       label: section.label,

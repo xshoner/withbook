@@ -35,6 +35,10 @@ export type AiJob = {
   error?: string;
   /** 시작 시각 — 첫 문장이 나오기 전 경과 시간 표시용 */
   startedAt: number;
+  /** 전체 자동 집필이 시작한 작업 — 상단 [■]은 자동 집필을 멈춘다 */
+  auto?: boolean;
+  /** 끝났을 때 중지된 상태였나 (사용자 중지 포함) */
+  stopped?: boolean;
 };
 
 type Applier = (job: AiJob, doc: JNode) => Promise<string | null>;
@@ -122,6 +126,9 @@ export type StartOptions = {
   figures?: JNode[];
   batch?: { i: number; n: number };
   signal?: AbortSignal;
+  auto?: boolean;
+  /** 완료·오류 알림을 띄우지 않는다 (부른 쪽이 따로 보여 준다) */
+  quiet?: boolean;
 };
 
 /** 작업 하나를 시작하고 끝날 때까지 기다린다 (결과는 applier 또는 저장 큐로 반영) */
@@ -132,7 +139,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   const ctrl = new AbortController();
   if (o.signal) o.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   ctrls.set(o.sectionId, ctrl);
-  const job: AiJob = { sectionId: o.sectionId, label: o.label, mode: o.mode, state: "running", status: "준비 중…", md: "", chars: 0, target: o.target, batch: o.batch, figures: o.figures ?? [], startedAt: Date.now() };
+  const job: AiJob = { sectionId: o.sectionId, label: o.label, mode: o.mode, state: "running", status: "준비 중…", md: "", chars: 0, target: o.target, batch: o.batch, figures: o.figures ?? [], startedAt: Date.now(), auto: o.auto };
   jobs.set(o.sectionId, job);
   emit();
   let md = "";
@@ -185,9 +192,10 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   }
 
   const aborted = ctrl.signal.aborted;
+  job.stopped = aborted;
   if (!md.trim()) {
     update(job, { state: job.error ? "error" : "aborted" });
-    if (job.error) toast.error(`AI 오류 (${job.label}): ${job.error}`);
+    if (job.error && !o.quiet) toast.error(`AI 오류 (${job.label}): ${job.error}`);
     if (job.mode !== "newVersion" || !job.error) {
       jobs.delete(o.sectionId);
       emit();
@@ -209,17 +217,18 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
     const ap = appliers.get(o.sectionId);
     content = ap ? await ap(job, doc) : await saveDetached(job, doc);
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : String(e));
+    if (!job.error) job.error = e instanceof Error ? e.message : String(e);
+    if (!o.quiet) toast.error(e instanceof Error ? e.message : String(e));
   }
   jobs.delete(o.sectionId);
   emit();
   if (content) {
     api(`/api/sections/${o.sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
     scheduleSummaryPreparation(o.sectionId, undefined, 0);
-    if (!appliers.has(o.sectionId)) toast.success(`${job.label} ${aborted ? "쓴 데까지 저장했습니다" : "집필을 마쳤습니다"}.`);
-    if (job.error) toast.error(`AI 오류 (${job.label}): ${job.error} — 쓴 데까지는 넣었습니다.`);
-  }
-  if (job.notice) toast(`${job.label}: ${job.notice}`, { sticky: true });
+    if (!appliers.has(o.sectionId) && !o.quiet) toast.success(`${job.label} ${aborted ? "쓴 데까지 저장했습니다" : "집필을 마쳤습니다"}.`);
+    if (job.error && !o.quiet) toast.error(`AI 오류 (${job.label}): ${job.error} — 쓴 데까지는 넣었습니다.`);
+  } else if (!job.error) job.error = "AI가 쓴 원고를 저장하지 못했습니다.";
+  if (job.notice && !o.quiet) toast(`${job.label}: ${job.notice}`, { sticky: true });
   return job;
 }
 
