@@ -51,3 +51,26 @@ test('summary and completion', () => {
   assert.ok(isAutoRun(r));
   assert.equal(isAutoRun({ ...r, version: 2 }), false);
 });
+
+import { markdownToDoc, textblocks, findFootnotes } from '../src/lib/doc/doc.ts';
+import { trimIncompleteTail } from '../src/lib/doc/edit.ts';
+import { paragraphRanges } from '../src/lib/autowrite.ts';
+
+test('a cut-off tail loses only the half sentence', () => {
+  const t = (d) => textblocks(d).map((b) => b.text);
+  const cut = markdownToDoc('첫 문단이다.\n\n둘째 문단의 첫 문장이다⟦주:각주.⟧. 셋째 문장은 중간에서 끊');
+  assert.deepEqual(t(trimIncompleteTail(cut)), ['첫 문단이다.', '둘째 문단의 첫 문장이다.']);
+  assert.equal(findFootnotes(trimIncompleteTail(cut)).length, 1);
+  const whole = markdownToDoc('끝난 문장이다.\n\n“인용으로 끝났다.”');
+  assert.equal(trimIncompleteTail(whole), whole);
+  // 완결 문장이 없는 마지막 문단은 비운다
+  assert.deepEqual(t(trimIncompleteTail(markdownToDoc('앞 문단.\n\n끊긴 문단'))), ['앞 문단.', '']);
+});
+
+test('review ranges cover every non-empty paragraph once, near the size', () => {
+  const texts = ['a'.repeat(4000), '', 'b'.repeat(3000), 'c'.repeat(2500), 'd'.repeat(100), ''];
+  const r = paragraphRanges(texts, 6000);
+  assert.deepEqual(r, [{ from: 1, to: 2 }, { from: 3, to: 6 }]);
+  assert.deepEqual(paragraphRanges(['', ''], 6000), []);
+  assert.deepEqual(paragraphRanges(['x'.repeat(9000), 'y'], 6000), [{ from: 1, to: 1 }, { from: 2, to: 2 }]);
+});

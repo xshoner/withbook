@@ -126,3 +126,22 @@ export function isAutoRun(v: unknown): v is AutoRun {
   const r = v as AutoRun;
   return !!r && r.version === 1 && typeof r.runId === "string" && Array.isArray(r.items) && r.items.length <= 2000 && typeof r.options === "object" && !!r.options;
 }
+
+/** 문단 글들을 약 size자씩 묶은 문단 번호 범위(1부터, 양끝 포함) — 검수를 요청 여러 개로 나눌 때. 빈 문단만 있는 범위는 만들지 않는다 */
+export function paragraphRanges(texts: string[], size: number): { from: number; to: number }[] {
+  const out: { from: number; to: number }[] = [];
+  let from = 0;
+  let len = 0;
+  texts.forEach((t, i) => {
+    if (len > 0 && len + t.length > size) {
+      out.push({ from, to: i });
+      from = 0;
+      len = 0;
+    }
+    if (!t.trim()) return;
+    if (!from) from = i + 1;
+    len += t.length;
+  });
+  if (from) out.push({ from, to: texts.length });
+  return out;
+}

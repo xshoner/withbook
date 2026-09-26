@@ -356,3 +356,28 @@ export function applyFactCheck(doc: JNode, m: FactTarget, sentence: string, repl
   });
   return ok ? next : null;
 }
+
+/* ---------------- 시간 한도로 끊긴 원고 ---------------- */
+
+const DONE_END = /[.!?。…"'”’)\]」』]\s*$/;
+
+/**
+ * 마지막 문단이 문장 중간에서 끊겼으면 마지막 완결 문장 뒤를 지운다(이어 쓸 때 반쪽 문장이 남지 않게).
+ * 완결 문장이 하나도 없으면 그 문단 글을 비운다. 끊기지 않았으면 그대로(같은 객체).
+ */
+export function trimIncompleteTail(doc: JNode): JNode {
+  const texts = textblocks(doc).map((b) => b.text);
+  let last = texts.length;
+  while (last > 0 && !texts[last - 1].trim()) last--;
+  if (!last) return doc;
+  const text = texts[last - 1];
+  if (DONE_END.test(text)) return doc;
+  let cut = 0;
+  for (let i = text.length - 1; i > 0; i--) {
+    if (SENTENCE_END.test(text[i - 1]) && /\s/.test(text[i])) {
+      cut = i;
+      break;
+    }
+  }
+  return mapTextblocks(doc, (block, idx) => (idx === last ? replaceRange(block, cut, text.length, "") : block));
+}

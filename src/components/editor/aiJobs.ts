@@ -39,6 +39,8 @@ export type AiJob = {
   auto?: boolean;
   /** 끝났을 때 중지된 상태였나 (사용자 중지 포함) */
   stopped?: boolean;
+  /** 출력 한도·서버 시간 한도로 끝까지 쓰지 못했다 (쓴 데까지는 넣었다) */
+  truncated?: boolean;
 };
 
 type Applier = (job: AiJob, doc: JNode) => Promise<string | null>;
@@ -165,7 +167,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
           resume = { fromPart: e.fromPart, parts: e.parts };
           return;
         }
-        if (e.t === "status" && e.v === "truncated") return update(job, { notice: "AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다." });
+        if (e.t === "status" && e.v === "truncated") return update(job, { truncated: true, notice: "AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다." });
         if (e.t === "status" && e.v === "partial") return; // 아래에서 자동으로 이어 쓴다
         if (e.t === "status") return update(job, { status: e.v ?? "" });
         if (e.t === "delta") {
@@ -184,7 +186,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
       update(job, { status: `이어서 쓰는 중… (${next.fromPart + 1}/${next.parts.length})` });
     }
     if ((resume as Resume | null) && !ctrl.signal.aborted)
-      update(job, { notice: "긴 절이라 자동으로 여러 번 이어 썼지만 끝까지 쓰지 못했습니다. [집필하기 → 뒤에 이어쓰기]로 나머지를 이어 쓰세요." });
+      update(job, { truncated: true, notice: "긴 절이라 자동으로 여러 번 이어 썼지만 끝까지 쓰지 못했습니다. [집필하기 → 뒤에 이어쓰기]로 나머지를 이어 쓰세요." });
   } catch (e) {
     if (!ctrl.signal.aborted) update(job, { error: e instanceof Error ? e.message : String(e) });
   } finally {

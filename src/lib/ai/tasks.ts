@@ -641,14 +641,16 @@ function splitValid<C extends { paragraph: number; before: string; after: string
   return { valid, failed };
 }
 
-export async function proofread(sectionId: string, contentJson: string, level: "proof" | "light") {
+/** range: 이 문단 범위(1부터, 양끝 포함)만 교정 — 긴 절을 요청 여러 개로 나눠 서버 시간 한도 안에 끝내려고. 문단 번호는 절 전체 기준 그대로 */
+export async function proofread(sectionId: string, contentJson: string, level: "proof" | "light", range?: { from: number; to: number }) {
   const { project } = await sectionLite(sectionId);
   const blocks = textblocks(parseDoc(contentJson)).map((b) => b.text);
   const glossary = glossaryText(project.glossary);
   const sig = signaturePhrases(project.styleProfile);
+  const inRange = (i: number) => !range || (i + 1 >= range.from && i + 1 <= range.to);
 
   // 약 2,000자 단위 문단 묶음, 동시에 3개
-  const results = await mapLimit(chunkBlocks(blocks, 2000), 3, async (idxs) => {
+  const results = await mapLimit(chunkBlocks(blocks.map((t, i) => (inRange(i) ? t : "")), 2000), 3, async (idxs) => {
     const { messages, instructionIncluded } = await buildMessages("proofread", {
       glossary,
       level_light_edit: level === "light",

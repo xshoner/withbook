@@ -1,13 +1,14 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { api } from "@/lib/client";
-import { parseDoc, type JNode } from "@/lib/doc/doc";
-import { allFinished, HEARTBEAT_MS, prepareResume, STALE_MS, type AutoItem, type AutoOptions, type AutoRun, type Stage } from "@/lib/autowrite";
+import { api, readStream, type StreamEvent } from "@/lib/client";
+import { appendDocs, charCount, markdownToDoc, parseDoc, textblocks, type JNode } from "@/lib/doc/doc";
+import { trimIncompleteTail } from "@/lib/doc/edit";
+import { allFinished, HEARTBEAT_MS, paragraphRanges, prepareResume, STALE_MS, type AutoItem, type AutoOptions, type AutoRun, type Stage } from "@/lib/autowrite";
 import { toast } from "../ui/feedback";
 import { registerJobKind, sectionBusyWith } from "./jobStore";
 import { runJob } from "./aiJobs";
-import { flushAllPending } from "./useAutosave";
+import { flushAllPending, saveViaQueue, settleSection } from "./useAutosave";
 import { saveProofResult } from "./proofJobs";
 import type { AppliedChange } from "./ProofPanel";
 
@@ -28,6 +29,8 @@ import type { AppliedChange } from "./ProofPanel";
 
 const OWNER = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random()).slice(2);
 const RETRY_DELAYS = [5_000, 20_000, 60_000];
+/** 검수 요청 하나에 보내는 분량(자) — 서버가 2,000자씩 3개를 동시에 교정하므로 AI 호출 한 번 걸리는 시간 안팎 */
+const REVIEW_CHUNK = 6000;
 const NO_RETRY = /AI 연결 설정이 없습니다|기본 주소를 쓸 수 없습니다|인증에 실패|\(40[134]\)|로그인이 필요/;
 
 export type Activity = { writer: string; checker: string };
@@ -56,14 +59,19 @@ export function onAutoEdited(f: (sectionIds: string[]) => void) {
   };
 }
 
-/* ---------- 점검 중인 절 잠금 (편집·다른 AI 작업과 겹치지 않게) ---------- */
-let checking: string | null = null;
+/* ---------- 서버에서 고치는 중인 절 잠금 (편집·다른 AI 작업과 겹치지 않게) — 점검 줄과 이어쓰기가 서로 다른 절을 잠글 수 있다 ---------- */
+const checking = new Set<string>();
 const lockSubs = new Set<() => void>();
-function setChecking(id: string | null) {
-  checking = id;
+function lock(id: string) {
+  checking.add(id);
   lockSubs.forEach((f) => f());
 }
-export const autoChecking = (sectionId: string) => checking === sectionId;
+function unlock(id: string) {
+  checking.delete(id);
+  lockSubs.forEach((f) => f());
+  editedSubs.forEach((f) => f([id]));
+}
+export const autoChecking = (sectionId: string) => checking.has(sectionId);
 export const useAutoChecking = (sectionId: string) =>
   useSyncExternalStore(
     (f) => {
@@ -72,7 +80,7 @@ export const useAutoChecking = (sectionId: string) =>
         lockSubs.delete(f);
       };
     },
-    () => checking === sectionId,
+    () => checking.has(sectionId),
     () => false,
   );
 registerJobKind("auto", { label: "자동 집필 점검", busy: autoChecking, any: () => state.driving });
@@ -220,7 +228,63 @@ async function writeOne(it: AutoItem, i: number, n: number) {
   }
   if (job.error) throw new Error(job.error);
   if (!job.chars && !job.md.trim()) throw new Error("AI가 본문을 쓰지 않았습니다.");
-  return { chars: job.chars, notice: job.notice };
+  return { chars: job.chars, truncated: !!job.truncated };
+}
+
+/**
+ * 출력·시간 한도로 끝까지 못 쓴 절을 이어 쓴다 — 그 절을 잠그고, 끊긴 반쪽 문장을 지운 뒤, 남은 분량을 [뒤에 이어쓰기]로 붙인다.
+ * 편집기가 열려 있어도 잠금이 풀릴 때 서버 원고를 다시 불러오므로 겹치지 않는다.
+ */
+async function continueOne(it: AutoItem) {
+  const opts = state.run!.options;
+  const cpp = opts.charsPerPage || 700;
+  const signal = ctrl!.signal;
+  lock(it.sectionId);
+  try {
+    if (!(await flushAllPending())) throw new Error("편집 중인 원고를 저장하지 못했습니다.");
+    await settleSection(it.sectionId);
+    const cur = parseDoc((await api<{ content: string }>(`/api/sections/${it.sectionId}`)).content);
+    const trimmed = trimIncompleteTail(cur);
+    if (trimmed !== cur && !(await saveViaQueue(it.sectionId, { content: JSON.stringify(trimmed), status: "ai_draft" }))) throw new Error("원고를 저장하지 못했습니다.");
+    const target = it.targetPages * cpp;
+    const have = charCount(trimmed);
+    // 남은 분량(최소 반 쪽) — 거의 다 썼으면 마무리만
+    const pages = Math.min(60, Math.max(0.5, Math.round(((target - have) / cpp) * 2) / 2));
+    const note = "[자동 이어쓰기] 앞 본문이 한도에 걸려 중간에 끊겼다. 이미 쓴 내용을 되풀이하지 말고 바로 이어서 쓰고, 이 절을 자연스럽게 마무리한다.";
+    const base = { targetPages: pages, mode: "continue", extraInstruction: [opts.extraInstruction, note].filter(Boolean).join("\n\n") };
+    let md = "";
+    let truncated = false;
+    type Resume = { fromPart: number; parts: NonNullable<StreamEvent["parts"]> };
+    let resume = null as Resume | null;
+    for (let round = 0; round < 8; round++) {
+      const body = resume ? { ...base, resume: { fromPart: resume.fromPart, parts: resume.parts, written: md } } : base;
+      resume = null;
+      const res = await fetch(`/api/sections/${it.sectionId}/write`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+      await readStream(res, (e) => {
+        if (e.t === "delta") md += e.v ?? "";
+        else if (e.t === "resume" && e.parts && e.fromPart) resume = { fromPart: e.fromPart, parts: e.parts };
+        else if (e.t === "status" && e.v === "truncated") truncated = true;
+        else if (e.t === "status" && e.v && e.v !== "partial") setActivity("writer", `${it.label} 이어 쓰는 중… ${e.v}`);
+        else if (e.t === "error") throw new Error(e.v);
+      });
+      if (!resume || signal.aborted) break;
+    }
+    if (signal.aborted) throw new Stopped();
+    if (resume) truncated = true;
+    if (!md.trim()) throw new Error("이어 쓴 본문이 없습니다.");
+    await settleSection(it.sectionId);
+    const fresh = parseDoc((await api<{ content: string }>(`/api/sections/${it.sectionId}`)).content);
+    const next = appendDocs(fresh, markdownToDoc(md));
+    const content = JSON.stringify(next);
+    if (!(await saveViaQueue(it.sectionId, { content, status: "ai_draft" }))) throw new Error("이어 쓴 원고를 저장하지 못했습니다.");
+    api(`/api/sections/${it.sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
+    return { chars: charCount(next), truncated };
+  } catch (e) {
+    if (signal.aborted) throw new Stopped();
+    throw e;
+  } finally {
+    unlock(it.sectionId);
+  }
 }
 
 type Marker = { paragraph: number; offset: number; footnote?: number; marker: string; kind: "check" | "image"; before: string };
@@ -257,10 +321,21 @@ async function reviewOne(it: AutoItem) {
   const sec = await api<{ content: string }>(`/api/sections/${it.sectionId}`);
   const before = parseDoc(sec.content) as JNode;
   type Change = { paragraph: number; before: string; after: string; type: string; reason: string };
-  const r = await api<{ changes: Change[]; failed: Change[] }>(`/api/sections/${it.sectionId}/proofread`, {
-    method: "POST",
-    json: { content: sec.content, level },
-  });
+  // 긴 절도 요청 하나가 서버 시간 한도(약 4분)에 걸리지 않게 약 6,000자씩 나눠 부른다 — 문단 번호는 절 전체 기준이라 한 번에 적용한다
+  const ranges = paragraphRanges(textblocks(before).map((b) => b.text), REVIEW_CHUNK);
+  const r: { changes: Change[]; failed: Change[] } = { changes: [], failed: [] };
+  for (const [k, range] of ranges.entries()) {
+    if (!alive()) throw new Stopped();
+    setActivity("checker", `검수 중… ${it.label}${ranges.length > 1 ? ` (${k + 1}/${ranges.length})` : ""}`);
+    const part = await withRetry(it, "checker", "검수", () =>
+      api<{ changes: Change[]; failed: Change[] }>(`/api/sections/${it.sectionId}/proofread`, {
+        method: "POST",
+        json: { content: sec.content, level, ...range, snapshot: k === 0 },
+      }),
+    );
+    r.changes.push(...part.changes);
+    r.failed.push(...part.failed);
+  }
   if (!alive()) throw new Stopped();
   const res = r.changes.length
     ? await api<{ applied: number[] }>(`/api/sections/${it.sectionId}/proofread/apply`, {
@@ -289,7 +364,7 @@ async function checkStep(it: AutoItem, stage: "fact" | "review") {
   }
   patchItem(it, { [stage]: "running" as Stage, attempts: 0 });
   void persist().catch(() => {});
-  setChecking(it.sectionId);
+  lock(it.sectionId);
   try {
     if (!(await flushAllPending())) throw new Error("편집 중인 원고를 저장하지 못했습니다.");
     if (stage === "fact") {
@@ -306,8 +381,7 @@ async function checkStep(it: AutoItem, stage: "fact" | "review") {
     }
     patchItem(it, { [stage]: "error" as Stage, error: `${label} 실패: ${e instanceof Error ? e.message : String(e)}` });
   } finally {
-    setChecking(null);
-    editedSubs.forEach((f) => f([it.sectionId]));
+    unlock(it.sectionId);
   }
   await persist();
 }
@@ -337,7 +411,13 @@ async function writerLane() {
         setActivity("writer", `집필 중… ${it.label} (${i + 1}/${items.length})`);
         return writeOne(it, i + 1, items.length);
       });
-      patchItem(it, { write: "done", chars: r.chars, attempts: 0, error: r.notice ? `참고: ${r.notice}` : undefined });
+      let { chars, truncated } = r;
+      // 한도에 걸려 끊긴 절은 완료로 두지 않고 이어 쓴다 (최대 2번)
+      for (let round = 1; truncated && round <= 2; round++) {
+        setActivity("writer", `${it.label} — 한도에 걸려 끊긴 뒤를 이어 쓰는 중… (${round}/2)`);
+        ({ chars, truncated } = await withRetry(it, "writer", "이어쓰기", () => continueOne(it)));
+      }
+      patchItem(it, { write: "done", chars, attempts: 0, error: truncated ? "참고: 두 번 이어 썼지만 끝까지 쓰지 못했습니다. 절 끝을 확인하세요." : undefined });
       failStreak = 0;
     } catch (e) {
       if (e instanceof Stopped || e instanceof TakenOver) {
