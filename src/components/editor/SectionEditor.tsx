@@ -48,6 +48,7 @@ const VersionsPanel = dynamic(() => import("./VersionsPanel"));
 const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
 const BatchWriteDialog = dynamic(() => import("./BatchWriteDialog"));
 const AutoWriteDialog = dynamic(() => import("./AutoWriteDialog"));
+const CandidateCompareDialog = dynamic(() => import("./CandidateCompareDialog"));
 
 type Props = {
   project: ProjectTree;
@@ -120,6 +121,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const revisedRef = useRef(false);
   const [candidate, setCandidate] = useState<string | null>(null);
   const [candCompare, setCandCompare] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [lengthHint, setLengthHint] = useState<null | { chars: number; target: number }>(null);
   const [tab, setTab] = useState<"ai" | "versions" | "proof" | "notes">("ai");
   // 추가 지시: [다른 절에서도 계속 쓰기]를 켜 두면 절을 옮겨도 남고, 집필에 쓴 지시는 최근 목록에서 다시 고를 수 있다
@@ -177,6 +179,9 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   streamingRef.current = locked;
   const candidateText = candidate ?? (job?.mode === "newVersion" && job.md ? job.md : null);
   const candidateWriting = job?.mode === "newVersion" && job.state === "running";
+  /** 새 버전 후보가 있거나 쓰는 중 — 첫 문장이 나오기 전(구상 중)에도 보여 준다 */
+  const candidateActive = candidateText !== null || candidateWriting;
+  const candidateStatus = candidateWriting ? (job!.md ? job!.status || "작성 중…" : job!.status || "구상 중…") : "";
   const dropCandidate = () => {
     setCandidate(null);
     clearJob(section.id);
@@ -1159,7 +1164,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                     뒤에 이어쓰기 <span className="block text-xs text-stone-400">지정 분량만큼 이어서</span>
                   </button>
                   <button className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100" onClick={() => startWrite("newVersion")}>
-                    새 버전으로 생성(비교) <span className="block text-xs text-stone-400">오른쪽 패널에서 비교 후 선택</span>
+                    새 버전으로 생성(비교) <span className="block text-xs text-stone-400">지금 본문은 그대로 두고 후보를 만듭니다 — 편집기 위 띠나 오른쪽 패널 [AI 옵션]에서 비교 후 선택</span>
                   </button>
                   <button
                     className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100"
@@ -1285,6 +1290,39 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           <div className="flex items-center gap-2 border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
             교정·교열 중 — 끝날 때까지 이 절은 잠겨 있습니다. 목차에서 다른 절로 옮겨 작업해도 교정은 계속되고, 끝나면 알려 드립니다.
+          </div>
+        )}
+        {candidateActive && !compareOpen && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
+            {candidateWriting ? (
+              <>
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-violet-700 border-t-transparent" />
+                <span>
+                  새 버전 후보 작성 중 — {candidateStatus}
+                  {candidateText ? ` (${candidateText.length.toLocaleString()}자)` : ""}. 지금 본문은 그대로입니다.
+                </span>
+                <button className="ml-auto rounded bg-violet-700 px-2 py-0.5 text-xs font-semibold text-white hover:bg-violet-600" onClick={() => setCompareOpen(true)}>
+                  크게 보기
+                </button>
+                <button className="text-xs text-violet-700 hover:underline" onClick={() => stopJob(section.id)} title="쓴 데까지 후보로 남깁니다">
+                  중지
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">새 버전 후보가 준비됐습니다</span>
+                <span className="text-violet-700">({(candidateText ?? "").length.toLocaleString()}자) 지금 본문과 비교한 뒤 고르세요.</span>
+                <button className="ml-auto rounded bg-violet-700 px-2 py-0.5 text-xs font-semibold text-white hover:bg-violet-600" onClick={() => setCompareOpen(true)}>
+                  크게 비교
+                </button>
+                <button className="rounded border border-violet-300 bg-white px-2 py-0.5 text-xs hover:bg-violet-100" onClick={acceptCandidate}>
+                  이 버전 사용
+                </button>
+                <button className="text-xs text-violet-700 hover:underline" onClick={dropCandidate}>
+                  버리기
+                </button>
+              </>
+            )}
           </div>
         )}
         {autoChecking && (
@@ -1501,11 +1539,25 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 </dl>
                 <p className="mt-1">첫 본문 시간은 서버 집필 시작부터, 본문 생성 시간은 모델 응답 대기를 포함합니다. 현재 탭에서 측정한 결과입니다.</p>
               </details>}
+              {candidateActive && candidateText === null && (
+                <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-xs text-violet-800">
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
+                    새 버전 후보 — {candidateStatus}
+                  </div>
+                  <p className="mt-1 text-[11px] text-violet-700">첫 문장이 나오면 여기에 보입니다. 지금 본문은 그대로입니다.</p>
+                </div>
+              )}
               {candidateText !== null && (
                 <div className="rounded-lg border border-violet-200 bg-violet-50 p-2">
                   <div className="mb-1 flex items-center justify-between text-xs font-semibold text-violet-800">
                     새 버전 후보 {candidateWriting && "(작성 중…)"}
-                    <span className="font-normal">{candidateText.length.toLocaleString()}자</span>
+                    <span className="flex items-center gap-2 font-normal">
+                      {candidateText.length.toLocaleString()}자
+                      <button className="rounded bg-violet-700 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-violet-600" onClick={() => setCompareOpen(true)}>
+                        크게 비교
+                      </button>
+                    </span>
                   </div>
                   <label className="mb-1 flex items-center gap-1 text-[11px] text-violet-800">
                     <input type="checkbox" checked={candCompare} onChange={(e) => setCandCompare(e.target.checked)} /> 지금 본문과 비교 (바뀐 말만 표시)
@@ -1679,6 +1731,24 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             // 서버에서 고친 원고를 다시 불러온다 (창을 닫을 때 — 적용 결과 안내를 읽을 수 있게)
             if (revisedRef.current) onServerEdited();
           }}
+        />
+      )}
+
+      {compareOpen && candidateActive && editor && (
+        <CandidateCompareDialog
+          current={docParagraphs(editor.getJSON() as JNode)}
+          candidate={candidateText ? docParagraphs(markdownToDoc(candidateText)) : []}
+          writing={candidateWriting}
+          status={candidateStatus}
+          onAccept={() => {
+            setCompareOpen(false);
+            void acceptCandidate();
+          }}
+          onDiscard={() => {
+            setCompareOpen(false);
+            dropCandidate();
+          }}
+          onClose={() => setCompareOpen(false)}
         />
       )}
 
