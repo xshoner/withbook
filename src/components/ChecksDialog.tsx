@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import type { StyleReport } from "@/lib/style/check";
-import { toastError } from "@/components/ui/feedback";
+import { confirmDialog, toastError } from "@/components/ui/feedback";
+import InlineDiff from "@/components/InlineDiff";
 
 type Marker = {
   paragraph: number;
@@ -24,6 +25,17 @@ type Result = {
     markers: Marker[];
   }[];
 };
+
+type FactResult = {
+  verdict: "pass" | "revise";
+  issue: string;
+  reason: string;
+  evidence: { source: string; date: string; url: string }[];
+  before: string;
+  after: string;
+  applied: boolean;
+};
+type FactRow = { sectionId: string; where: string; paragraph: number; inFootnote: boolean; context: string; result?: FactResult; error?: string };
 
 /**
  * [확인 필요]·[이미지 제안] 관리 — AI가 확신 없이 쓴 수치·사실을 작가가 하나씩 확인한다.
@@ -52,6 +64,9 @@ export default function ChecksDialog({
   const [kind, setKind] = useState<"all" | "check" | "image">("all");
   const [tab, setTab] = useState<"marks" | "style">("marks");
   const [styleSeen, setStyleSeen] = useState(false);
+  const [judging, setJudging] = useState<{ i: number; total: number } | null>(null);
+  const [facts, setFacts] = useState<FactRow[]>([]);
+  const stopJudge = useRef(false);
 
   const load = async () => {
     setErr("");
@@ -95,6 +110,46 @@ export default function ChecksDialog({
     }
   };
 
+  /** AI 판정 — 표시 확인의 [확인 필요]를 문서 순서대로 하나씩(요청 하나에 하나) 판정한다 */
+  const judge = async () => {
+    const targets = (res?.sections ?? []).flatMap((s) => s.markers.filter((m) => m.kind === "check").map((m) => ({ s, m })));
+    if (!targets.length) return;
+    const ok = await confirmDialog(
+      `[확인 필요] ${targets.length}건을 팩트체크 AI가 최신 자료로 차례로 판정합니다.\n통과: 표시만 지웁니다 · 보완: 수치·사실관계·근거만 고친 문장으로 바꿉니다.\n바꾸기 전 원고는 버전 기록에 남습니다.`,
+      { okLabel: "AI 판정 시작" },
+    );
+    if (!ok) return;
+    if (!(await beforeEdit())) return toastError(new Error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요."));
+    stopJudge.current = false;
+    const rows: FactRow[] = targets.map(({ s, m }) => ({
+      sectionId: s.sectionId,
+      where: `${s.label} ${s.title}`.trim(),
+      paragraph: m.paragraph,
+      inFootnote: m.offset < 0,
+      context: m.before,
+    }));
+    setFacts(rows);
+    const edited = new Set<string>();
+    for (let i = 0; i < targets.length && !stopJudge.current; i++) {
+      setJudging({ i, total: targets.length });
+      const { s, m } = targets[i];
+      try {
+        const r = await api<FactResult>(`/api/projects/${projectId}/factcheck`, {
+          method: "POST",
+          json: { sectionId: s.sectionId, paragraph: m.paragraph, offset: m.offset, footnote: m.footnote, marker: m.marker, before: m.before },
+        });
+        if (r.applied) edited.add(s.sectionId);
+        rows[i] = { ...rows[i], result: r, error: r.applied ? undefined : "원고가 그사이 바뀌어 적용하지 못했습니다." };
+      } catch (e) {
+        rows[i] = { ...rows[i], error: e instanceof Error ? e.message : String(e) };
+      }
+      setFacts([...rows]);
+    }
+    setJudging(null);
+    if (edited.size) onEdited([...edited]);
+    await load();
+  };
+
   const shown = res?.sections
     .map((s) => ({
       ...s,
@@ -103,7 +158,7 @@ export default function ChecksDialog({
     .filter((s) => s.markers.length);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-6" onMouseDown={(e) => e.target === e.currentTarget && !judging && onClose()}>
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl bg-white shadow-2xl">
         <div className="flex items-center gap-3 border-b border-stone-200 px-4 py-3">
           <div className="flex overflow-hidden rounded-md border border-stone-300 text-sm">
@@ -136,11 +191,21 @@ export default function ChecksDialog({
             </div>
           )}
           {tab === "marks" && (
-            <button className="btn-ghost ml-auto text-xs" onClick={load}>
+            <button
+              className="ml-auto rounded-md bg-violet-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-600 disabled:opacity-40"
+              title="[확인 필요] 표시를 팩트체크 AI가 최신 자료로 모두 차례로 판정합니다 (책 설정 → AI 설정 → 팩트체크)"
+              disabled={!!judging || !!busy || !res?.sections.some((s) => s.markers.some((m) => m.kind === "check"))}
+              onClick={judge}
+            >
+              {judging ? `AI 판정 중… ${judging.i + 1}/${judging.total}` : "AI 판정"}
+            </button>
+          )}
+          {tab === "marks" && (
+            <button className="btn-ghost text-xs" disabled={!!judging} onClick={load}>
               ↻ 새로 고침
             </button>
           )}
-          <button className={`btn-ghost ${tab === "style" ? "ml-auto" : ""}`} onClick={onClose}>
+          <button className={`btn-ghost ${tab === "style" ? "ml-auto" : ""}`} disabled={!!judging} onClick={onClose}>
             ✕
           </button>
         </div>
@@ -157,6 +222,7 @@ export default function ChecksDialog({
               처리하세요.
             </p>
             <div className="min-h-0 flex-1 overflow-auto p-4 text-sm">
+              {facts.length > 0 && <FactPanel rows={facts} judging={judging} onStop={() => (stopJudge.current = true)} onClear={() => setFacts([])} onGoto={onGoto} />}
               {err && <p className="text-red-600">{err}</p>}
               {!res && !err && <p className="text-stone-400">불러오는 중…</p>}
               {shown && !shown.length && <p className="py-8 text-center text-stone-500">남은 표시가 없습니다. 🎉</p>}
@@ -220,6 +286,100 @@ export default function ChecksDialog({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** AI 판정 진행과 결과 — 보완은 바뀐 부분을 표시하고 근거를 함께 보여 준다 */
+function FactPanel({
+  rows,
+  judging,
+  onStop,
+  onClear,
+  onGoto,
+}: {
+  rows: FactRow[];
+  judging: { i: number; total: number } | null;
+  onStop: () => void;
+  onClear: () => void;
+  onGoto: (sectionId: string, paragraph: number, text: string) => void;
+}) {
+  const done = rows.filter((r) => r.result || r.error).length;
+  const pass = rows.filter((r) => r.result?.verdict === "pass" && r.result.applied).length;
+  const revise = rows.filter((r) => r.result?.verdict === "revise" && r.result.applied).length;
+  const failed = rows.filter((r) => r.error).length;
+  return (
+    <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50/40">
+      <div className="flex items-center gap-2 border-b border-violet-100 px-3 py-2 text-xs">
+        <span className="font-semibold text-violet-900">AI 판정</span>
+        <span className="text-stone-600">
+          {done}/{rows.length} · <span className="text-green-700">통과 {pass}</span> · <span className="text-amber-700">보완 {revise}</span>
+          {failed > 0 && <span className="text-red-600"> · 실패 {failed}</span>}
+        </span>
+        <div className="h-1.5 flex-1 overflow-hidden rounded bg-violet-100">
+          <div className="h-full bg-violet-500 transition-all" style={{ width: `${(done / rows.length) * 100}%` }} />
+        </div>
+        {judging ? (
+          <button className="btn-ghost text-xs" onClick={onStop}>
+            중지 (지금 항목까지)
+          </button>
+        ) : (
+          <button className="btn-ghost text-xs" onClick={onClear}>
+            결과 닫기
+          </button>
+        )}
+      </div>
+      <ul className="max-h-[40vh] divide-y divide-violet-100 overflow-auto">
+        {rows.map((r, i) => {
+          const f = r.result;
+          const tag = r.error
+            ? ["실패", "bg-red-100 text-red-700"]
+            : !f
+              ? judging?.i === i
+                ? ["판정 중…", "bg-violet-100 text-violet-700"]
+                : ["대기", "bg-stone-100 text-stone-500"]
+              : f.verdict === "pass"
+                ? ["통과", "bg-green-100 text-green-800"]
+                : ["보완", "bg-amber-100 text-amber-800"];
+          return (
+            <li key={i} className="px-3 py-2 text-xs leading-5">
+              <div className="flex items-center gap-2">
+                <span className={`shrink-0 rounded px-1.5 text-[10px] font-semibold ${tag[1]}`}>{tag[0]}</span>
+                {f?.issue && f.verdict === "revise" && <span className="shrink-0 text-[10px] text-amber-700">{f.issue}</span>}
+                <span className="truncate text-stone-400">
+                  {r.where} · {r.inFootnote ? "각주" : `${r.paragraph}문단`}
+                </span>
+                {f?.applied && !r.inFootnote && (
+                  <button className="ml-auto shrink-0 text-[11px] text-stone-600 hover:underline" onClick={() => onGoto(r.sectionId, r.paragraph, f.after.slice(0, 30))}>
+                    바로가기 →
+                  </button>
+                )}
+              </div>
+              {f ? (
+                <div className="mt-1 font-book text-stone-700">{f.verdict === "revise" ? <InlineDiff before={f.before} after={f.after} /> : f.before}</div>
+              ) : (
+                <div className="mt-1 truncate text-stone-500">…{r.context}</div>
+              )}
+              {f?.reason && <div className="mt-0.5 text-[11px] text-stone-500">{f.reason}</div>}
+              {f && f.evidence.length > 0 && (
+                <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-stone-400">
+                  {f.evidence.map((e, k) => {
+                    const label = `${e.source}${e.date ? ` (${e.date})` : ""}`;
+                    return /^https?:\/\//.test(e.url) ? (
+                      <a key={k} href={e.url} target="_blank" rel="noreferrer noopener" className="text-sky-700 hover:underline">
+                        {label} ↗
+                      </a>
+                    ) : (
+                      <span key={k}>{label}</span>
+                    );
+                  })}
+                </div>
+              )}
+              {r.error && <div className="mt-0.5 text-[11px] text-red-600">{r.error}</div>}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

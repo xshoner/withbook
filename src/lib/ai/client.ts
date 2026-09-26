@@ -19,8 +19,11 @@ export type ChatOptions = {
   connectionScope?: AiScope;
   projectId?: string | null;
   messages: ChatMessage[];
-  temperature?: number;
+  /** null이면 보내지 않는다(모델 기본값) — 추론 모델은 기본값 외의 temperature를 거부한다 */
+  temperature?: number | null;
   maxTokens?: number;
+  /** 최신 자료 검색 요청(OpenAI web_search_options) — 모델이 거부하면(400) 검색 없이 한 번 더 부른다 */
+  webSearch?: boolean;
   signal?: AbortSignal;
   instructionIncluded?: boolean;
   /** 이 시각(epoch ms)까지 끝낸다 — 재시도·대기 포함. 기본: 요청 시작 + 240초 (Vercel 300초 제한 안) */
@@ -253,22 +256,26 @@ export async function* chatStream(opts: ChatOptions): AsyncGenerator<string, Usa
     const { url, headers, model, provider, maxOut, reasoningEffort } = await config(opts);
     modelName = model;
     const maxTokens = Math.min(opts.maxTokens ?? 4000, maxOut);
-    const res = await post(
-      url,
-      headers,
-      {
-        model,
-        messages: withCache(opts.messages, provider, model),
-        temperature: opts.temperature ?? 0.7,
-        ...(effortFor(opts.purpose, provider, reasoningEffort) ? { reasoning_effort: effortFor(opts.purpose, provider, reasoningEffort) } : {}),
-        // OpenAI 최신 모델은 max_completion_tokens만 받는다
-        ...(provider === "openai" ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
-        stream: true,
-        ...(provider === "gateway" || provider === "openai" ? { stream_options: { include_usage: true } } : {}),
-      },
-      deadline,
-      ctrl.signal,
-    );
+    const body = {
+      model,
+      messages: withCache(opts.messages, provider, model),
+      ...(opts.temperature === null ? {} : { temperature: opts.temperature ?? 0.7 }),
+      ...(effortFor(opts.purpose, provider, reasoningEffort) ? { reasoning_effort: effortFor(opts.purpose, provider, reasoningEffort) } : {}),
+      // OpenAI 최신 모델은 max_completion_tokens만 받는다
+      ...(provider === "openai" ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
+      stream: true,
+      ...(provider === "gateway" || provider === "openai" ? { stream_options: { include_usage: true } } : {}),
+    };
+    const search = opts.webSearch && provider !== "anthropic" && provider !== "gemini";
+    let res: Response;
+    try {
+      res = await post(url, headers, search ? { ...body, web_search_options: {} } : body, deadline, ctrl.signal);
+    } catch (e) {
+      // 검색을 지원하지 않는 모델 — 검색 없이(모델이 아는 가장 최근 자료로) 다시 부른다
+      if (!search || !(e instanceof AiError) || e.status !== 400) throw e;
+      console.warn(`[ai] ${model}: web_search_options 거부 — 검색 없이 다시 호출`);
+      res = await post(url, headers, body, deadline, ctrl.signal);
+    }
     // 연결(재시도 포함)은 post가 시간을 관리하고, 여기서부터 무응답 시간을 잰다
     kick();
     const reader = res.body!.getReader();

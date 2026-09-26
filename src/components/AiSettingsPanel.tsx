@@ -120,6 +120,10 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
             setF({ ...f, ...cur.providers.gemini, provider: "gemini", apiKey: "", clearKey: f.provider !== "gemini" || f.baseUrl !== cur.providers.gemini.baseUrl, reasoningEffort: "low", maxOutputTokens: 32000 });
             setEditing(true); setErr(""); setCheck({ state: "idle" });
           }}>Gemini 3.8 Flash로 설정</button>
+          {scope === "factcheck" && <button className="btn" disabled={saving || check.state === "checking"} onClick={() => {
+            setF({ ...f, ...cur.providers.openai, provider: "openai", model: "gpt-5.6-terra", apiKey: "", clearKey: f.provider !== "openai" || f.baseUrl !== cur.providers.openai.baseUrl, reasoningEffort: "default", maxOutputTokens: 32000 });
+            setEditing(true); setErr(""); setCheck({ state: "idle" });
+          }}>GPT-5.6 Terra로 설정</button>}
           {scope !== "default" && !cur.inherited && <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ useDefault: true })}>개별 연결 해제</button>}
         </div>}
         {scope !== "default" && !editing && <div className="flex flex-wrap items-center gap-2">
@@ -129,7 +133,7 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
           <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ copyFrom })}>이 연결 복사</button>
           <span className="text-xs text-stone-500">키를 다시 입력하지 않고 복사합니다. 이후 변경은 각각 적용됩니다.</span>
         </div>}
-        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.</p>}
+        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 팩트체크는 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}</p>}
       </div>
       <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
         <StatusLight state={check.state} />

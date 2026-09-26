@@ -7,6 +7,7 @@ export const AI_SCOPES = {
   revision: { label: "교정·퇴고", description: "문장 수정·교정·장 전체 퇴고" },
   style: { label: "문체 분석", description: "문체 분석과 작가의 수정에서 학습" },
   footnote: { label: "각주", description: "각주 작성과 자동 제안" },
+  factcheck: { label: "팩트체크", description: "‘확인할 것’의 [확인 필요] 문장을 최신 자료로 판정·보완 — GPT-5.6 Terra 추천" },
 } as const;
 
 export type AiScope = keyof typeof AI_SCOPES;
@@ -24,6 +25,7 @@ export function scopeForPurpose(purpose: string): AiScope {
   if (["proofread", "chapter_revise"].includes(purpose) || purpose.startsWith("rewrite_")) return "revision";
   if (["style_analyze", "style_learn"].includes(purpose)) return "style";
   if (["footnote", "footnote_auto"].includes(purpose)) return "footnote";
+  if (purpose === "factcheck") return "factcheck";
   return "default";
 }
 

@@ -101,7 +101,7 @@ function bookVars(book: Book) {
 /* ---------------- 공통 도우미 ---------------- */
 
 /** JSON 응답 호출 — 형식이 틀리면 무엇이 틀렸는지 알려 주고 한 번 더 묻는다 */
-async function chatJson<T>(schema: z.ZodType<T>, opts: ChatOptions, attempts = 2): Promise<{ value?: T; raw: string }> {
+export async function chatJson<T>(schema: z.ZodType<T>, opts: ChatOptions, attempts = 2): Promise<{ value?: T; raw: string }> {
   let messages = opts.messages;
   let raw = "";
   for (let a = 0; a < attempts; a++) {

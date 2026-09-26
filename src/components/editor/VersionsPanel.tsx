@@ -19,6 +19,7 @@ const REASON: Record<string, string> = {
   replace: "책 전체 바꾸기 전",
   check: "확인 표시 처리 전",
   chapter_revise: "장 퇴고 전",
+  factcheck: "AI 팩트체크 전",
 };
 
 type V = { id: string; reason: string; charCount: number; createdAt: string };
