@@ -50,7 +50,10 @@ export const PATCH = handle(async (req: Request, ctx: RouteContext<"/api/project
 export const DELETE = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]">) => {
   const { id } = await ctx.params;
   const permanent = new URL(req.url).searchParams.get("permanent") === "1";
-  if (permanent) await prisma.project.delete({ where: { id } });
+  if (permanent) {
+    await prisma.project.delete({ where: { id } });
+    await prisma.appSetting.deleteMany({ where: { key: `cover:${id}` } });
+  }
   else await prisma.project.update({ where: { id }, data: { deletedAt: new Date() } });
   return ok({ ok: true });
 });

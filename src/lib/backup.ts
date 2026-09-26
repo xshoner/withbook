@@ -16,7 +16,10 @@ export async function dailyMaintenance() {
   lastCheck = today;
   try {
     const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-    await prisma.project.deleteMany({ where: { deletedAt: { lt: cutoff } } });
+    const gone = await prisma.project.findMany({ where: { deletedAt: { lt: cutoff } }, select: { id: true } });
+    await prisma.project.deleteMany({ where: { id: { in: gone.map((p) => p.id) } } });
+    // 책마다 AppSetting에 둔 표지 디자인도 함께 지운다
+    await prisma.appSetting.deleteMany({ where: { key: { in: gone.map((p) => `cover:${p.id}`) } } });
   } catch {}
   // 지운 장·절(휴지통)도 30일이 지나면 비운다
   try {

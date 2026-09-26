@@ -368,6 +368,13 @@ export default function Workspace() {
         >
           확인할 것{checkCount ? ` ${checkCount}` : ""}
         </button>
+        <button
+          className="btn"
+          onClick={() => window.open(`/projects/${id}/cover`, `cover-${id}`)}
+          title="표지(날개·책등 포함 펼침면)를 AI로 만들고 글을 얹어 인쇄용 PDF로 내보냅니다 — 새 창"
+        >
+          커버 디자인
+        </button>
         <button className="btn" onClick={async () => {
           if (!await flushAllPending()) return toast.error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
           setExportOpen(true);

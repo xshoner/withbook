@@ -11,7 +11,7 @@ test('every writing workflow routes to its assigned connection', () => {
     outline: ['toc_design', 'section_outline'],
     writing: ['section_write', 'section_write_part', 'length_adjust'],
     revision: ['proofread', 'chapter_revise', 'rewrite_shorten', 'rewrite_expand'],
-    style: ['style_analyze', 'style_learn'], footnote: ['footnote', 'footnote_auto'],
+    style: ['style_analyze', 'style_learn'], footnote: ['footnote', 'footnote_auto'], cover: ['cover_image'],
     default: ['ping', 'unknown'],
   };
   for (const [scope, purposes] of Object.entries(groups)) {

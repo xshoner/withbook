@@ -7,8 +7,8 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
  * 형식: {만료}.{프로젝트 또는 빈 값}.{서명}
  */
 export const RENDER_HEADER = "x-withbook-render";
-const PATHS = [/^\/book\/[a-zA-Z0-9_-]+$/, /^\/pagedjs$/, /^\/api\/assets\/[a-zA-Z0-9_-]+$/, /^\/api\/fonts\/[A-Za-z0-9._-]+$/];
-const BOOK = /^\/book\/([a-zA-Z0-9_-]+)$/;
+const PATHS = [/^\/book\/[a-zA-Z0-9_-]+$/, /^\/cover\/[a-zA-Z0-9_-]+$/, /^\/pagedjs$/, /^\/api\/assets\/[a-zA-Z0-9_-]+$/, /^\/api\/fonts\/[A-Za-z0-9._-]+$/];
+const BOOK = /^\/(?:book|cover)\/([a-zA-Z0-9_-]+)$/;
 
 let warned = false;
 let localSecret = "";

@@ -124,6 +124,10 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
             setF({ ...f, ...cur.providers.openai, provider: "openai", model: "gpt-5.6-terra", apiKey: "", clearKey: f.provider !== "openai" || f.baseUrl !== cur.providers.openai.baseUrl, reasoningEffort: "default", maxOutputTokens: 32000 });
             setEditing(true); setErr(""); setCheck({ state: "idle" });
           }}>GPT-5.6 Terra로 설정</button>}
+          {scope === "cover" && <button className="btn" disabled={saving || check.state === "checking"} onClick={() => {
+            setF({ ...f, ...cur.providers.gateway, provider: "gateway", model: "gpt-image-2.5-sunburst", authScheme: "bearer", keyName: "IMAGE_API_KEY", apiKey: "", clearKey: f.provider !== "gateway" || f.baseUrl !== cur.providers.gateway.baseUrl, reasoningEffort: "default", maxOutputTokens: 32000 });
+            setEditing(true); setErr(""); setCheck({ state: "idle" });
+          }}>gpt-image-2.5-sunburst로 설정 (Letsur)</button>}
           {scope !== "default" && !cur.inherited && <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ useDefault: true })}>개별 연결 해제</button>}
         </div>}
         {scope !== "default" && !editing && <div className="flex flex-wrap items-center gap-2">
@@ -133,7 +137,8 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
           <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ copyFrom })}>이 연결 복사</button>
           <span className="text-xs text-stone-500">키를 다시 입력하지 않고 복사합니다. 이후 변경은 각각 적용됩니다.</span>
         </div>}
-        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 팩트체크는 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}</p>}
+        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 팩트체크는 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}{scope === "cover" ? " 표지 그림은 POST {기본 주소}/v1/images/generations로 부르며, Letsur 게이트웨이는 Authorization: Bearer 인증을 씁니다. 연결 점검은 그림을 만들지 않고(비용 없음) 키만 확인합니다." : ""}</p>}
+        {scope === "cover" && cur.inherited && !editing && <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">표지 그림은 글쓰기 모델(기본 연결)로 만들 수 없어 개별 연결이 필요합니다. 위 버튼으로 설정한 뒤 API 키를 입력하세요.</p>}
       </div>
       <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
         <StatusLight state={check.state} />
@@ -175,7 +180,7 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
               </option>
             ))}
           </select>,
-          "모두 OpenAI 호환 방식(Chat Completions)으로 호출합니다",
+          scope === "cover" ? "OpenAI 호환 Images API(/v1/images/generations)로 호출합니다" : "모두 OpenAI 호환 방식(Chat Completions)으로 호출합니다",
         )}
         {field(
           "호출 모델",
@@ -203,7 +208,7 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
         {field(
           "기본 주소 (Base URL)",
           <input className={`${inputCls} font-mono text-xs`} readOnly={ro} value={f.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} placeholder="https://…" />,
-          `호출 주소: ${cur.endpoint || "(없음)"}`,
+          `호출 주소: ${scope === "cover" ? (cur.baseUrl ? `${cur.baseUrl.replace(/\/+$/, "")}${/\/v\d+$/.test(cur.baseUrl.replace(/\/+$/, "")) ? "" : "/v1"}/images/generations` : "(없음)") : cur.endpoint || "(없음)"}`,
         )}
         {field(
           "인증 방식",
@@ -212,7 +217,7 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
             <option value="x-api-key">x-api-key 헤더 (게이트웨이)</option>
           </select>,
         )}
-        {field(
+        {scope !== "cover" && field(
           "최대 출력 토큰",
           <input type="number" className={inputCls} readOnly={ro} min={1000} max={200000} step={1000} value={f.maxOutputTokens} onChange={(e) => set({ maxOutputTokens: Number(e.target.value) || 32000 })} />,
           "긴 절 집필에 쓰는 한 번 호출의 상한. 모델 한도보다 크면 낮추세요",

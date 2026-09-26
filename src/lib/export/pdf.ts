@@ -59,7 +59,10 @@ export class PdfTimeoutError extends Error {
 
 const isTimeout = (e: any) => e?.name === "TimeoutError" || /Timeout .*exceeded/i.test(String(e?.message ?? ""));
 
-export async function renderPdf(url: string, opts: { projectId?: string; budgetMs?: number } = {}): Promise<PdfResult> {
+/** 책 본문이 아닌 용지(표지 펼침면 등): 재단 여백 포함 크기와 재단 여백 */
+export type PdfSheet = { widthMm: number; heightMm: number; bleedMm: number };
+
+export async function renderPdf(url: string, opts: { projectId?: string; budgetMs?: number; sheet?: PdfSheet; extraOrigins?: string[] } = {}): Promise<PdfResult> {
   const deadline = Date.now() + (opts.budgetMs ?? PDF_BUDGET_MS);
   const browser = await launchBrowser();
   try {
@@ -75,7 +78,7 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
       if (target.origin === origin) return route.continue({ headers: { ...req.headers(), [RENDER_HEADER]: token } });
       // 저장소에서는 공개 글꼴과, 이미지 주소가 보내 주는 서명된 원고 이미지만 받는다
       const storagePath = target.pathname.startsWith("/storage/v1/object/public/fonts/") || target.pathname.startsWith("/storage/v1/object/sign/assets/");
-      const ok = target.protocol === "data:" || (fontOrigin && target.origin === fontOrigin && storagePath);
+      const ok = target.protocol === "data:" || (fontOrigin && target.origin === fontOrigin && storagePath) || opts.extraOrigins?.includes(target.origin);
       return ok ? route.continue() : route.abort();
     });
     const left = () => deadline - Date.now();
@@ -93,15 +96,16 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
     const err = await page.evaluate("window.__PAGED_ERROR");
     if (err) throw new Error("조판 오류: " + err);
     const trim = url.includes("size=trim");
+    const sheet: PdfSheet = opts.sheet ?? (trim ? { widthMm: TRIM.width, heightMm: TRIM.height, bleedMm: 0 } : { widthMm: DOC.width, heightMm: DOC.height, bleedMm: BLEED });
     const raw = await page.pdf({
-      width: `${trim ? TRIM.width : DOC.width}mm`,
-      height: `${trim ? TRIM.height : DOC.height}mm`,
+      width: `${sheet.widthMm}mm`,
+      height: `${sheet.heightMm}mm`,
       preferCSSPageSize: false,
       printBackground: true,
       margin: { top: 0, right: 0, bottom: 0, left: 0 },
     });
-    const pdf = await fixBoxes(raw, trim);
-    return { pdf, info, check: await checkPdf(pdf, trim) };
+    const pdf = await fixBoxes(raw, sheet);
+    return { pdf, info, check: await checkPdf(pdf, trim, opts.sheet) };
   } finally {
     await browser.close();
   }
@@ -111,13 +115,13 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
  * Chromium은 용지 크기를 정수 pt로 올림(+0.2mm)하므로, 왼쪽 위 기준으로 MediaBox를 정확한 mm로 맞추고
  * 인쇄용 TrimBox(재단선)·BleedBox(재단 여백)를 넣는다.
  */
-async function fixBoxes(raw: Uint8Array, trim: boolean): Promise<Buffer> {
+async function fixBoxes(raw: Uint8Array, sheet: PdfSheet): Promise<Buffer> {
   const { PDFDocument } = await import("pdf-lib");
   const doc = await PDFDocument.load(raw);
   const mm = 72 / 25.4;
-  const W = (trim ? TRIM.width : DOC.width) * mm;
-  const H = (trim ? TRIM.height : DOC.height) * mm;
-  const b = trim ? 0 : BLEED * mm;
+  const W = sheet.widthMm * mm;
+  const H = sheet.heightMm * mm;
+  const b = sheet.bleedMm * mm;
   doc.setProducer("BookK Writer");
   doc.setCreator("BookK Writer (Paged.js + Chromium)");
   for (const page of doc.getPages()) {
@@ -132,7 +136,7 @@ async function fixBoxes(raw: Uint8Array, trim: boolean): Promise<Buffer> {
 }
 
 /** 출력된 PDF의 판형·쪽수·글꼴 임베딩 확인 */
-export async function checkPdf(pdf: Buffer, trim: boolean): Promise<PdfCheck> {
+export async function checkPdf(pdf: Buffer, trim: boolean, sheet?: PdfSheet): Promise<PdfCheck> {
   const { getDocumentProxy } = await import("unpdf");
   const doc = await getDocumentProxy(new Uint8Array(pdf));
   const p1 = await doc.getPage(1);
@@ -140,7 +144,7 @@ export async function checkPdf(pdf: Buffer, trim: boolean): Promise<PdfCheck> {
   const ptToMm = 25.4 / 72;
   const widthMm = +((x1 - x0) * ptToMm).toFixed(2);
   const heightMm = +((y1 - y0) * ptToMm).toFixed(2);
-  const target = trim ? TRIM : DOC;
+  const target = sheet ? { width: sheet.widthMm, height: sheet.heightMm } : trim ? TRIM : DOC;
   const sizeOk = Math.abs(widthMm - target.width) < SIZE_TOLERANCE_MM && Math.abs(heightMm - target.height) < SIZE_TOLERANCE_MM;
   const latin = pdf.toString("latin1");
   const names = new Set<string>();
