@@ -793,8 +793,8 @@ export async function reviseChapter(chapterId: string, focus = "") {
   if (!book || !chapter) throw new Error("장을 찾을 수 없습니다.");
   const blocksOf = chapter.sections.map((s) => textblocks(parseDoc(s.content)).map((b) => b.text));
   const total = blocksOf.flat().join("").length;
-  if (total < 300) throw new Error("퇴고할 본문이 거의 없습니다. 절을 먼저 집필하세요.");
-  if (total > 80000) throw new Error("장이 너무 깁니다(8만 자 초과). 절 단위 교정·교열을 쓰세요.");
+  if (total < 300) throw Object.assign(new Error("퇴고할 본문이 거의 없습니다. 절을 먼저 집필하세요."), { status: 400 });
+  if (total > 80000) throw Object.assign(new Error("장이 너무 깁니다(8만 자 초과). 절 단위 교정·교열을 쓰세요."), { status: 400 });
   const numbered = chapter.sections
     .map((s, si) => {
       const lines = blocksOf[si].map((t, pi) => (t.trim() ? `[S${si + 1}-${pi + 1}] ${t}` : "")).filter(Boolean);
@@ -815,7 +815,7 @@ export async function reviseChapter(chapterId: string, focus = "") {
     numberedChapter: numbered,
   });
   const r = await chatJson(reviseSchema, { purpose: "chapter_revise", projectId: book.project.id, messages, temperature: 0.3, maxTokens: 24000, instructionIncluded });
-  if (!r.value) throw new Error("퇴고 응답을 해석하지 못했습니다. 다시 시도하세요.");
+  if (!r.value) throw Object.assign(new Error("퇴고 응답을 해석하지 못했습니다. 다시 시도하세요."), { expose: true, httpStatus: 502 });
   const valid: ChapterChange[] = [];
   const failed: ChapterChange[] = [];
   for (const c of r.value.changes) {

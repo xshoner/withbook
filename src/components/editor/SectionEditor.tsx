@@ -22,7 +22,7 @@ import {
   type JNode,
 } from "@/lib/doc/doc";
 import { DOC, bodyBox } from "@/lib/print/spec";
-import type { LayoutSettings } from "@/lib/layout";
+import { numberChapters, type LayoutSettings } from "@/lib/layout";
 import type { ProjectTree, SectionPageInfo, TreeChapter, TreeSection } from "../types";
 import { Figure } from "./Figure";
 import { Footnote, type FootnoteAttrs } from "./Footnote";
@@ -1722,6 +1722,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <ChapterReviseDialog
           chapterId={chapter.id}
           chapterName={`${chapter.label} ${chapter.title}`.trim()}
+          chapters={numberChapters(project.chapters, project.layout.numberFormat).map((c) => ({ id: c.id, name: `${c.label} ${c.title}`.trim() }))}
           beforeRun={flush}
           onApplied={(ids) => {
             if (ids.length) revisedRef.current = true;
