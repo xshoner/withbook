@@ -60,6 +60,8 @@ export function textStyle(el: TextEl): CSSProperties {
     // 배경은 글 둘레로 여백만큼 넘친다(box-shadow) — 글 위치·크기는 배경과 상관없이 그대로
     ...(el.bg ? { background: rgba(el.bg, el.bgOpacity), boxShadow: `0 0 0 ${mm(el.bgPad)} ${rgba(el.bg, el.bgOpacity)}`, borderRadius: mm(el.bgRadius) } : {}),
     ...(el.shadow ? { textShadow: "0 0.3mm 1.2mm rgba(0,0,0,.55)" } : {}),
+    // 글자 테두리 — 선을 글자 뒤에 그려(paint-order) 바깥으로만 보이게 한다. 그래서 선 폭은 지정 굵기의 두 배로 준다
+    ...(el.strokeColor ? { WebkitTextStroke: `${mm(el.strokeWidth * 2)} ${el.strokeColor}`, paintOrder: "stroke fill" } : {}),
   };
 }
 

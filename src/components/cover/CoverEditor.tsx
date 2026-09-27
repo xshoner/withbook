@@ -1155,6 +1155,22 @@ function TextProps({ el, textRef, panels, onChange, onRemove }: { el: TextEl; te
           <NumField label="모서리" suffix="mm" value={el.bgRadius} step={0.5} min={0} max={20} onChange={(n) => onChange({ bgRadius: n })} />
         </div>
       </div>
+      <div className="space-y-2 rounded-lg border border-stone-200 p-2">
+        <div className="flex items-center justify-between">
+          <span className="label mb-0">글자 테두리</span>
+          <button className={`px-2 py-0.5 text-[11px] ${!el.strokeColor ? "btn-primary" : "btn"}`} onClick={() => onChange({ strokeColor: "" })} title="테두리 없음">
+            없음
+          </button>
+        </div>
+        <ColorField value={el.strokeColor || "#ffffff"} onChange={(c) => onChange({ strokeColor: c }, "strokeColor")} />
+        <label className={`block text-xs ${el.strokeColor ? "" : "opacity-40"}`}>
+          <span className="flex justify-between text-stone-600">
+            테두리 굵기<span className="font-mono">{el.strokeWidth.toFixed(2)}mm</span>
+          </span>
+          <input type="range" className="w-full" min={0.05} max={3} step={0.05} disabled={!el.strokeColor} value={el.strokeWidth} onChange={(e) => onChange({ strokeWidth: Number(e.target.value) }, "strokeWidth")} />
+        </label>
+        <p className="text-[11px] text-stone-400">글자 바깥으로 선을 두릅니다. 그림 위 제목을 또렷하게 할 때 씁니다 (0.2~0.5mm 권장).</p>
+      </div>
       <div className="space-y-1">
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={el.shadow} onChange={(e) => onChange({ shadow: e.target.checked })} />

@@ -143,3 +143,17 @@ test('text background keeps padding and radius within limits', () => {
   assert.equal(el.bgRadius, 0);
   assert.equal(normalizeCover({ elements: [{ id: 't2', kind: 'text' }] }).elements[0].bgPad, 1.5);
 });
+
+test('text outline: color and width are kept within range, off by default', () => {
+  const [a, b, c] = normalizeCover({ elements: [
+    { id: 's1', kind: 'text', strokeColor: '#112233', strokeWidth: 0.4 },
+    { id: 's2', kind: 'text', strokeColor: 'red', strokeWidth: 99 },
+    { id: 's3', kind: 'text' },
+  ] }).elements;
+  assert.equal(a.strokeColor, '#112233');
+  assert.equal(a.strokeWidth, 0.4);
+  assert.equal(b.strokeColor, '');
+  assert.equal(b.strokeWidth, 3);
+  assert.equal(c.strokeColor, '');
+  assert.equal(c.strokeWidth, 0.3);
+});

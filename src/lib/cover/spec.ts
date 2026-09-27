@@ -77,6 +77,9 @@ export type TextEl = {
   bgPad: number; // 배경이 글 둘레로 넘치는 폭 mm (글 위치는 그대로)
   bgRadius: number; // 배경 모서리 둥글기 mm
   shadow: boolean;
+  /** 글자 테두리(외곽선) 색 (빈 값이면 없음) */
+  strokeColor: string;
+  strokeWidth: number; // 글자 테두리 굵기 mm
 };
 
 export type ImageEl = {
@@ -315,6 +318,8 @@ export function textDefaults(): Omit<TextEl, "id" | "panel"> {
     bgPad: 1.5,
     bgRadius: 0,
     shadow: false,
+    strokeColor: "",
+    strokeWidth: 0.3,
   };
 }
 
@@ -385,6 +390,8 @@ function normEl(v: any): CoverEl | null {
     bgPad: num(v.bgPad, 0, 20, d.bgPad),
     bgRadius: num(v.bgRadius, 0, 20, d.bgRadius),
     shadow: Boolean(v.shadow),
+    strokeColor: v.strokeColor ? color(v.strokeColor, "") : "",
+    strokeWidth: num(v.strokeWidth, 0.05, 3, d.strokeWidth),
   };
 }
 
