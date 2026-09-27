@@ -12,6 +12,8 @@ const nextConfig: NextConfig = {
     // Vercel에서 PDF를 만드는 서버용 Chromium
     // playwright-core는 browsers.json 등을 실행 중에 읽으므로 패키지 전체를 넣는다
     "/api/projects/*/export/pdf": ["./node_modules/@sparticuz/chromium/bin/**", "./node_modules/playwright-core/**"],
+    // 표지 인쇄용 PDF도 같은 Chromium으로 만든다
+    "/api/projects/*/cover/export": ["./node_modules/@sparticuz/chromium/bin/**", "./node_modules/playwright-core/**"],
   },
   outputFileTracingExcludes: { "/**": ["./data/**/*", "./style reference/**/*", "./.env*", "./test-results/**/*", "./public/fonts/**/*"] },
   async headers() {

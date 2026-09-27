@@ -20,7 +20,7 @@ export const PUT = handle(async (req: Request) => {
   if (text.length > 200_000) return fail("내용이 너무 깁니다.");
   const cur = await loadInstruction();
   if (cur && cur !== text) {
-    const hist = (await getSetting<Hist>("instructionHistory")) ?? [];
+    const hist = (await getSetting<Hist>("instructionHistory", { fresh: true })) ?? [];
     await setSetting("instructionHistory", [{ at: new Date().toISOString(), text: cur }, ...hist].slice(0, 20));
   }
   await setSetting("instruction", text);

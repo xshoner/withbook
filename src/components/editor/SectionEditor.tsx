@@ -5,22 +5,24 @@ import { NodeSelection, type Transaction } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
-import { clearJob, jobFor, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, useAiJobs, useLastWriteTiming, type JobMode } from "./aiJobs";
+import { clearJob, clearPartial, jobFor, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, takeDetachedSave, useAiJob, useAnyRunningIn, useLastWriteTiming, useRunningIds, type AiJob, type JobMode } from "./aiJobs";
 import { scheduleOutlinePreparation, scheduleSummaryPreparation } from "./preparation";
 import { attachFile } from "@/lib/upload-client";
 import {
   docParagraphs,
   charCount,
   charCountNoSpace,
+  contentHash,
   docToMarkdown,
   isDocEmpty,
   markdownToDoc,
   parseDoc,
   type JNode,
 } from "@/lib/doc/doc";
+import type { Node as PMNode } from "@tiptap/pm/model";
 import { DOC, bodyBox } from "@/lib/print/spec";
 import { numberChapters, type LayoutSettings } from "@/lib/layout";
 import type { ProjectTree, SectionPageInfo, TreeChapter, TreeSection } from "../types";
@@ -28,18 +30,19 @@ import { Figure } from "./Figure";
 import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
 import type { AppliedChange } from "./ProofPanel";
-import FindPanel from "./FindPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround } from "./pmOps";
-import { recoverPending, registerCommit, settleSection, useAutosave, type SaveState } from "./useAutosave";
+import { conflictOf, noteServerContent, primeBase, recoverPending, registerCommit, resolveConflict, settleSection, useAutosave } from "./useAutosave";
 import type { BatchItem, SectionRef } from "./BatchWriteDialog";
 import { BATCH_MAX } from "./batch";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
-import { startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
+import { pauseAutoRun, startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
 import type { AutoItem, AutoOptions } from "@/lib/autowrite";
-import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, takeProofResult, useProofJobs } from "./proofJobs";
+import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, stopProof, takeProofResult, useProofJob, useProofRunningIds } from "./proofJobs";
 import WritingOverlay from "./WritingOverlay";
-import ToolGroup from "./ToolGroup";
-import Menu from "./Menu";
+import EditorToolbar, { REWRITE_LABEL, type RewriteAction } from "./EditorToolbar";
+import FootnotesPanel, { FootnoteTabLabel, footnoteNumberAt } from "./FootnotesPanel";
+import PartialBanner from "./PartialBanner";
+import { clipboardHasText, compositionDone, trackPositions, useDocValue, useEditLock, useStableFn } from "./editorHooks";
 
 // 열 때만 필요한 창·패널은 따로 불러온다
 const ProofPanel = dynamic(() => import("./ProofPanel"));
@@ -51,6 +54,21 @@ const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
 const BatchWriteDialog = dynamic(() => import("./BatchWriteDialog"));
 const AutoWriteDialog = dynamic(() => import("./AutoWriteDialog"));
 const CandidateCompareDialog = dynamic(() => import("./CandidateCompareDialog"));
+const SaveConflictDialog = dynamic(() => import("./SaveConflictDialog"));
+
+/**
+ * AI 집필 중지 — 전체 자동 집필이 쓰는 절이면 전체가 일시 정지되므로 먼저 묻는다.
+ * 돌려준 값: 멈췄으면 true
+ */
+export async function stopWriting(job: Pick<AiJob, "sectionId" | "auto" | "batch">) {
+  if (job.auto) {
+    if (!(await confirmDialog("전체 자동 집필이 쓰는 절입니다. 이 절을 멈추면 전체 자동 집필이 일시 정지됩니다(쓴 데까지는 넣습니다). 멈출까요?", { okLabel: "멈추고 일시 정지" }))) return false;
+    pauseAutoRun();
+  }
+  if (job.batch) stopBatch();
+  stopJob(job.sectionId);
+  return true;
+}
 
 type Props = {
   project: ProjectTree;
@@ -62,7 +80,6 @@ type Props = {
   onRename: (title: string) => void;
   onRenameChapter: (title: string) => void;
   onTargetPages: (n: number) => void;
-  onSaveState: (s: SaveState) => void;
   onLayout: (patch: Partial<LayoutSettings>) => void;
   allSections: SectionRef[];
   onTreeChanged: () => void;
@@ -76,15 +93,20 @@ type Props = {
 
 type Loaded = { content: string; sketch: string; status: string; updatedAt: string; recovered: boolean };
 
-export default function SectionEditor(props: Props) {
+/** 목차·저장 표시가 바뀌어도 이 절의 값이 그대로면 다시 그리지 않는다 (부모가 넘기는 함수는 늘 같은 참조) */
+export default memo(SectionEditor);
+
+function SectionEditor(props: Props) {
   const [data, setData] = useState<Loaded | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => {
     let alive = true;
     settleSection(props.section.id).then(() => api(`/api/sections/${props.section.id}`))
       .then(async (s) => {
-        const rec = await recoverPending(props.section.id);
+        const rec = await recoverPending(props.section.id, { content: s.content ?? "", sketch: s.sketch ?? "" });
         if (!alive) return;
+        // 저장 충돌 확인 기준: 복구본을 이어 쓰면 그 복구본이 기준으로 삼았던 서버 본문 — 그사이 서버가 바뀌었으면 저장 때 충돌로 알린다
+        primeBase(props.section.id, rec ? (rec.baseHash ?? null) : (s.contentHash ?? contentHash(s.content)));
         setData({
           content: rec?.content ?? s.content,
           sketch: rec?.sketch ?? s.sketch,
@@ -103,7 +125,7 @@ export default function SectionEditor(props: Props) {
   return <EditorCore {...props} data={data} />;
 }
 
-function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onSaveState, onLayout, allSections, onTreeChanged, onServerEdited, onBookSearch, locate, data }: Props & { data: Loaded }) {
+function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onLayout, allSections, onTreeChanged, onServerEdited, onBookSearch, locate, data }: Props & { data: Loaded }) {
   const cpp = project.charsPerPage || 700;
   const [sketch, setSketch] = useState(data.sketch);
   const [sketchOpen, setSketchOpen] = useState(!data.content || isDocEmpty(parseDoc(data.content)));
@@ -121,6 +143,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const autoDriving = useAutoWrite().driving;
   const [reviseOpen, setReviseOpen] = useState(false);
   const revisedRef = useRef(false);
+  // 장 퇴고는 이 장의 어느 절이든 AI가 쓰는 중(이어쓰기 포함)이거나 교정 중이면 막는다 — 퇴고가 고친 원고를 쓰던 글이 덮지 않게
+  const chapterIds = useMemo(() => chapter.sections.map((s) => s.id), [chapter.sections]);
+  const chapterWriting = useAnyRunningIn(chapterIds);
+  const proofIds = useProofRunningIds();
+  const chapterProofing = useMemo(() => proofIds.split(",").some((id) => chapterIds.includes(id)), [proofIds, chapterIds]);
   const [candidate, setCandidate] = useState<string | null>(null);
   const [candCompare, setCandCompare] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -147,8 +174,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [proofLevel, setProofLevel] = useState<"proof" | "light">("proof");
   const [proof, setProof] = useState<AppliedChange[] | null>(null);
   // 교정도 편집기 밖에서 돈다 — 교정 중에 다른 절로 옮겨도 계속된다 (그동안 이 절만 잠근다)
-  const proofJobs = useProofJobs();
-  const proofJob = proofJobs.find((j) => j.sectionId === section.id) ?? null;
+  const proofJob = useProofJob(section.id);
   const proofBusy = proofJob?.state === "running";
   const [preProof, setPreProof] = useState<JNode | null>(null);
   const [versionKey, setVersionKey] = useState(0);
@@ -156,21 +182,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [panelOpen, setPanelOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1280);
   const [caretPage, setCaretPage] = useState<number | null>(null); // 이 절 안에서 몇 번째 쪽(0부터)
   const [pg, setPg] = useState<PaginateResult | null>(null);
-  const [selEmpty, setSelEmpty] = useState(true);
   const [bubble, setBubble] = useState<{ x: number; y: number } | null>(null);
   const [fnEdit, setFnEdit] = useState<{ pos: number; x: number; y: number } | null>(null);
   const [fnBusy, setFnBusy] = useState<null | "one" | "auto" | "regen">(null);
-  const [docTick, setDocTick] = useState(0);
+  const [regenPos, setRegenPos] = useState<number | null>(null);
   const [rewriteBusy, setRewriteBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(data.recovered ? "브라우저에 보관돼 있던 최신 입력을 복원했습니다." : null);
-  // 이 절의 AI 집필 작업 (편집기 밖에서 돈다 — 절을 옮겨도 계속된다)
-  const aiJobs = useAiJobs();
-  const job = aiJobs.find((j) => j.sectionId === section.id) ?? null;
+  // 이 절의 AI 집필 작업 (편집기 밖에서 돈다 — 절을 옮겨도 계속된다). 이 절 작업만 구독한다
+  const job = useAiJob(section.id);
   // 다중 집필 창에서 고를 수 없는 절 (AI 집필·교정 중)
-  const busyIds = useMemo(
-    () => new Set([...aiJobs.filter((j) => j.state === "running").map((j) => j.sectionId), ...proofJobs.filter((j) => j.state === "running").map((j) => j.sectionId)]),
-    [aiJobs, proofJobs],
-  );
+  const runningIds = useRunningIds();
+  const busyIds = useMemo(() => new Set([...runningIds.split(","), ...proofIds.split(",")].filter(Boolean)), [runningIds, proofIds]);
   const lastTiming = useLastWriteTiming(section.id);
   const jobRef = useRef(job);
   jobRef.current = job;
@@ -187,18 +209,23 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const dropCandidate = () => {
     setCandidate(null);
     clearJob(section.id);
+    void clearPartial(section.id); // 끊긴 후보를 서버 보관본에서 불러온 경우 — 골랐으니 치운다
   };
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 원고 영역(진행 창 포함) — Esc 중지는 초점이 여기 있을 때만 */
+  const deskRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const sketchRef = useRef(sketch);
   sketchRef.current = sketch;
 
-  const { state: saveState, markDirty, flush: flushQueue } = useAutosave(section.id, (r) => {
+  const secLabel = `${section.label} ${section.title}`.trim();
+  const { state: saveState, markDirty, flush: flushQueue } = useAutosave(section.id, secLabel, (r) => {
     onMeta({ charCount: r.charCount, status: r.status, updatedAt: r.updatedAt });
     onSaved(section.id, r.charCount);
   });
+  const conflict = saveState.kind === "conflict" ? conflictOf(section.id) : null;
   /**
    * 입력마다 문서 전체를 JSON으로 바꾸고 글자를 세면 긴 절에서 타자가 무거워진다 → 입력이 250ms 멈추면 한 번에 한다.
    * 저장·AI 작업 전에는 commitEdit()으로 밀린 입력을 먼저 반영한다.
@@ -226,18 +253,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (targetPages <= 5 || !sketch.trim() || writing || tab !== "ai" || !["idle", "saved"].includes(saveState.kind)) return;
     return scheduleOutlinePreparation(section.id, { targetPages, extraInstruction: extra });
   }, [section.id, targetPages, sketch, extra, Boolean(writing), tab, saveState.kind, saveState.at]);
-  useEffect(() => {
-    const hide = () => document.visibilityState === "hidden" && commitEdit();
-    window.addEventListener("pagehide", commitEdit);
-    document.addEventListener("visibilitychange", hide);
-    return () => {
-      window.removeEventListener("pagehide", commitEdit);
-      document.removeEventListener("visibilitychange", hide);
-      commitEdit(); // 절을 옮겨도 밀린 입력을 저장 큐에 넣는다
-    };
-  }, [commitEdit]);
+  // 창을 숨기거나 닫을 때·절을 옮길 때 밀린 입력은 useAutosave가 registerCommit으로 먼저 큐에 넣는다 (구독을 끊기 전에)
   useEffect(() => registerCommit(section.id, commitEdit), [section.id, commitEdit]);
-  useEffect(() => onSaveState(saveState), [saveState, onSaveState]);
   useEffect(() => {
     if (data.recovered) markDirty({ content: data.content, sketch: data.sketch, status: data.status });
   }, [data, markDirty]);
@@ -260,7 +277,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     extensions: [
       StarterKit.configure({ heading: { levels: [3] }, code: false, codeBlock: false, strike: false, link: false, underline: false }),
       Placeholder.configure({ placeholder: "여기에 본문을 직접 쓰거나, 위 스케치를 채우고 [집필하기]를 누르세요." }),
-      Figure,
+      Figure.configure({ margins: project.layout.margins }),
       Footnote,
       PageBreaks,
     ],
@@ -272,27 +289,16 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         if (!files.length) return false;
         event.preventDefault();
         const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos ?? view.state.doc.content.size;
-        files.forEach(async (f) => {
-          try {
-            const attrs = await uploadImage(f);
-            view.dispatch(view.state.tr.insert(pos, view.state.schema.nodes.figure.create(attrs)));
-          } catch (e: any) {
-            toastError(e);
-          }
-        });
+        void insertImages(files, pos, pos);
         return true;
       },
       handlePaste: (view, event) => {
+        // Word·Excel·웹 문서는 글과 함께 미리보기 그림도 넣는다 — 글이 있으면 글로 붙인다
+        if (clipboardHasText(event.clipboardData)) return false;
         const files = [...(event.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
         if (!files.length) return false;
-        files.forEach(async (f) => {
-          try {
-            const attrs = await uploadImage(f);
-            view.dispatch(view.state.tr.replaceSelectionWith(view.state.schema.nodes.figure.create(attrs)));
-          } catch (e: any) {
-            toastError(e);
-          }
-        });
+        const { from, to } = view.state.selection;
+        void insertImages(files, from, to);
         return true;
       },
     },
@@ -303,7 +309,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       editTimer.current = window.setTimeout(commitEdit, 250);
     },
     onSelectionUpdate: ({ editor }) => {
-      updateCaretPage(editor);
+      scheduleCaretPage();
       updateFloating(editor);
     },
     onBlur: ({ editor, event }) => {
@@ -314,10 +320,50 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   });
 
   editorRef.current = editor;
-  useEffect(() => {
-    if (!editor || editor.isDestroyed) return;
-    editor.setEditable(!locked && !proofBusy && !autoChecking, false); // false: update 이벤트를 내지 않아 상태가 '수정 중'으로 바뀌지 않게
-  }, [editor, locked, proofBusy, autoChecking]);
+
+  /** 선택 영역 AI 결과 — 바로 넣지 않고 원문과 비교해 보여 준 뒤 [적용]할 때 넣는다. 그동안 선택 위치가 바뀌지 않게 편집을 잠근다 */
+  const [rewritePreview, setRewritePreview] = useState<null | {
+    action: RewriteAction;
+    from: number;
+    to: number;
+    selection: string;
+    text: string;
+    req: { selection: string; before: string; after: string; toneTarget: string };
+    x: number;
+    y: number;
+  }>(null);
+
+  // 편집 잠금은 여기 한 곳에서 정한다 — AI 집필·교정·자동 집필 점검·선택 영역 AI·각주 AI·저장 충돌 중 하나라도 있으면 잠근다
+  const { canEdit, reason: busyReason, canEditRef } = useEditLock(editor, section.id, {
+    locked,
+    proofBusy,
+    autoChecking,
+    rewrite: !!rewriteBusy || !!rewritePreview,
+    footnote: fnBusy === "one" || fnBusy === "auto",
+    conflict: !!conflict,
+    busy: rewriteBusy || rewritePreview ? "rewrite" : fnBusy ? "footnote" : null,
+  });
+
+  /** 그림 올리기 — 올리는 동안 문서가 바뀌어도 넣을 자리를 따라가고, 그사이 잠겼으면 넣지 않는다 */
+  async function insertImages(files: File[], from: number, to: number) {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const track = trackPositions(ed, [from, to]);
+    try {
+      for (const f of files) {
+        const attrs = await uploadImage(f);
+        if (ed.isDestroyed) return;
+        if (!canEditRef.current) return toast.error("그사이 이 절이 잠겨 그림을 넣지 못했습니다. 잠금이 풀린 뒤 다시 넣어 주세요.");
+        const [a, b] = track.get().positions;
+        const size = ed.state.doc.content.size;
+        ed.view.dispatch(ed.state.tr.replaceRangeWith(Math.min(a, size), Math.min(Math.max(a, b), size), ed.schema.nodes.figure.create(attrs)));
+      }
+    } catch (e) {
+      toastError(e);
+    } finally {
+      track.stop();
+    }
+  }
 
   /* ---------- 쪽 나눔 (실제 조판처럼 쪽마다 끊고 사이를 띄운다) ---------- */
   const margins = project.layout.margins;
@@ -361,8 +407,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     });
     dirtyFrom.current = null;
     sc.scrollTop = keep;
-    setPg(r);
-    updateCaretPage(editor);
+    // 값이 같으면 다시 그리지 않는다 (입력마다 도는 계산이라)
+    setPg((p) => (p && p.pages === r.pages && Math.abs(p.lastFill - r.lastFill) < 0.05 && JSON.stringify(p.lastNotes) === JSON.stringify(r.lastNotes) ? p : r));
+    cachePageBoxes();
+    updateCaretPage();
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, geom, leadMm, pageLabel]);
@@ -389,7 +437,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!editor) return;
     const onTr = ({ transaction }: { transaction: Transaction }) => {
       if (!transaction.docChanged) return;
-      setDocTick((t) => t + 1);
       // 이전에 기록한 위치를 이번 변경에 맞춰 옮기고, 이번에 바뀐 가장 앞 위치와 비교한다
       if (dirtyFrom.current) dirtyFrom.current = transaction.mapping.map(dirtyFrom.current, -1);
       let at = Infinity;
@@ -450,21 +497,39 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     return () => timers.forEach((t) => window.clearTimeout(t));
   }, [editor, locate]);
 
-  function updateCaretPage(ed: Editor) {
-    if (!contentRef.current || ed.isDestroyed) return;
+  /**
+   * 커서가 몇 번째 쪽인지 — 쪽 나눔을 계산할 때 쪽 끝 위치(본문 위에서부터)를 한 번 재 두고, 커서가 움직이면 그것과만 비교한다
+   * (예전에는 커서가 움직일 때마다 모든 쪽 상자의 위치를 다시 쟀다). 한 프레임에 한 번만 한다.
+   */
+  const pageBottoms = useRef<number[]>([]);
+  function cachePageBoxes() {
+    const host = contentRef.current;
+    if (!host) return;
+    const top = host.getBoundingClientRect().top;
+    pageBottoms.current = [...host.querySelectorAll(".pg-box")].map((b) => b.getBoundingClientRect().bottom - top);
+  }
+  function updateCaretPage() {
+    const ed = editorRef.current;
+    if (!contentRef.current || !ed || ed.isDestroyed) return;
     try {
-      const top = ed.view.coordsAtPos(ed.state.selection.from).top;
-      let k = 0;
-      contentRef.current.querySelectorAll(".pg-box").forEach((b) => {
-        if (b.getBoundingClientRect().bottom <= top + 1) k++;
-      });
-      setCaretPage(k);
+      const top = ed.view.coordsAtPos(ed.state.selection.from).top - contentRef.current.getBoundingClientRect().top;
+      setCaretPage(pageBottoms.current.filter((b) => b <= top + 1).length);
     } catch {}
   }
+  const caretFrame = useRef(0);
+  function scheduleCaretPage() {
+    if (caretFrame.current) return;
+    caretFrame.current = requestAnimationFrame(() => {
+      caretFrame.current = 0;
+      updateCaretPage();
+    });
+  }
+  useEffect(() => () => cancelAnimationFrame(caretFrame.current), []);
 
-  /** 제목 입력 칸 — 머리말처럼 절 하나뿐인 장이면 장·절 이름을 함께 바꾼다 */
+  /** 제목 입력 칸 — 머리말처럼 절 하나뿐인 장이면 장·절 이름을 함께 바꾼다. 목차에서 이름을 바꾸면 새 이름으로 다시 만든다(옛 이름으로 되돌리지 않게) */
   const titleBox = (title: string) => (
     <textarea
+      key={section.title}
       ref={growTitle}
       rows={1}
       className="min-w-0 flex-1 resize-none overflow-hidden border-0 bg-transparent p-0 outline-none"
@@ -501,7 +566,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   function updateFloating(ed: Editor) {
     if (ed.isDestroyed) return;
     const sel = ed.state.selection;
-    setSelEmpty(sel.empty);
     // 값이 같으면 이전 객체를 그대로 둔다 — 커서만 움직일 때 편집기 전체가 다시 그려지지 않게
     if (sel instanceof NodeSelection && sel.node.type.name === "footnote") {
       const c = ed.view.coordsAtPos(sel.from);
@@ -557,7 +621,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
    */
   const jobTarget = (mode: JobMode, body: { targetPages?: number; targetChars?: number }) =>
     mode === "adjust" ? body.targetChars ?? targetChars : Math.round((body.targetPages ?? targetPages) * cpp);
-  const secLabel = `${section.label} ${section.title}`.trim();
 
   async function startJob(url: string, body: { targetPages?: number; targetChars?: number; mode?: string; extraInstruction?: string }, mode: JobMode) {
     if (!editor) return;
@@ -569,7 +632,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     runJob({ sectionId: section.id, label: secLabel, mode, url, body, target: jobTarget(mode, body), figures }).catch((e) => toastError(e, "AI 오류: "));
   }
 
-  // 편집기를 연 순간 이미 저장 단계였다면(결과를 여기서 넣지 못했다면) 저장된 원고를 다시 불러온다
+  // 결과를 여기서 넣지 못하고 저장 큐로 서버에 저장했으면(편집기를 연 순간 이미 저장 단계였던 경우 등) 저장된 원고를 다시 불러온다.
+  // 아무것도 저장하지 않은 작업(첫 글자 전 실패·중지)은 다시 불러오지 않는다 — 실행 취소 기록·스크롤을 잃지 않게
   const appliedRef = useRef(false);
   const wasWriting = useRef(false);
   useEffect(() => {
@@ -578,7 +642,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       appliedRef.current = false;
       return;
     }
-    if (wasWriting.current && !appliedRef.current && job?.mode !== "newVersion") onServerEdited();
+    if (wasWriting.current && !appliedRef.current && takeDetachedSave(section.id)) onServerEdited();
     wasWriting.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [writing]);
@@ -606,8 +670,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       }
       const d = editor.getJSON() as JNode;
       setCounts({ chars: charCount(d), noSpace: charCountNoSpace(d) });
-      editor.setEditable(!proofRunning(section.id), false);
-      await commitDoc("ai_draft");
+      await commitDoc("ai_draft"); // 잠금은 작업이 끝나면(useEditLock) 풀린다
       setVersionKey((k) => k + 1);
       checkLength(charCount(editor.getJSON() as JNode));
       return JSON.stringify(editor.getJSON());
@@ -680,7 +743,13 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   const acceptCandidate = async () => {
     if (!candidateText || !editor) return;
-    await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()) } });
+    if (!canEditRef.current) return toast.error(`${busyReason} — 끝난 뒤에 후보를 쓰세요.`);
+    try {
+      // 지금 본문을 먼저 버전으로 남긴다 — 남기지 못하면 바꾸지 않는다
+      await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()) } });
+    } catch (e) {
+      return toastError(e, "지금 본문을 버전 기록에 남기지 못해 후보로 바꾸지 않았습니다: ");
+    }
     setDoc(markdownToDoc(candidateText), true);
     dropCandidate();
     await commitDoc("ai_draft");
@@ -690,15 +759,51 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     scheduleSummaryPreparation(section.id, undefined, 0);
   };
 
-  const undoAi = async () => {
-    const vs = await api<{ id: string; reason: string }[]>(`/api/sections/${section.id}/versions`);
-    const v = vs.find((x) => x.reason === "ai_write" || x.reason === "length_adjust");
-    if (!v) return toast("되돌릴 AI 집필 이전 버전이 없습니다.");
-    const r = await api<{ content: string }>(`/api/versions/${v.id}`, { method: "POST", json: { currentContent: JSON.stringify(editor?.getJSON()) } });
-    setDoc(parseDoc(r.content), true);
-    await commitDoc(statusFor(parseDoc(r.content)));
-    setLengthHint(null);
+  /** 중단된 AI 집필(서버 보관본)을 본문 끝에 붙인다 — 붙이기 전 원고는 버전으로 남긴다 */
+  async function appendPartial(text: string) {
+    if (!editor || editor.isDestroyed) return false;
+    if (!canEditRef.current) {
+      toast.error(`${busyReason} — 끝난 뒤에 붙이세요.`);
+      return false;
+    }
+    if (!(await flush())) {
+      toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
+      return false;
+    }
+    await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()) } }).catch(() => {});
+    if (editor.isDestroyed) return false;
+    appendAtEnd(editor, markdownToDoc(text));
+    await commitDoc("ai_draft");
     setVersionKey((k) => k + 1);
+    toast.success("보관돼 있던 AI 글을 본문 끝에 붙였습니다.");
+    return true;
+  }
+
+  /** 중단된 AI 집필을 새 버전 후보로 — 고르거나 버리면 보관본을 치운다(dropCandidate) */
+  function comparePartial(text: string) {
+    setCandidate(text);
+    setTab("ai");
+    setPanelOpen(true);
+    setCompareOpen(true);
+  }
+
+  const undoAi = async () => {
+    if (!editor) return;
+    try {
+      if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 되돌리세요.");
+      const vs = await api<{ id: string; reason: string }[]>(`/api/sections/${section.id}/versions`);
+      const v = vs.find((x) => x.reason === "ai_write" || x.reason === "length_adjust");
+      if (!v) return toast("되돌릴 AI 집필 이전 버전이 없습니다.");
+      const r = await api<{ content: string }>(`/api/versions/${v.id}`, { method: "POST", json: { currentContent: JSON.stringify(editor.getJSON()) } });
+      if (editor.isDestroyed) return;
+      noteServerContent(section.id, r.content); // 서버가 이미 이 버전으로 바꿨다 — 다음 저장이 충돌로 보이지 않게
+      setDoc(parseDoc(r.content), true);
+      await commitDoc(statusFor(parseDoc(r.content)));
+      setLengthHint(null);
+      setVersionKey((k) => k + 1);
+    } catch (e) {
+      toastError(e, "AI 쓰기 전으로 되돌리지 못했습니다: ");
+    }
   };
 
   /* ---------- 교정·교열 ---------- */
@@ -718,7 +823,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!editor) return;
     return registerProofApplier(section.id, async (changes, failed, before) => {
       if (editor.isDestroyed) return null;
-      editor.setEditable(!locksSection(jobFor(section.id)), false);
       setPreProof(before);
       const applied: AppliedChange[] = changes.map((c) => ({ ...c, state: replaceInBlock(editor, c.paragraph, c.before, c.after) ? "applied" : "failed" }));
       const list = [...applied, ...failed.map((c) => ({ ...c, state: "failed" as const }))];
@@ -766,6 +870,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   const revertOne = async (i: number) => {
     if (!editor || !proof) return;
+    if (!canEditRef.current) return toast.error(`${busyReason} — 끝난 뒤에 되돌리세요.`);
     const c = proof[i];
     const ok = replaceInBlock(editor, c.paragraph, c.after, c.before);
     if (!ok) return toast.error("이미 다른 수정이 있어 이 항목만 되돌릴 수 없습니다. [전체 되돌리기]나 버전 기록을 쓰세요.");
@@ -777,6 +882,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   const revertAll = async () => {
     if (!preProof || !editor) return;
+    if (!canEditRef.current) return toast.error(`${busyReason} — 끝난 뒤에 되돌리세요.`);
     if (!(await confirmDialog("교정 전 상태로 모두 되돌릴까요?", { okLabel: "모두 되돌리기" }))) return;
     setDoc(preProof, true);
     setProof((p) => p?.map((x) => (x.state === "applied" ? { ...x, state: "reverted" } : x)) ?? null);
@@ -784,25 +890,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     await commitDoc("editing");
   };
 
-  /* ---------- 선택 영역 AI ---------- */
-  type RewriteAction = "polish" | "expand" | "shorten" | "tone" | "example";
-  const REWRITE_LABEL: Record<RewriteAction, string> = { polish: "다듬기", expand: "늘리기", shorten: "줄이기", tone: "톤 바꾸기", example: "예시 추가" };
-  /** 선택 영역 AI 결과 — 바로 넣지 않고 원문과 비교해 보여 준 뒤 [적용]할 때 넣는다. 그동안 선택 위치가 바뀌지 않게 편집을 잠근다 */
-  const [rewritePreview, setRewritePreview] = useState<null | {
-    action: RewriteAction;
-    from: number;
-    to: number;
-    selection: string;
-    text: string;
-    req: { selection: string; before: string; after: string; toneTarget: string };
-    x: number;
-    y: number;
-  }>(null);
-
+  /* ---------- 선택 영역 AI (결과 미리보기 상태 rewritePreview는 위 잠금과 함께 둔다) ---------- */
   async function requestRewrite(action: RewriteAction, from: number, to: number, req: { selection: string; before: string; after: string; toneTarget: string }) {
     if (!editor) return;
-    setRewriteBusy(action);
-    editor.setEditable(false, false);
+    setRewriteBusy(action); // 결과를 적용하거나 취소할 때까지 편집을 잠근다 (useEditLock)
     try {
       if (!(await flush())) throw new Error("원고 저장을 완료한 뒤 다시 수정해주세요.");
       const r = await api<{ text: string }>(`/api/sections/${section.id}/rewrite`, {
@@ -814,14 +905,13 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       setRewritePreview({ action, from, to, selection: req.selection, text: r.text.trim(), req, x: c.left, y: c.bottom });
     } catch (e) {
       toastError(e);
-      if (!editor.isDestroyed) editor.setEditable(!streamingRef.current, false);
     } finally {
       setRewriteBusy(null);
     }
   }
 
   async function rewrite(action: RewriteAction) {
-    if (!editor || streaming || proofBusy || rewriteBusy || rewritePreview) return;
+    if (!editor || !canEditRef.current) return;
     const { from, to } = editor.state.selection;
     if (from === to) return toast("먼저 본문에서 고칠 부분을 드래그해 선택하세요.");
     let toneTarget = "";
@@ -841,9 +931,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   async function applyRewrite() {
     const p = rewritePreview;
     if (!editor || !p) return;
+    // 미리보기 말고 다른 이유(AI 집필·교정 등)로 잠겼으면 넣지 않는다
+    if (locked || proofBusy || autoChecking || conflict) return toast.error(`${locked ? "AI 집필" : proofBusy ? "교정·교열" : autoChecking ? "자동 집필 점검" : "저장 충돌"} 중이라 적용하지 않았습니다.`);
     // 적용 전 원고를 버전으로 남긴다 (되돌리기 대비)
     await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "rewrite" } }).catch(() => {});
-    editor.setEditable(true, false);
+    if (editor.isDestroyed) return;
     const parts = markdownToDoc(p.text).content ?? [];
     const single = parts.length === 1 && parts[0].type === "paragraph";
     if (p.action === "example") {
@@ -861,38 +953,26 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   function cancelRewrite() {
     setRewritePreview(null);
-    if (editor && !editor.isDestroyed) {
-      editor.setEditable(!streamingRef.current, false);
-      editor.commands.focus();
-    }
+    if (editor && !editor.isDestroyed) editor.commands.focus();
   }
 
-  /* ---------- 각주 ---------- */
-  const footnotes = useMemo(() => {
-    const out: (FootnoteAttrs & { pos: number })[] = [];
-    if (!editor || editor.isDestroyed) return out;
-    editor.state.doc.descendants((n, pos) => {
-      if (n.type.name === "footnote") out.push({ pos, ...(n.attrs as FootnoteAttrs) });
-    });
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, docTick]);
-
-  const setFootnoteNote = (pos: number, note: string) => {
-    if (!editor || editor.state.doc.nodeAt(pos)?.type.name !== "footnote") return;
+  /* ---------- 각주 (목록은 [각주] 탭을 열 때만 FootnotesPanel이 읽는다) ---------- */
+  // 잠겨 있으면(AI 집필·교정 등) 각주도 고치지 않는다 — 편집기 밖 입력 칸·팝업에서 문서를 바꾸지 않게
+  const setFootnoteNote = useStableFn((pos: number, note: string) => {
+    if (!editor || !canEditRef.current || editor.state.doc.nodeAt(pos)?.type.name !== "footnote") return;
     editor.view.dispatch(editor.state.tr.setNodeAttribute(pos, "note", note));
-  };
+  });
 
-  const deleteFootnote = (pos: number) => {
-    if (!editor || editor.state.doc.nodeAt(pos)?.type.name !== "footnote") return;
+  const deleteFootnote = useStableFn((pos: number) => {
+    if (!editor || !canEditRef.current || editor.state.doc.nodeAt(pos)?.type.name !== "footnote") return;
     editor.view.dispatch(editor.state.tr.delete(pos, pos + 1));
     setFnEdit(null);
-  };
+  });
 
-  const selectFootnote = (pos: number) => {
+  const selectFootnote = useStableFn((pos: number) => {
     if (!editor) return;
     editor.chain().focus().setNodeSelection(pos).scrollIntoView().run();
-  };
+  });
 
   /** 선택한 단어(또는 커서 앞 어절)와 그 문단 */
   function termAtSelection() {
@@ -907,36 +987,39 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   }
 
   async function addFootnote(ai: boolean) {
-    if (!editor || streaming || proofBusy || rewriteBusy || fnBusy) return;
+    if (!editor || !canEditRef.current || fnBusy) return;
     const t = termAtSelection();
     if (!t) return;
     if (ai && !t.term) return toast("각주를 달 단어를 드래그해 선택하세요.");
     if (t.term.length > 80) return toast("각주는 단어나 짧은 구절(80자 이하)에 답니다.");
     let note = "";
+    let at = t.at;
     if (ai) {
-      setFnBusy("one");
-      editor.setEditable(false, false);
+      setFnBusy("one"); // 쓰는 동안 편집을 잠근다 (useEditLock)
+      const track = trackPositions(editor, [t.at]);
       try {
         const r = await api<{ note: string }>(`/api/sections/${section.id}/footnote`, {
           method: "POST",
           json: { action: "note", term: t.term, context: t.context },
         });
         note = r.note;
+        at = track.get().positions[0];
       } catch (e: any) {
         toastError(e, "각주 AI 오류: ");
         return;
       } finally {
+        track.stop();
         setFnBusy(null);
-        if (!editor.isDestroyed) editor.setEditable(true, false);
       }
       if (editor.isDestroyed) return;
     }
-    const at = Math.min(t.at, editor.state.doc.content.size);
+    at = Math.min(at, editor.state.doc.content.size);
     editor.chain().focus().insertContentAt(at, { type: "footnote", attrs: { note, term: t.term, auto: ai } }).setNodeSelection(at).run();
   }
 
+  /** AI로 각주 다시 쓰기 — 기다리는 동안 본문을 고쳐도 같은 각주를 찾아 고친다 (예전 위치를 그대로 쓰면 다른 자리를 건드렸다) */
   async function regenFootnote(pos: number) {
-    if (!editor || fnBusy) return;
+    if (!editor || fnBusy || !canEditRef.current) return;
     const node = editor.state.doc.nodeAt(pos);
     if (node?.type.name !== "footnote") return;
     const a = node.attrs as FootnoteAttrs;
@@ -944,28 +1027,32 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     const term = a.term || termAtSelection()?.term || "";
     if (!term) return toast("각주를 단 단어를 알 수 없습니다. 내용을 직접 입력하세요.");
     setFnBusy("regen");
+    setRegenPos(pos);
+    const track = trackPositions(editor, [pos]);
     try {
       const r = await api<{ note: string }>(`/api/sections/${section.id}/footnote`, {
         method: "POST",
         json: { action: "note", term, context: $p.parent.textContent, current: a.note },
       });
-      if (!editor.isDestroyed) {
-        setFootnoteNote(pos, r.note);
-        editor.view.dispatch(editor.state.tr.setNodeAttribute(pos, "auto", true));
-      }
+      if (editor.isDestroyed) return;
+      const at = track.get().positions[0];
+      if (editor.state.doc.nodeAt(at)?.type.name !== "footnote") return toast.error("그사이 그 각주가 지워지거나 옮겨져 AI 결과를 넣지 않았습니다.");
+      if (!canEditRef.current) return toast.error("그사이 이 절이 잠겨 AI 결과를 넣지 않았습니다.");
+      editor.view.dispatch(editor.state.tr.setNodeAttribute(at, "note", r.note).setNodeAttribute(at, "auto", true));
     } catch (e: any) {
       toastError(e, "각주 AI 오류: ");
     } finally {
+      track.stop();
       setFnBusy(null);
+      setRegenPos(null);
     }
   }
 
   async function autoFootnote() {
-    if (!editor || streaming || proofBusy || rewriteBusy || fnBusy) return;
+    if (!editor || !canEditRef.current || fnBusy) return;
     if (isDocEmpty(editor.getJSON() as JNode)) return toast("각주를 달 본문이 없습니다.");
     if (!await flush()) return toast.error("원고 저장을 완료한 뒤 다시 시도해주세요.");
-    setFnBusy("auto");
-    editor.setEditable(false, false);
+    setFnBusy("auto"); // 끝날 때까지 편집을 잠근다 (useEditLock) — 문단 번호로 넣기 때문
     try {
       const r = await api<{ items: { paragraph: number; term: string; note: string }[] }>(`/api/sections/${section.id}/footnote`, {
         method: "POST",
@@ -989,7 +1076,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       toastError(e, "자동 각주 오류: ");
     } finally {
       setFnBusy(null);
-      if (!editor.isDestroyed) editor.setEditable(true, false);
     }
   }
 
@@ -1011,11 +1097,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         e.preventDefault();
         flush();
       }
-      if (e.key === "Escape" && jobRef.current?.state === "running") stopJob(section.id);
-      if (e.key === "Escape") {
-        setFnEdit(null);
-        setBubble(null);
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || e.keyCode === 229) return; // 창·메뉴가 먼저 쓴 Esc, 한글 조합 중 Esc는 건드리지 않는다
+      // Esc로 집필 중지: 이 절이 잠겨 진행 창이 떠 있고, 초점이 본문(또는 아무 데도 없음)에 있을 때만 — 찾기 칸·창을 닫는 Esc가 집필을 멈추지 않게
+      const j = jobRef.current;
+      const at = document.activeElement;
+      if (locksSection(j) && (!at || at === document.body || deskRef.current?.contains(at)) && !document.querySelector('[role="dialog"]')) {
+        e.preventDefault();
+        void stopWriting(j!);
+        return;
       }
+      setFnEdit(null);
+      setBubble(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1030,29 +1122,16 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   const pagesNow = counts.chars / cpp;
   const pagesLabel = pageInfo && pageInfo.pages > 0 ? pageInfo.pages : pagesNow;
-  // 버튼이 꺼진 이유 (툴팁으로 알려 준다)
-  const busyReason = locked
-    ? "AI가 이 절을 쓰는 중입니다 — 다른 절은 편집할 수 있습니다"
-    : proofBusy
-      ? "교정·교열 중입니다"
-      : rewriteBusy || rewritePreview
-        ? "선택 영역 AI 결과를 먼저 적용하거나 취소하세요"
-        : fnBusy
-          ? "각주 작업 중입니다"
-          : "";
-  const tb = (label: string, onClick: () => void, active = false, title?: string) => (
-    <button
-      key={label + (title ?? "")}
-      title={busyReason || title || label}
-      aria-label={title ?? label}
-      disabled={!!busyReason}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className={`px-1.5 py-1 text-xs disabled:opacity-40 ${active ? "bg-stone-800 text-white" : "text-stone-700 hover:bg-stone-100"}`}
-    >
-      {label}
-    </button>
-  );
+  // 도구줄에 넘기는 함수는 늘 같은 참조로 (도구줄은 memo — 편집기가 다시 그려져도 도구줄은 커서가 움직일 때만)
+  const onAddFootnote = useStableFn(addFootnote);
+  const onAutoFootnote = useStableFn(autoFootnote);
+  const onRewrite = useStableFn(rewrite);
+  const onPickImage = useStableFn(() => fileRef.current?.click());
+  const onRegenFootnote = useStableFn(regenFootnote);
+  // 새 버전 후보 비교 — 입력마다 다시 읽지 않고, 비교를 켰을 때만 입력이 멈춘 뒤 읽는다(문단 LCS를 매번 다시 계산하지 않게)
+  const comparing = candidateActive && (candCompare || compareOpen);
+  const currentParas = useDocValue(editor, (d: PMNode) => docParagraphs(d.toJSON() as JNode), { key: (ps) => ps.join("\n"), initial: [] as string[], enabled: comparing, delay: 400 });
+  const candidateParas = useMemo(() => (candidateText ? docParagraphs(markdownToDoc(candidateText)) : []), [candidateText]);
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -1099,30 +1178,33 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           </button>
           <button
             className="btn"
-            disabled={!!writing || proofBusy || !!rewriteBusy || !!fnBusy}
+            disabled={!!writing || !canEdit}
             onClick={runProofread}
-            title={writing ? "AI 집필이 끝난 뒤에 교정할 수 있습니다" : undefined}
+            title={writing ? "AI 집필이 끝난 뒤에 교정할 수 있습니다" : busyReason || undefined}
           >
             {proofBusy ? "교정 중…" : "교정·교열"}
           </button>
           <button
             className="btn"
-            disabled={!!streaming || proofBusy || !!rewriteBusy || !!fnBusy}
+            disabled={!canEdit || chapterWriting || chapterProofing}
             onClick={async () => {
               if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
               setReviseOpen(true);
             }}
-            title="이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
+            title={
+              chapterWriting
+                ? "이 장에서 AI가 쓰는 절(이어쓰기 포함)이 있습니다 — 끝난 뒤에 퇴고하세요"
+                : chapterProofing
+                  ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 퇴고하세요"
+                  : busyReason || "이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
+            }
           >
             장 퇴고
           </button>
           {writing ? (
             <button
               className="btn-primary bg-red-700 hover:bg-red-800"
-              onClick={() => {
-                if (writing.batch) stopBatch();
-                stopJob(section.id);
-              }}
+              onClick={() => void stopWriting(writing)}
               title="Esc — 쓴 데까지는 본문에 넣습니다"
             >
               ■ 중지
@@ -1130,12 +1212,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           ) : (
             <div className="relative">
               <div className="flex gap-2">
-                <button className="btn-accent" onClick={onWriteClick} disabled={proofBusy || !!rewriteBusy} title={proofBusy ? "교정·교열이 끝난 뒤에 집필할 수 있습니다" : undefined}>
+                <button className="btn-accent" onClick={onWriteClick} disabled={!canEdit} title={busyReason || undefined}>
                   ✎ AI 집필하기
                 </button>
                 <button
                   className="btn border-amber-600 text-amber-800 hover:bg-amber-50"
-                  disabled={proofBusy || !!rewriteBusy}
+                  disabled={!canEdit}
                   onClick={() => {
                     setModeAsk(false);
                     setBatchOpen(true);
@@ -1146,7 +1228,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 </button>
                 <button
                   className="btn border-violet-600 text-violet-800 hover:bg-violet-50"
-                  disabled={autoDriving || proofBusy || !!rewriteBusy}
+                  disabled={autoDriving || !canEdit}
                   onClick={() => {
                     setModeAsk(false);
                     setAutoOpen(true);
@@ -1191,81 +1273,21 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           {editor && (
             <>
               {/* 한 줄 도구줄: 본문 서식 · 각주 · 찾기 · 선택 AI · 책 서식(펼침) — 선택 AI는 드래그하면 뜨는 말풍선에도 있다 */}
-              <div className="flex flex-wrap items-center gap-2">
-                <ToolGroup label="본문" tone="bg-stone-700">
-                  {tb("소제목", () => editor.chain().focus().toggleHeading({ level: 3 }).run(), editor.isActive("heading"))}
-                  {tb("굵게", () => editor.chain().focus().toggleBold().run(), editor.isActive("bold"))}
-                  {tb("기울임", () => editor.chain().focus().toggleItalic().run(), editor.isActive("italic"))}
-                  {tb("인용", () => editor.chain().focus().toggleBlockquote().run(), editor.isActive("blockquote"))}
-                  {tb("•", () => editor.chain().focus().toggleBulletList().run(), editor.isActive("bulletList"), "글머리 목록")}
-                  {tb("1.", () => editor.chain().focus().toggleOrderedList().run(), editor.isActive("orderedList"), "번호 목록")}
-                  {tb("―", () => editor.chain().focus().setHorizontalRule().run(), false, "구분선")}
-                  {tb("🖼", () => fileRef.current?.click(), false, "이미지 넣기 (끌어다 놓거나 붙여 넣어도 됩니다)")}
-                  {tb("↶", () => editor.chain().focus().undo().run(), false, "실행 취소 (Ctrl+Z)")}
-                  {tb("↷", () => editor.chain().focus().redo().run(), false, "다시 실행 (Ctrl+Y)")}
-                </ToolGroup>
-                <ToolGroup label="각주" tone="bg-amber-700">
-                  <button
-                    title={selEmpty ? "먼저 각주를 달 단어를 드래그해 선택하세요" : busyReason || "드래그한 단어에 AI가 각주를 씁니다"}
-                    disabled={selEmpty || !!busyReason}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => addFootnote(true)}
-                    className={`px-1.5 py-1 text-xs ${selEmpty ? "text-stone-400" : "bg-amber-100 font-semibold text-amber-900 hover:bg-amber-200"} disabled:opacity-50`}
-                  >
-                    {fnBusy === "one" ? "각주 쓰는 중…" : "✦ AI 각주"}
-                  </button>
-                  {tb("직접", () => addFootnote(false), false, "선택한 단어(또는 커서 위치)에 각주를 달고 내용을 직접 입력합니다")}
-                  {tb(fnBusy === "auto" ? "찾는 중…" : "자동", autoFootnote, false, "AI가 이 절의 중요 키워드를 골라 각주를 답니다")}
-                </ToolGroup>
-                <Menu
-                  label={rewriteBusy ? `✦ ${REWRITE_LABEL[rewriteBusy as RewriteAction] ?? ""} 중…` : "✦ 선택 AI ▾"}
-                  tone="text-violet-800"
-                  disabled={!!busyReason || selEmpty}
-                  title={selEmpty ? "본문을 드래그해 선택하면 다듬기·늘리기·줄이기·톤·예시를 쓸 수 있습니다" : busyReason || "선택한 부분을 AI로 고칩니다 (결과를 비교한 뒤 적용)"}
-                >
-                  {(Object.keys(REWRITE_LABEL) as RewriteAction[]).map((a) => (
-                    <button key={a} className="block w-full px-3 py-1.5 text-left text-xs hover:bg-violet-50" onMouseDown={(e) => e.preventDefault()} onClick={() => rewrite(a)}>
-                      {REWRITE_LABEL[a]}
-                    </button>
-                  ))}
-                </Menu>
-                <Menu label="서식 ▾" tone="text-sky-800" title="글자 크기·줄 간격·문단 간격 — 책 전체 본문에 적용됩니다 (미리보기·PDF·HWPX 포함)">
-                  <div className="space-y-2 p-3 text-xs text-stone-600">
-                    <p className="text-[11px] text-stone-500">책 전체 본문에 적용됩니다</p>
-                    <label className="flex items-center justify-between gap-3">
-                      글자 크기
-                      <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={bodySizePt} onChange={(e) => onLayout({ bodySizePt: Number(e.target.value) })}>
-                        {[9, 9.5, 10, 10.5, 11, 11.5, 12].map((v) => (
-                          <option key={v} value={v}>
-                            {v}pt
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center justify-between gap-3">
-                      줄 간격
-                      <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={lineHeight} onChange={(e) => onLayout({ lineHeight: Number(e.target.value) })}>
-                        {[1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2].map((v) => (
-                          <option key={v} value={v}>
-                            {Math.round(v * 100)}%
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center justify-between gap-3">
-                      문단 간격
-                      <select className="rounded border border-stone-300 bg-white px-1 py-0.5 text-xs" value={paraSpacingMm} onChange={(e) => onLayout({ paraSpacingMm: Number(e.target.value) })}>
-                        {[0, 1, 2, 3, 4, 5, 6].map((v) => (
-                          <option key={v} value={v}>
-                            {v ? `${v}mm` : "없음"}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                </Menu>
-                <FindPanel editor={editor} onBookSearch={onBookSearch} disabled={!!busyReason} />
-              </div>
+              <EditorToolbar
+                editor={editor}
+                busyReason={busyReason}
+                fnBusy={fnBusy}
+                rewriteBusy={rewriteBusy}
+                bodySizePt={bodySizePt}
+                lineHeight={lineHeight}
+                paraSpacingMm={paraSpacingMm}
+                onLayout={onLayout}
+                onAddFootnote={onAddFootnote}
+                onAutoFootnote={onAutoFootnote}
+                onRewrite={onRewrite}
+                onPickImage={onPickImage}
+                onBookSearch={onBookSearch}
+              />
             </>
           )}
           <input
@@ -1277,12 +1299,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               const f = e.target.files?.[0];
               e.target.value = "";
               if (!f || !editor) return;
-              try {
-                const attrs = await uploadImage(f);
-                editor.chain().focus().insertContent({ type: "figure", attrs }).run();
-              } catch (er: any) {
-                toastError(er);
-              }
+              const { from, to } = editor.state.selection;
+              await insertImages([f], from, to);
             }}
           />
         </div>
@@ -1292,8 +1310,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           <div className="flex items-center gap-2 border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
             교정·교열 중 — 끝날 때까지 이 절은 잠겨 있습니다. 목차에서 다른 절로 옮겨 작업해도 교정은 계속되고, 끝나면 알려 드립니다.
+            <button className="ml-auto shrink-0 rounded bg-sky-800 px-2 py-0.5 text-xs font-semibold text-white hover:bg-sky-700" onClick={() => stopProof(section.id)} title="교정을 멈추고 잠금을 풉니다 (고친 것은 넣지 않습니다)">
+              ■ 중지
+            </button>
           </div>
         )}
+        <PartialBanner sectionId={section.id} busy={!!writing} onAppend={appendPartial} onCompare={comparePartial} />
         {candidateActive && !compareOpen && (
           <div className="flex flex-wrap items-center gap-2 border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
             {candidateWriting ? (
@@ -1348,13 +1370,13 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 분량이 목표({lengthHint.target.toLocaleString()}자)와 {Math.round(((lengthHint.chars - lengthHint.target) / lengthHint.target) * 100)}% 차이 납니다.
                 <button
                   className="btn px-2 py-0.5 text-xs"
-                  disabled={proofBusy || !!writing || !!rewriteBusy}
-                  title={proofBusy ? "교정·교열이 끝난 뒤에 조정할 수 있습니다" : undefined}
+                  disabled={!!writing || !canEdit}
+                  title={busyReason || undefined}
                   onClick={() => startJob(`/api/sections/${section.id}/adjust`, { targetChars: lengthHint.target }, "adjust")}
                 >
                   {lengthHint.chars < lengthHint.target ? "목표만큼 늘리기" : "목표만큼 줄이기"}
                 </button>
-                <button className="btn-ghost text-xs" onClick={undoAi}>
+                <button className="btn-ghost text-xs" disabled={!canEdit} onClick={undoAi}>
                   AI 쓰기 전으로 되돌리기
                 </button>
                 <button className="btn-ghost text-xs" onClick={() => setLengthHint(null)}>
@@ -1366,7 +1388,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         )}
 
         {/* 원고 */}
-        <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={deskRef} className="relative flex min-h-0 flex-1 flex-col">
         {locked && job && (
           <WritingOverlay
             status={job.status}
@@ -1375,10 +1397,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             target={job.target}
             step={job.batch ? { ...job.batch, label: job.label } : null}
             startedAt={job.startedAt}
-            onStop={() => {
-              if (job.batch) stopBatch();
-              stopJob(section.id);
-            }}
+            onStop={() => void stopWriting(job)}
           />
         )}
         <div ref={scrollRef} className="editor-desk min-h-0 flex-1 overflow-auto py-6" style={{ overflowAnchor: "none" }}>
@@ -1468,7 +1487,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                   <span className="h-3 w-3 animate-spin rounded-full border-2 border-amber-700 border-t-transparent" />
                   <b>AI가 이 절 끝에 이어 쓰는 중</b>
                   <span className="text-amber-700">· {writing.chars.toLocaleString()}자 · {writing.status}</span>
-                  <button className="ml-auto rounded bg-red-700 px-2 py-0.5 text-white hover:bg-red-800" onClick={() => stopJob(section.id)}>
+                  <button className="ml-auto rounded bg-red-700 px-2 py-0.5 text-white hover:bg-red-800" onClick={() => void stopWriting(writing)}>
                     ■ 중지
                   </button>
                 </div>
@@ -1519,11 +1538,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               ["ai", "AI 옵션"],
               ["versions", "버전 기록"],
               ["proof", "교정 내역"],
-              ["notes", `각주${footnotes.length ? ` ${footnotes.length}` : ""}`],
+              ["notes", null],
             ] as const
           ).map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)} className={`flex-1 border-b-2 py-2 ${tab === k ? "border-amber-700 font-semibold" : "border-transparent text-stone-500"}`}>
-              {l}
+              {l ?? <FootnoteTabLabel editor={editor} />}
             </button>
           ))}
         </div>
@@ -1566,7 +1585,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                   </label>
                   {candCompare && editor ? (
                     <div className="max-h-96 overflow-auto rounded bg-white p-2 font-book text-[12px] leading-5">
-                      <ParagraphDiff before={docParagraphs(editor.getJSON() as JNode)} after={docParagraphs(markdownToDoc(candidateText))} />
+                      <ParagraphDiff before={currentParas} after={candidateParas} />
                     </div>
                   ) : (
                     <div className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-book text-[12px] leading-5">{candidateText}</div>
@@ -1656,8 +1675,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               beforeRestore={flush}
               sectionId={section.id}
               refreshKey={versionKey}
+              lockReason={busyReason}
               getCurrent={() => editor.getJSON() as JNode}
               onRestore={async (c) => {
+                noteServerContent(section.id, c); // 서버가 이미 이 버전으로 바꿨다 — 다음 저장이 충돌로 보이지 않게
                 setDoc(parseDoc(c), true);
                 await commitDoc(statusFor(parseDoc(c)));
               }}
@@ -1677,45 +1698,18 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             />
           )}
           {tab === "notes" && editor && (
-            <div className="flex h-full flex-col text-sm">
-              <div className="space-y-2 border-b border-stone-200 p-3">
-                <button className="btn-accent w-full" disabled={!!fnBusy || !!streaming || proofBusy || !!rewriteBusy} onClick={autoFootnote}>
-                  {fnBusy === "auto" ? "중요 키워드 찾는 중…" : "✦ AI 자동 각주 (이 절 전체)"}
-                </button>
-                <p className="text-[11px] leading-4 text-stone-500">
-                  본문에서 단어를 드래그하면 [AI 각주]·[직접 각주]가 뜹니다. 번호를 클릭하면 내용을 고칠 수 있습니다. 보라색 = AI, 주황색 = 직접 단 각주. 인쇄·PDF에서는 쪽 아래에 번호순으로 들어갑니다.
-                </p>
-              </div>
-              <div className="min-h-0 flex-1 space-y-2 overflow-auto p-3">
-                {!footnotes.length && <p className="py-6 text-center text-xs text-stone-400">아직 각주가 없습니다.</p>}
-                {footnotes.map((f, i) => (
-                  <div key={`${f.pos}-${i}`} className={`rounded-lg border p-2 ${fnEdit?.pos === f.pos ? "border-amber-400 bg-amber-50/50" : "border-stone-200"}`}>
-                    <div className="mb-1 flex items-center gap-1.5 text-xs">
-                      <b className={f.auto ? "text-violet-700" : "text-amber-700"}>{i + 1})</b>
-                      <span className="min-w-0 flex-1 truncate font-semibold text-stone-700">{f.term || "(단어 미상)"}</span>
-                      {f.auto && <span className="rounded bg-violet-100 px-1 text-[10px] text-violet-700">AI</span>}
-                      <button className="text-stone-500 hover:underline" onClick={() => selectFootnote(f.pos)}>
-                        위치
-                      </button>
-                    </div>
-                    <textarea
-                      className="input min-h-[56px] resize-y p-1.5 text-xs leading-5"
-                      placeholder="각주 내용을 입력하세요"
-                      value={f.note}
-                      onChange={(e) => setFootnoteNote(f.pos, e.target.value)}
-                    />
-                    <div className="mt-1 flex justify-end gap-2 text-[11px]">
-                      <button className="text-violet-700 hover:underline disabled:opacity-40" disabled={!!fnBusy} onClick={() => regenFootnote(f.pos)}>
-                        {fnBusy === "regen" && fnEdit?.pos === f.pos ? "쓰는 중…" : "AI로 다시 쓰기"}
-                      </button>
-                      <button className="text-red-600 hover:underline" onClick={() => deleteFootnote(f.pos)}>
-                        삭제
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <FootnotesPanel
+              editor={editor}
+              lockReason={busyReason}
+              fnBusy={fnBusy}
+              regenPos={regenPos}
+              activePos={fnEdit?.pos ?? null}
+              onAuto={onAutoFootnote}
+              onSelect={selectFootnote}
+              onChange={setFootnoteNote}
+              onRegen={onRegenFootnote}
+              onDelete={deleteFootnote}
+            />
           )}
         </div>
       </aside>
@@ -1724,7 +1718,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <ChapterReviseDialog
           chapterId={chapter.id}
           chapterName={`${chapter.label} ${chapter.title}`.trim()}
-          chapters={numberChapters(project.chapters, project.layout.numberFormat).map((c) => ({ id: c.id, name: `${c.label} ${c.title}`.trim() }))}
+          chapters={numberChapters(project.chapters, project.layout.numberFormat).map((c) => ({ id: c.id, name: `${c.label} ${c.title}`.trim(), sectionIds: c.sections.map((x) => x.id) }))}
           beforeRun={flush}
           onApplied={(ids) => {
             if (ids.length) revisedRef.current = true;
@@ -1739,8 +1733,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
       {compareOpen && candidateActive && editor && (
         <CandidateCompareDialog
-          current={docParagraphs(editor.getJSON() as JNode)}
-          candidate={candidateText ? docParagraphs(markdownToDoc(candidateText)) : []}
+          current={currentParas}
+          candidate={candidateParas}
           writing={candidateWriting}
           status={candidateStatus}
           onAccept={() => {
@@ -1789,15 +1783,15 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           onMouseDown={(e) => e.preventDefault()}
         >
           {(Object.keys(REWRITE_LABEL) as RewriteAction[]).map((a) => (
-            <button key={a} className="rounded-md px-2 py-1 text-xs text-violet-800 hover:bg-violet-50 disabled:opacity-50" disabled={!!rewriteBusy || !!fnBusy} onClick={() => rewrite(a)}>
+            <button key={a} className="rounded-md px-2 py-1 text-xs text-violet-800 hover:bg-violet-50 disabled:opacity-50" disabled={!canEdit || !!fnBusy} onClick={() => rewrite(a)}>
               {rewriteBusy === a ? "…" : REWRITE_LABEL[a]}
             </button>
           ))}
           <span className="mx-0.5 h-4 w-px bg-stone-200" />
-          <button className="rounded-md px-2 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50" disabled={!!fnBusy} onClick={() => addFootnote(true)}>
+          <button className="rounded-md px-2 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50" disabled={!canEdit || !!fnBusy} onClick={() => addFootnote(true)}>
             {fnBusy === "one" ? "각주 쓰는 중…" : "✦ AI 각주"}
           </button>
-          <button className="rounded-md px-2 py-1 text-xs text-stone-600 hover:bg-stone-100 disabled:opacity-50" disabled={!!fnBusy} onClick={() => addFootnote(false)}>
+          <button className="rounded-md px-2 py-1 text-xs text-stone-600 hover:bg-stone-100 disabled:opacity-50" disabled={!canEdit || !!fnBusy} onClick={() => addFootnote(false)}>
             직접 각주
           </button>
         </div>
@@ -1814,7 +1808,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
             left: Math.min(Math.max(8, rewritePreview.x - 60), (typeof window !== "undefined" ? window.innerWidth : 1200) - 460),
             top: Math.min(rewritePreview.y + 10, (typeof window !== "undefined" ? window.innerHeight : 800) - 320),
           }}
-          onKeyDown={(e) => e.key === "Escape" && cancelRewrite()}
+          onKeyDown={(e) => {
+            if (e.key !== "Escape" || e.nativeEvent.isComposing) return;
+            e.preventDefault(); // 창을 닫는 Esc — 집필 중지로 새지 않게
+            cancelRewrite();
+          }}
         >
           <div className="mb-2 flex items-center gap-2 text-xs">
             <b className="text-violet-800">✦ {REWRITE_LABEL[rewritePreview.action]}</b>
@@ -1862,15 +1860,34 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           key={fnEdit.pos}
           x={fnEdit.x}
           y={fnEdit.y}
-          number={footnotes.findIndex((f) => f.pos === fnEdit.pos) + 1}
+          number={footnoteNumberAt(editor, fnEdit.pos)}
           attrs={editor.state.doc.nodeAt(fnEdit.pos)!.attrs as FootnoteAttrs}
           busy={fnBusy === "regen"}
+          lockReason={busyReason}
           onChange={(v) => setFootnoteNote(fnEdit.pos, v)}
           onRegen={() => regenFootnote(fnEdit.pos)}
           onDelete={() => deleteFootnote(fnEdit.pos)}
           onClose={() => {
             setFnEdit(null);
             editor.commands.focus();
+          }}
+        />
+      )}
+
+      {/* 저장 충돌 — 다른 창·서버 작업이 먼저 고쳤다. 고를 때까지 저장을 멈추고 편집을 잠근다 */}
+      {conflict && (
+        <SaveConflictDialog
+          label={secLabel}
+          server={conflict.content}
+          mine={editor ? JSON.stringify(editor.getJSON()) : undefined}
+          onKeepMine={async () => {
+            commitEdit();
+            await resolveConflict(section.id, "mine");
+          }}
+          onTakeServer={async () => {
+            commitEdit();
+            await resolveConflict(section.id, "server");
+            onServerEdited(); // 서버 원고로 다시 불러온다
           }}
         />
       )}
@@ -1881,12 +1898,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 /** 선택 영역 글자를 문단 사이 줄바꿈으로 이어 읽는다 */
 const NL = "\n";
 
-
-/** 한글 등 입력 조합이 끝날 때까지 */
-function compositionDone(editor: Editor): Promise<void> {
-  if (editor.isDestroyed || !editor.view.composing) return Promise.resolve();
-  return new Promise((resolve) => editor.view.dom.addEventListener("compositionend", () => window.setTimeout(resolve, 0), { once: true }));
-}
 
 /** 문서 끝(끝의 빈 문단 자리)에 한 트랜잭션으로 붙인다 — 앞 본문·커서는 그대로 둔다 */
 function appendAtEnd(editor: Editor, doc: JNode) {

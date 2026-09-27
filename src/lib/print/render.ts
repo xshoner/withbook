@@ -32,7 +32,7 @@ export function figureHtml(n: JNode, fig: FigureCtx) {
   const cap = a.caption ? `<figcaption><b>${label}</b> ${esc(String(a.caption))}</figcaption>` : "";
   if (layout === "fullbleed")
     return `<figure class="fig fullbleed" data-asset="${esc(String(a.assetId ?? ""))}"><img src="${esc(src)}" alt=""></figure>`;
-  return `<figure class="fig ${layout}" data-asset="${esc(String(a.assetId ?? ""))}"><img src="${esc(src)}"${style} alt="">${cap}</figure>`;
+  return `<figure class="fig ${layout}${cap ? " cap" : ""}" data-asset="${esc(String(a.assetId ?? ""))}"><img src="${esc(src)}"${style} alt="">${cap}</figure>`;
 }
 
 export function docToHtml(doc: JNode, fig: FigureCtx): string {

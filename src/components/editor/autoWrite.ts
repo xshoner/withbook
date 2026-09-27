@@ -1,16 +1,22 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { api, readStream, type StreamEvent } from "@/lib/client";
-import { appendDocs, charCount, markdownToDoc, parseDoc, textblocks, type JNode } from "@/lib/doc/doc";
+import { api, readStream, STREAM_STALL_AFTER_PING_MS, STREAM_STALL_MS, type StreamEvent } from "@/lib/client";
+import { appendDocs, charCount, contentHash, markdownToDoc, parseDoc, textblocks, type JNode } from "@/lib/doc/doc";
 import { trimIncompleteTail } from "@/lib/doc/edit";
 import { allFinished, HEARTBEAT_MS, paragraphRanges, prepareResume, STALE_MS, type AutoItem, type AutoOptions, type AutoRun, type Stage } from "@/lib/autowrite";
 import { toast } from "../ui/feedback";
 import { registerJobKind, sectionBusyWith } from "./jobStore";
-import { runJob } from "./aiJobs";
-import { flushAllPending, saveViaQueue, settleSection } from "./useAutosave";
+import { clearPartial, runJob } from "./aiJobs";
+import { flushAllPending, saveViaQueue, settleSection, unsavedLabels } from "./useAutosave";
 import { saveProofResult } from "./proofJobs";
 import type { AppliedChange } from "./ProofPanel";
+
+/** 저장하지 못한 절 이름을 붙인 오류 문구 */
+const unsavedError = (what: string) => {
+  const names = unsavedLabels();
+  return new Error(`${what}${names.length ? ` (${names.join(", ")})` : ""}`);
+};
 
 /**
  * 전체 자동 집필 — 편집기 밖(모듈)에서 돈다. 절을 옮기거나 책 설정 화면에 다녀와도 계속된다.
@@ -208,6 +214,8 @@ const onPageHide = () => {
 
 async function writeOne(it: AutoItem, i: number, n: number) {
   const opts = state.run!.options;
+  // 그 절이 열려 있으면 마지막으로 친 입력까지 먼저 저장한다 — 서버가 남기는 'AI 집필 전' 버전에 들어가게 (직접 집필과 같게)
+  if (!(await settleSection(it.sectionId))) throw new Error("편집 중인 원고를 저장하지 못했습니다.");
   const job = await runJob({
     sectionId: it.sectionId,
     label: it.label,
@@ -241,11 +249,13 @@ async function continueOne(it: AutoItem) {
   const signal = ctrl!.signal;
   lock(it.sectionId);
   try {
-    if (!(await flushAllPending())) throw new Error("편집 중인 원고를 저장하지 못했습니다.");
+    if (!(await flushAllPending())) throw unsavedError("편집 중인 원고를 저장하지 못했습니다.");
     await settleSection(it.sectionId);
-    const cur = parseDoc((await api<{ content: string }>(`/api/sections/${it.sectionId}`)).content);
+    const curSec = await api<{ content: string; contentHash?: string }>(`/api/sections/${it.sectionId}`);
+    const cur = parseDoc(curSec.content);
     const trimmed = trimIncompleteTail(cur);
-    if (trimmed !== cur && !(await saveViaQueue(it.sectionId, { content: JSON.stringify(trimmed), status: "ai_draft" }))) throw new Error("원고를 저장하지 못했습니다.");
+    const curHash = curSec.contentHash ?? contentHash(curSec.content);
+    if (trimmed !== cur && !(await saveViaQueue(it.sectionId, { content: JSON.stringify(trimmed), status: "ai_draft" }, { baseHash: curHash }))) throw new Error("원고를 저장하지 못했습니다.");
     const target = it.targetPages * cpp;
     const have = charCount(trimmed);
     // 남은 분량(최소 반 쪽) — 거의 다 썼으면 마무리만
@@ -260,24 +270,29 @@ async function continueOne(it: AutoItem) {
       const body = resume ? { ...base, resume: { fromPart: resume.fromPart, parts: resume.parts, written: md } } : base;
       resume = null;
       const res = await fetch(`/api/sections/${it.sectionId}/write`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
-      await readStream(res, (e) => {
-        if (e.t === "delta") md += e.v ?? "";
-        else if (e.t === "resume" && e.parts && e.fromPart) resume = { fromPart: e.fromPart, parts: e.parts };
-        else if (e.t === "status" && e.v === "truncated") truncated = true;
-        else if (e.t === "status" && e.v && e.v !== "partial") setActivity("writer", `${it.label} 이어 쓰는 중… ${e.v}`);
-        else if (e.t === "error") throw new Error(e.v);
-      });
+      await readStream(
+        res,
+        (e) => {
+          if (e.t === "delta") md += e.v ?? "";
+          else if (e.t === "resume" && e.parts && e.fromPart) resume = { fromPart: e.fromPart, parts: e.parts };
+          else if (e.t === "status" && e.v === "truncated") truncated = true;
+          else if (e.t === "status" && e.v && e.v !== "partial") setActivity("writer", `${it.label} 이어 쓰는 중… ${e.v}`);
+          else if (e.t === "error") throw new Error(e.v);
+        },
+        { stallMs: STREAM_STALL_MS, stallAfterPingMs: STREAM_STALL_AFTER_PING_MS },
+      );
       if (!resume || signal.aborted) break;
     }
     if (signal.aborted) throw new Stopped();
     if (resume) truncated = true;
     if (!md.trim()) throw new Error("이어 쓴 본문이 없습니다.");
     await settleSection(it.sectionId);
-    const fresh = parseDoc((await api<{ content: string }>(`/api/sections/${it.sectionId}`)).content);
-    const next = appendDocs(fresh, markdownToDoc(md));
+    const freshSec = await api<{ content: string; contentHash?: string }>(`/api/sections/${it.sectionId}`);
+    const next = appendDocs(parseDoc(freshSec.content), markdownToDoc(md));
     const content = JSON.stringify(next);
-    if (!(await saveViaQueue(it.sectionId, { content, status: "ai_draft" }))) throw new Error("이어 쓴 원고를 저장하지 못했습니다.");
+    if (!(await saveViaQueue(it.sectionId, { content, status: "ai_draft" }, { baseHash: freshSec.contentHash ?? contentHash(freshSec.content) }))) throw new Error("이어 쓴 원고를 저장하지 못했습니다.");
     api(`/api/sections/${it.sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
+    void clearPartial(it.sectionId); // 이어 쓴 글을 본문에 넣었다 — 서버 보관본(끊긴 AI 글)은 이제 필요 없다
     return { chars: charCount(next), truncated };
   } catch (e) {
     if (signal.aborted) throw new Stopped();
@@ -366,7 +381,7 @@ async function checkStep(it: AutoItem, stage: "fact" | "review") {
   void persist().catch(() => {});
   lock(it.sectionId);
   try {
-    if (!(await flushAllPending())) throw new Error("편집 중인 원고를 저장하지 못했습니다.");
+    if (!(await flushAllPending())) throw unsavedError("편집 중인 원고를 저장하지 못했습니다.");
     if (stage === "fact") {
       const stats = await withRetry(it, "checker", label, () => factOne(it));
       patchItem(it, { fact: "done", factStats: stats, attempts: 0, error: undefined });
@@ -544,7 +559,7 @@ export async function resumeAutoRun(projectId: string, retryFailed = false) {
   if (state.projectId !== projectId || !state.run) await loadAutoRun(projectId);
   if (!state.run) throw new Error("이어 갈 자동 집필이 없습니다.");
   if (state.foreign) throw new Error("다른 창에서 전체 자동 집필을 진행하고 있습니다.");
-  if (!(await flushAllPending())) throw new Error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+  if (!(await flushAllPending())) throw unsavedError("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
   set({ run: { ...prepareResume(state.run, retryFailed), owner: OWNER } });
   void drive();
 }

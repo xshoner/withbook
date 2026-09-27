@@ -133,14 +133,45 @@ const para = (t: string): JNode => {
 
 export const IMG_TOKEN = (i: number) => `⟦그림${i}⟧`;
 const IMG_TOKEN_RE = /^⟦그림(\d+)⟧$/;
+const IMG_TOKEN_ANY = /⟦그림\d+⟧/;
+
+/** 줄 중간에 끼운 ⟦그림N⟧ 토큰을 앞뒤로 떼어 한 줄씩 둔다 (AI가 문장 안에 넣어도 그림을 잃지 않게) */
+function splitImageTokens(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    if (!IMG_TOKEN_ANY.test(raw) || IMG_TOKEN_RE.test(raw.trim())) {
+      out.push(raw);
+      continue;
+    }
+    for (const part of raw.split(/(⟦그림\d+⟧)/)) if (part.trim()) out.push(part);
+  }
+  return out;
+}
+
+export type FigureReport = {
+  /** AI가 토큰을 빠뜨려 절 끝에 붙인 그림 수 */
+  appended: number;
+  /** 같은 토큰을 두 번 이상 써서 한 번만 넣은 횟수 */
+  duplicates: number;
+};
 
 /**
  * AI 출력(제한형 마크다운)을 문서로 변환.
  * 각 줄이 한 문단. `## ` 소제목, `> ` 인용, `- `/`1. ` 목록, `---` 구분선, ⟦그림N⟧ 이미지 토큰.
  */
 export function markdownToDoc(md: string, figures: JNode[] = []): JNode {
-  const lines = md.replace(/\r\n?/g, "\n").split("\n");
+  return markdownToDocReport(md, figures).doc;
+}
+
+/**
+ * markdownToDoc + 그림 토큰 처리 결과. 그림은 하나도 잃거나 겹치지 않는다:
+ * 줄 중간 토큰도 알아보고, 같은 토큰은 처음 한 번만 넣고, 쓰이지 않은 그림은 끝에 붙인다.
+ */
+export function markdownToDocReport(md: string, figures: JNode[] = []): { doc: JNode; report: FigureReport } {
+  const lines = splitImageTokens(md.replace(/\r\n?/g, "\n").split("\n"));
   const content: JNode[] = [];
+  const used = new Set<number>();
+  const report: FigureReport = { appended: 0, duplicates: 0 };
   let i = 0;
   while (i < lines.length) {
     const raw = lines[i];
@@ -151,8 +182,13 @@ export function markdownToDoc(md: string, figures: JNode[] = []): JNode {
     }
     const img = line.match(IMG_TOKEN_RE);
     if (img) {
-      const f = figures[Number(img[1]) - 1];
-      if (f) content.push(f);
+      const k = Number(img[1]) - 1;
+      const f = figures[k];
+      if (f && used.has(k)) report.duplicates++;
+      else if (f) {
+        used.add(k);
+        content.push(f);
+      }
       i++;
       continue;
     }
@@ -193,7 +229,57 @@ export function markdownToDoc(md: string, figures: JNode[] = []): JNode {
     content.push(para(line));
     i++;
   }
-  return { type: "doc", content: content.length ? content : [{ type: "paragraph" }] };
+  figures.forEach((f, k) => {
+    if (used.has(k)) return;
+    content.push(f);
+    report.appended++;
+  });
+  return { doc: { type: "doc", content: content.length ? content : [{ type: "paragraph" }] }, report };
+}
+
+/* ---------------- 쓰는 중 글자 수 (markdownToDoc → charCount와 같은 값, 문서를 만들지 않고) ---------------- */
+
+const MARK_RE = /(\*\*([^*]+)\*\*|(?<![*\w])\*([^*\s][^*]*?)\*(?![*\w]))/g;
+const FOOTNOTE_SPLIT = /⟦주:[^⟧]*⟧/;
+
+/** 한 줄(한 문단)의 글자 수 — markdownToDoc의 줄 해석과 같게 */
+function lineChars(raw: string): number {
+  let n = 0;
+  for (const seg of raw.split(/⟦그림\d+⟧/)) {
+    let t = seg.trim();
+    if (!t) continue;
+    if (/^#{1,6}\s+/.test(t)) t = t.replace(/^#{1,6}\s+/, "");
+    else if (/^(-{3,}|\*{3,})$/.test(t)) continue;
+    else if (t.startsWith(">")) t = t.replace(/^>\s?/, "");
+    else if (/^[-*•]\s+/.test(t)) t = t.replace(/^[-*•]\s+/, "");
+    else if (/^\d+[.)]\s+/.test(t)) t = t.replace(/^\d+[.)]\s+/, "");
+    for (const part of t.split(FOOTNOTE_SPLIT)) n += part.replace(MARK_RE, (_m, _all, b, it) => b ?? it ?? "").length;
+  }
+  return n;
+}
+
+/**
+ * AI가 쓰는 중인 마크다운의 글자 수를 늘어난 부분만 세어 돌려준다 (250ms마다 전체를 다시 변환하지 않게).
+ * 끝난 줄은 한 번만 세고, 쓰는 중인 마지막 줄만 다시 센다. 앞부분이 바뀌면 처음부터 다시 센다.
+ */
+export class MdCharCounter {
+  private text = "";
+  private doneLen = 0;
+  private doneCount = 0;
+  count(md: string): number {
+    if (!md.startsWith(this.text)) {
+      this.text = "";
+      this.doneLen = 0;
+      this.doneCount = 0;
+    }
+    this.text = md;
+    const nl = md.lastIndexOf("\n");
+    if (nl + 1 > this.doneLen) {
+      for (const line of md.slice(this.doneLen, nl).split("\n")) this.doneCount += lineChars(line);
+      this.doneLen = nl + 1;
+    }
+    return this.doneCount + lineChars(md.slice(this.doneLen));
+  }
 }
 
 function inlineToMd(n: JNode): string {
@@ -259,13 +345,22 @@ export function docParagraphs(doc: JNode): string[] {
 }
 
 /** 간단한 FNV 해시 (요약 캐시 무효화용) */
-export function hashText(s: string): string {
-  let h = 0x811c9dc5;
+export function hashText(s: string, seed = 0x811c9dc5): string {
+  let h = seed;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
   return (h >>> 0).toString(16);
+}
+
+/**
+ * 저장된 본문 문자열의 해시 — 저장 충돌 확인용(서버·브라우저 공용).
+ * updatedAt은 요약 캐시 같은 다른 저장에도 바뀌므로 본문 자체로 비교한다. 두 가지 씨앗 + 길이로 우연히 같을 가능성을 줄인다.
+ */
+export function contentHash(content: string | null | undefined): string {
+  const s = content ?? "";
+  return `${hashText(s)}${hashText(s, 0x9747b28c)}.${s.length.toString(36)}`;
 }
 
 /** 문단 단위 LCS diff */

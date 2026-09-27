@@ -6,11 +6,11 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Paginator from "@/components/Paginator";
 import TocPanel from "@/components/TocPanel";
-import SectionEditor from "@/components/editor/SectionEditor";
-import type { SaveState } from "@/components/editor/useAutosave";
-import { flushAllPending } from "@/components/editor/useAutosave";
-import { stopBatch, stopJob, useAiJobs } from "@/components/editor/aiJobs";
-import { useProofJobs } from "@/components/editor/proofJobs";
+import SectionEditor, { stopWriting } from "@/components/editor/SectionEditor";
+import { flushAllPending, unsavedLabels, useSaveSummary } from "@/components/editor/useAutosave";
+import { useAiJobs, useRunningIds } from "@/components/editor/aiJobs";
+import { stopProof, useProofJobs, useProofRunningIds } from "@/components/editor/proofJobs";
+import type { LayoutSettings } from "@/lib/layout";
 import type { PagedInfo, ProjectTree, SectionPageInfo, TreeSection } from "@/components/types";
 import { api, fmtTime } from "@/lib/client";
 import { toast, toastError } from "@/components/ui/feedback";
@@ -34,7 +34,6 @@ export default function Workspace() {
   const [info, setInfo] = useState<PagedInfo | null>(null);
   const [measureKey, setMeasureKey] = useState(0);
   const [previewKey, setPreviewKey] = useState(0);
-  const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [exportOpen, setExportOpen] = useState(false);
   const [dialog, setDialog] = useState<null | { kind: "search"; q: string } | { kind: "checks" }>(null);
   const [checkCount, setCheckCount] = useState<number | null>(null);
@@ -58,14 +57,18 @@ export default function Workspace() {
   const [err, setErr] = useState("");
   const cppRef = useRef(700);
 
+  // 목차 다시 읽기가 겹치면(저장·AI 완료·삭제가 잇따를 때) 늦게 도착한 옛 응답이 새 목차를 덮지 않게 마지막 요청만 쓴다
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const t = await api<ProjectTree>(`/api/projects/${id}`);
+      if (seq !== loadSeq.current) return t;
       setTree(t);
       cppRef.current = t.charsPerPage;
       return t;
     } catch (e: any) {
-      setErr(e.message);
+      if (seq === loadSeq.current) setErr(e.message);
       return null;
     }
   }, [id]);
@@ -162,9 +165,14 @@ export default function Workspace() {
   );
 
   const patchSection = useCallback((sid: string, patch: Partial<TreeSection>) => {
-    setTree((t) =>
-      t ? { ...t, chapters: t.chapters.map((c) => ({ ...c, sections: c.sections.map((s) => (s.id === sid ? { ...s, ...patch } : s)) })) } : t,
-    );
+    setTree((t) => {
+      if (!t) return t;
+      // 바뀐 값이 없으면 목차를 새로 만들지 않는다 — 저장마다 목차·편집기가 다시 그려지지 않게 (updatedAt만 바뀐 저장은 무시)
+      const cur = t.chapters.flatMap((c) => c.sections).find((s) => s.id === sid);
+      const keys = (Object.keys(patch) as (keyof TreeSection)[]).filter((k) => k !== "updatedAt");
+      if (!cur || keys.every((k) => cur[k] === patch[k])) return t;
+      return { ...t, chapters: t.chapters.map((c) => ({ ...c, sections: c.sections.map((s) => (s.id === sid ? { ...s, ...patch } : s)) })) };
+    });
   }, []);
 
   /* 조판 결과로 쪽 번호 갱신 + 1쪽당 글자 수 보정(이동 평균) */
@@ -227,7 +235,6 @@ export default function Workspace() {
     staleRef.current = false;
     setMeasureKey((k) => k + 1);
   }, [current]);
-  const onSaveState = useCallback((s: SaveState) => setSave(s), []);
 
   useEffect(() => {
     api<{ total: number }>(`/api/projects/${id}/checks`).then((r) => setCheckCount(r.total)).catch(() => {});
@@ -243,12 +250,13 @@ export default function Workspace() {
     [load, current],
   );
 
-  // AI 집필은 편집기 밖에서 돈다 — 끝나면(작업 수가 줄면) 목차 상태·글자 수를 새로 받는다
-  const jobs = useAiJobs();
-  const running = jobs.filter((j) => j.state === "running");
-  const proofing = useProofJobs().filter((j) => j.state === "running");
+  // AI 집필은 편집기 밖에서 돈다 — 끝나면(작업 수가 줄면) 목차 상태·글자 수를 새로 받는다.
+  // 쓰는 중 글자 수(250ms마다)는 JobChips만 다시 그린다 — 여기서는 어느 절이 돌고 있는지만 본다
+  const runningIds = useRunningIds();
+  const proofIds = useProofRunningIds();
+  const writingIds = useMemo(() => (runningIds ? runningIds.split(",") : []), [runningIds]);
   const runningCount = useRef(0);
-  const busyCount = running.length + proofing.length;
+  const busyCount = writingIds.length + (proofIds ? proofIds.split(",").length : 0);
   useEffect(() => {
     if (busyCount < runningCount.current) {
       load();
@@ -256,6 +264,55 @@ export default function Workspace() {
     }
     runningCount.current = busyCount;
   }, [busyCount, load]);
+
+  // 편집기에 넘기는 함수는 늘 같은 참조로 — SectionEditor(memo)가 목차·저장 표시가 바뀔 때마다 다시 그려지지 않게. 지금 절은 ref로 읽는다
+  const curRef = useRef(cur);
+  curRef.current = cur;
+  const allSections = useMemo(
+    () => flat.map(({ c, s }) => ({ id: s.id, title: s.title, label: s.label, chapterTitle: c.title, targetPages: s.targetPages, charCount: s.charCount, gist: s.gist })),
+    [flat],
+  );
+  const editorServerEdited = useCallback(() => onServerEdited(), [onServerEdited]);
+  const onBookSearch = useCallback((q: string) => setDialog({ kind: "search", q }), []);
+  const onMeta = useCallback((p: Partial<TreeSection>) => curRef.current && patchSection(curRef.current.s.id, p), [patchSection]);
+  const onTreeChanged = useCallback(() => {
+    load();
+    setMeasureKey((k) => k + 1);
+  }, [load]);
+  const onLayout = useCallback(
+    (patch: Partial<LayoutSettings>) => {
+      setTree((t) => (t ? { ...t, layout: { ...t.layout, ...patch } } : t));
+      api(`/api/projects/${id}`, { method: "PATCH", json: { layout: patch } })
+        .then(() => setMeasureKey((k) => k + 1))
+        .catch((e) => toastError(e, "조판 설정 저장 실패: "));
+    },
+    [id],
+  );
+  const onOpRef = useRef(onOp);
+  onOpRef.current = onOp;
+  const onRename = useCallback((title: string) => curRef.current && onOpRef.current({ op: "renameSection", sectionId: curRef.current.s.id, title }), []);
+  const onRenameChapter = useCallback((title: string) => curRef.current && onOpRef.current({ op: "renameChapter", chapterId: curRef.current.c.id, title }), []);
+  const onTargetPages = useCallback(
+    (n: number) => {
+      const c = curRef.current;
+      if (!c || n === c.s.targetPages) return;
+      patchSection(c.s.id, { targetPages: n });
+      api(`/api/projects/${id}/toc`, { method: "PATCH", json: { op: "updateSection", sectionId: c.s.id, targetPages: n } }).catch(() => {});
+    },
+    [id, patchSection],
+  );
+  const onTocReload = useCallback(async () => {
+    await load();
+    setMeasureKey((k) => k + 1);
+  }, [load]);
+  const onToggleToc = useCallback(() => setTocCollapsed((c) => !c), []);
+  /** 저장을 모두 마친 뒤에 — 못 한 절이 있으면 이름을 알린다 */
+  const flushOrWarn = useCallback(async () => {
+    if (await flushAllPending()) return true;
+    const names = unsavedLabels();
+    toast.error(`저장을 완료하지 못했습니다${names.length ? `: ${names.join(", ")}` : ""}. 연결을 확인하고 다시 시도하세요.`);
+    return false;
+  }, []);
 
   const gotoText = useCallback((sid: string, paragraph: number, text: string) => {
     setView("edit");
@@ -265,19 +322,6 @@ export default function Workspace() {
 
   if (err) return <div className="p-10 text-red-600">{err}</div>;
   if (!tree) return <div className="p-10 text-stone-400">불러오는 중…</div>;
-
-  const saveLabel =
-    save.kind === "saving"
-      ? "저장 중…"
-      : save.kind === "saved"
-        ? `저장됨 ${fmtTime(save.at!)}`
-        : save.kind === "dirty"
-          ? "입력 중…"
-          : save.kind === "offline"
-            ? "오프라인 — 브라우저에 보관 중"
-            : save.kind === "error"
-              ? `저장 실패 — ${save.msg ?? "재시도합니다"}`
-              : "";
 
   return (
     <div className="flex h-screen flex-col">
@@ -317,35 +361,8 @@ export default function Workspace() {
             </button>
           </div>
         </div>
-        {running.map((j) => (
-          <span key={j.sectionId} className="flex items-center gap-1.5 rounded-md bg-amber-600/20 px-2 py-1 text-xs text-amber-100" title={j.status}>
-            <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
-            <button className="max-w-40 truncate hover:underline" onClick={() => setCurrent(j.sectionId)} title="이 절로 가기">
-              AI 집필 {j.batch ? `${j.batch.i}/${j.batch.n} ` : ""}· {j.label}
-            </button>
-            <span className="text-amber-300">{j.chars ? `${j.chars.toLocaleString()}자` : "구상 중"}</span>
-            <button
-              className="ml-0.5 text-amber-200 hover:text-white"
-              aria-label="집필 중지"
-              title="중지 (쓴 데까지 저장)"
-              onClick={() => {
-                if (j.batch) stopBatch();
-                stopJob(j.sectionId);
-              }}
-            >
-              ■
-            </button>
-          </span>
-        ))}
-        {proofing.map((j) => (
-          <span key={j.sectionId} className="flex items-center gap-1.5 rounded-md bg-sky-600/20 px-2 py-1 text-xs text-sky-100" title="교정 중 — 다른 절로 옮겨도 계속됩니다">
-            <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-sky-300 border-t-transparent" />
-            <button className="max-w-40 truncate hover:underline" onClick={() => setCurrent(j.sectionId)} title="이 절로 가기">
-              교정 · {j.label}
-            </button>
-          </span>
-        ))}
-        <span className={`text-xs ${save.kind === "error" || save.kind === "offline" ? "text-red-300" : "text-stone-400"}`}>{saveLabel}</span>
+        <JobChips onGo={setCurrent} />
+        <SaveIndicator onGo={setCurrent} />
         <div className="flex overflow-hidden rounded-md border border-stone-500 text-sm">
           <button className={`px-3 py-1 ${view === "edit" ? "bg-amber-600 text-white" : "bg-stone-700 text-stone-200 hover:bg-stone-600"}`} onClick={() => setView("edit")}>
             편집
@@ -353,7 +370,7 @@ export default function Workspace() {
           <button
             className={`px-3 py-1 ${view === "preview" ? "bg-amber-600 text-white" : "bg-stone-700 text-stone-200 hover:bg-stone-600"}`}
             onClick={async () => {
-              if (!await flushAllPending()) return toast.error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+              if (!(await flushOrWarn())) return;
               setPreviewKey((k) => k + 1);
               setView("preview");
             }}
@@ -376,7 +393,7 @@ export default function Workspace() {
           커버 디자인
         </button>
         <button className="btn" onClick={async () => {
-          if (!await flushAllPending()) return toast.error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+          if (!(await flushOrWarn())) return;
           setExportOpen(true);
         }}>
           내보내기
@@ -396,13 +413,10 @@ export default function Workspace() {
           targetPages={tree.targetPages}
           onSelect={setCurrent}
           onOp={onOp}
-          onReload={async () => {
-            await load();
-            setMeasureKey((k) => k + 1);
-          }}
+          onReload={onTocReload}
           collapsed={tocCollapsed}
-          onToggleCollapse={() => setTocCollapsed((c) => !c)}
-          writing={running.map((j) => j.sectionId)}
+          onToggleCollapse={onToggleToc}
+          writing={writingIds}
         />
         {view === "preview" ? (
           <PreviewPane projectId={id} focus={current} reloadKey={previewKey} onInfo={onInfo} />
@@ -410,34 +424,20 @@ export default function Workspace() {
           <SectionEditor
             key={`${cur.s.id}:${editorNonce}`}
             locate={locate?.sid === cur.s.id ? locate : null}
-            onServerEdited={() => onServerEdited()}
-            onBookSearch={(q) => setDialog({ kind: "search", q })}
+            onServerEdited={editorServerEdited}
+            onBookSearch={onBookSearch}
             project={tree}
             chapter={cur.c}
             section={cur.s}
             pageInfo={info?.sections[cur.s.id]}
-            onMeta={(p) => patchSection(cur.s.id, p)}
+            onMeta={onMeta}
             onSaved={onSaved}
-            onSaveState={onSaveState}
-            allSections={flat.map(({ c, s }) => ({ id: s.id, title: s.title, label: s.label, chapterTitle: c.title, targetPages: s.targetPages, charCount: s.charCount, gist: s.gist }))}
-            onTreeChanged={() => {
-              load();
-              setMeasureKey((k) => k + 1);
-            }}
-            onLayout={(patch) => {
-              setTree((t) => (t ? { ...t, layout: { ...t.layout, ...patch } } : t));
-              api(`/api/projects/${id}`, { method: "PATCH", json: { layout: patch } })
-                .then(() => setMeasureKey((k) => k + 1))
-                .catch((e) => toastError(e, "조판 설정 저장 실패: "));
-            }}
-            onRename={(title) => onOp({ op: "renameSection", sectionId: cur.s.id, title })}
-            onRenameChapter={(title) => onOp({ op: "renameChapter", chapterId: cur.c.id, title })}
-            onTargetPages={(n) => {
-              if (n !== cur.s.targetPages) {
-                patchSection(cur.s.id, { targetPages: n });
-                api(`/api/projects/${id}/toc`, { method: "PATCH", json: { op: "updateSection", sectionId: cur.s.id, targetPages: n } }).catch(() => {});
-              }
-            }}
+            allSections={allSections}
+            onTreeChanged={onTreeChanged}
+            onLayout={onLayout}
+            onRename={onRename}
+            onRenameChapter={onRenameChapter}
+            onTargetPages={onTargetPages}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center text-stone-400">
@@ -493,11 +493,64 @@ export default function Workspace() {
   );
 }
 
+/** 상단 작업 표시 — 쓰는 중 글자 수가 250ms마다 바뀌어도 이것만 다시 그린다 */
+function JobChips({ onGo }: { onGo: (sid: string) => void }) {
+  const running = useAiJobs().filter((j) => j.state === "running");
+  const proofing = useProofJobs().filter((j) => j.state === "running");
+  return (
+    <>
+      {running.map((j) => (
+        <span key={j.sectionId} className="flex items-center gap-1.5 rounded-md bg-amber-600/20 px-2 py-1 text-xs text-amber-100" title={j.status}>
+          <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
+          <button className="max-w-40 truncate hover:underline" onClick={() => onGo(j.sectionId)} title="이 절로 가기">
+            AI 집필 {j.batch ? `${j.batch.i}/${j.batch.n} ` : ""}· {j.label}
+          </button>
+          <span className="text-amber-300">{j.chars ? `${j.chars.toLocaleString()}자` : "구상 중"}</span>
+          <button
+            className="ml-0.5 text-amber-200 hover:text-white"
+            aria-label="집필 중지"
+            title={j.auto ? "중지 (전체 자동 집필이 일시 정지됩니다 · 쓴 데까지 저장)" : "중지 (쓴 데까지 저장)"}
+            onClick={() => void stopWriting(j)}
+          >
+            ■
+          </button>
+        </span>
+      ))}
+      {proofing.map((j) => (
+        <span key={j.sectionId} className="flex items-center gap-1.5 rounded-md bg-sky-600/20 px-2 py-1 text-xs text-sky-100" title="교정 중 — 다른 절로 옮겨도 계속됩니다">
+          <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-sky-300 border-t-transparent" />
+          <button className="max-w-40 truncate hover:underline" onClick={() => onGo(j.sectionId)} title="이 절로 가기">
+            교정 · {j.label}
+          </button>
+          <button className="ml-0.5 text-sky-200 hover:text-white" aria-label="교정 중지" title="교정 중지 (고친 것은 넣지 않고 잠금을 풉니다)" onClick={() => stopProof(j.sectionId)}>
+            ■
+          </button>
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** 상단 저장 표시 — 열려 있지 않은 절까지 모든 절의 저장 큐를 모아 본다. 실패·충돌한 절은 이름을 보여 주고 누르면 그 절로 간다 */
+function SaveIndicator({ onGo }: { onGo: (sid: string) => void }) {
+  const save = useSaveSummary();
+  const f = save.failing[0];
+  const more = save.failing.length > 1 ? ` 외 ${save.failing.length - 1}개 절` : "";
+  if (f)
+    return (
+      <button className="max-w-72 truncate text-left text-xs text-red-300 hover:underline" onClick={() => onGo(f.id)} title={save.failing.map((x) => `${x.label}: ${x.msg ?? ""}`).join("\n")}>
+        {f.kind === "conflict" ? `저장 충돌 — 「${f.label}」${more} (눌러서 고르기)` : f.kind === "offline" ? `오프라인 — 「${f.label}」${more} 브라우저에 보관 중` : `저장 실패 — 「${f.label}」${more}: ${f.msg ?? "재시도합니다"}`}
+      </button>
+    );
+  const label = save.kind === "saving" ? "저장 중…" : save.kind === "saved" && save.at ? `저장됨 ${fmtTime(save.at)}` : save.kind === "dirty" ? "입력 중…" : "";
+  return <span className="text-xs text-stone-400">{label}</span>;
+}
+
 const SHORTCUTS: [string, string][] = [
   ["Ctrl+S", "지금 저장"],
   ["Ctrl+↑ / Ctrl+↓", "이전 / 다음 절"],
   ["Ctrl+Shift+↓", "아직 본문이 없는 다음 절"],
-  ["Esc", "AI 집필 중지 (쓴 데까지 넣음) · 창 닫기"],
+  ["Esc", "창·메뉴 닫기 · 진행 창이 뜬 절에서 AI 집필 중지 (쓴 데까지 넣음)"],
   ["Enter / Shift+Enter", "찾기 칸에서 다음 / 이전 결과"],
   ["Ctrl+Z / Ctrl+Y", "실행 취소 / 다시 실행"],
   ["F2", "목차에서 고른 절 이름 바꾸기"],

@@ -111,6 +111,14 @@ async function sectionRow(tx: Prisma.TransactionClient, sectionId: string) {
   return tx.section.findUnique({ where: { id: sectionId }, include: { versions: true, chapter: { select: { projectId: true } } } });
 }
 
+/** AI 집필 부분 원고 키 — ai/partial.ts의 partialKey와 같다(테스트가 DB 없이 이 파일만 읽도록 따로 둔다) */
+const partialKey = (sectionId: string) => `ai-partial:${sectionId}`;
+
+/** 지우는 절들의 AI 부분 원고(ai-partial:)도 같이 정리한다 */
+export async function clearPartials(tx: Prisma.TransactionClient, sectionIds: string[]) {
+  if (sectionIds.length) await tx.appSetting.deleteMany({ where: { key: { in: sectionIds.map(partialKey) } } });
+}
+
 /** 절을 지우기 직전에 휴지통에 담는다 (같은 트랜잭션 안에서). trashId 반환 */
 export async function trashSection(tx: Prisma.TransactionClient, sectionId: string, label = "") {
   const s = await sectionRow(tx, sectionId);
@@ -126,6 +134,7 @@ export async function trashSection(tx: Prisma.TransactionClient, sectionId: stri
   const key = trashKey(s.chapter.projectId, s.id);
   const value = serializeEntry(entry);
   await tx.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+  await tx.appSetting.deleteMany({ where: { key: partialKey(s.id) } }); // 남은 AI 부분 원고도 정리
   return s.id;
 }
 
@@ -145,6 +154,7 @@ export async function trashChapter(tx: Prisma.TransactionClient, chapterId: stri
   const key = trashKey(c.projectId, c.id);
   const value = serializeEntry(entry);
   await tx.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+  await clearPartials(tx, c.sections.map((s) => s.id));
   return c.id;
 }
 

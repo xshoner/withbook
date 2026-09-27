@@ -235,12 +235,16 @@ function findCrossing(view: EditorView, from: number, pageTop: number, bottom: n
 
 export type PaginateResult = { pages: number; lastFill: number; lastNotes: PageNote[] };
 
-/** 문서 순서대로 각주 번호 위치(화면 좌표 중심)와 내용 */
+/**
+ * 문서 순서대로 각주 번호·내용·문서 위치 — 계산 한 번에 한 번만 읽는다.
+ * 어느 쪽에 드는지는 화면 좌표 대신 문서 위치로 가른다(끊는 자리보다 앞이면 그 쪽) — 쪽마다 모든 각주의 위치를 다시 재지 않게
+ */
 function footnoteRefs(view: EditorView) {
-  return [...view.dom.querySelectorAll<HTMLElement>(".fn-ref")].map((e, i) => {
-    const r = e.getBoundingClientRect();
-    return { n: i + 1, text: e.getAttribute("data-note") ?? "", mid: (r.top + r.bottom) / 2 };
+  const out: { n: number; text: string; pos: number }[] = [];
+  view.state.doc.descendants((node, pos) => {
+    if (node.type.name === "footnote") out.push({ n: out.length + 1, text: String(node.attrs.note ?? ""), pos });
   });
+  return out;
 }
 
 /**
@@ -301,18 +305,19 @@ export function paginate(
     }
   }
   let lastNotes: PageNote[] = [];
+  const allRefs = footnoteRefs(view);
   try {
     for (let k = breaks.length; k < 400; k++) {
       const top0 = pageTop + (k === 0 ? opts.leadMm * mm : 0);
       // 각주 영역 높이와 끊는 자리가 서로 맞물리므로 몇 번 되풀이해 맞춘다
-      const refs = footnoteRefs(view).filter((f) => f.mid >= pageTop - 1);
+      const refs = allRefs.filter((f) => f.pos >= from);
       let fnH = 0;
       let c: Crossing | null = null;
       let notes: PageNote[] = [];
       for (let it = 0; it < 6; it++) {
         c = findCrossing(view, from, top0, bottom - fnH, zoom);
-        const upto = c ? c.top : Infinity;
-        notes = refs.filter((f) => f.mid < upto).map(({ n, text }) => ({ n, text }));
+        const upto = c ? c.pos : Infinity;
+        notes = refs.filter((f) => f.pos < upto).map(({ n, text }) => ({ n, text }));
         const h = notesHeight(notes);
         if (h <= fnH + 0.5) break;
         fnH = h;

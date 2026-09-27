@@ -1,10 +1,9 @@
 import "server-only";
 import type { Sharp } from "sharp";
 import { prisma } from "../db";
-import { assetKey } from "../backup";
-import { setSetting } from "../app-settings";
+import { assetKey } from "../maintenance";
 import { getObject, putObject, removeObjects } from "../storage";
-import { addCoverHistory, loadCover } from "./store";
+import { addCoverHistory, updateCover } from "./store";
 import type { Region } from "./spec";
 
 /** 인쇄용 JPEG (품질 92, 색 번짐 없는 4:4:4, 300 DPI 표시) */
@@ -41,15 +40,17 @@ export async function readProjectAsset(projectId: string, assetId: string) {
  * 저장된 표지 디자인에서 빼고, 저장소 파일과 DB 이미지 행을 지운다.
  */
 export async function deleteCoverImage(projectId: string, assetId: string) {
-  const { design, saved } = await loadCover(projectId);
-  if (!design.ai.history.some((h) => h.assetId === assetId)) throw Object.assign(new Error("[만든 그림]에 없는 이미지는 여기서 지울 수 없습니다."), { status: 400 });
+  // 저장본을 잠그고 고친다 — 방금 저장한 디자인을 옛 값으로 되돌리지 않게
+  const history = await updateCover(projectId, (design, saved) => {
+    if (!design.ai.history.some((h) => h.assetId === assetId)) throw Object.assign(new Error("[만든 그림]에 없는 이미지는 여기서 지울 수 없습니다."), { status: 400 });
+    design.ai.history = design.ai.history.filter((h) => h.assetId !== assetId);
+    for (const [r, img] of Object.entries(design.images)) if (img?.assetId === assetId) delete design.images[r as Region];
+    return { design: saved ? design : null, result: design.ai.history };
+  });
   const a = await prisma.asset.findFirst({ where: { id: assetId, projectId }, select: { id: true, path: true } });
-  design.ai.history = design.ai.history.filter((h) => h.assetId !== assetId);
-  for (const [r, img] of Object.entries(design.images)) if (img?.assetId === assetId) delete design.images[r as Region];
-  if (saved) await setSetting(`cover:${projectId}`, design);
   if (a) {
     await removeObjects("assets", [a.path]).catch((e) => console.warn("[cover] 저장소 파일 삭제 실패", e?.message));
     await prisma.asset.delete({ where: { id: a.id } });
   }
-  return { history: design.ai.history };
+  return { history };
 }

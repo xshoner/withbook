@@ -83,6 +83,8 @@ async function tasksHarness() {
     };
     export const flatSections = book => book.chapters.flatMap(chapter => chapter.sections.map(section => ({ chapter, section })));
     export const loadBook = async () => state.book;
+    export const loadBookOutline = async () => state.book;
+    export const fillContent = async sections => { state.filled = [...(state.filled ?? []), ...sections.filter(s => s.content === undefined).map(s => s.id)]; for (const s of sections) if (s.content === undefined) s.content = findSection(s.id)?.stored ?? ''; };
     export const numberChapters = chapters => chapters;
     export const parseLayout = () => ({ numberFormat: '' });
     export const editStats = () => {}; export const pickLearningPairs = () => [];
@@ -192,4 +194,20 @@ test('an edit during summary generation cannot persist the old summary', async (
     assert.equal(state.book.chapters[0].sections[0].summary, null);
     assert.deepEqual(state.calls, ['summary']);
   } finally { state.beforeChat = undefined; }
+});
+
+test('writing reads manuscript bodies only for the current, previous and summarized sections', async () => {
+  const { tasks, state } = await tasksHarness();
+  // 책 구조만 읽은 상태(본문 없음) — 본문은 fillContent가 필요한 절만 채운다
+  const lazy = id => { const s = section(id); s.stored = s.content; delete s.content; return s; };
+  const recent = lazy('recent');
+  recent.summary = 'x'.repeat(2600); recent.summaryHash = hashText('manuscript');
+  state.book = book([lazy('old1'), lazy('old2'), recent, lazy('current')]);
+  state.calls = []; state.filled = [];
+  const events = [];
+  for await (const event of tasks.writeSection('current', { targetPages: 3, mode: 'overwrite', extraInstruction: '' })) events.push(event);
+  assert.equal(events.at(-1).t, 'done');
+  assert.deepEqual(state.calls, ['section_write']);
+  assert.deepEqual([...state.filled].sort(), ['current', 'recent']);
+  assert.equal(state.book.chapters[0].sections[0].content, undefined);
 });

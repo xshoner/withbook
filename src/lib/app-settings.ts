@@ -8,9 +8,13 @@ import { prisma } from "./db";
 const cache = new Map<string, { at: number; value: unknown }>();
 const TTL = 5_000;
 
-export async function getSetting<T>(key: string): Promise<T | null> {
+/**
+ * 읽기 — 같은 서버 안에서 5초 캐시. 다른 서버가 방금 바꾼 값이 늦게 보일 수 있으므로
+ * 읽고-고치고-쓰는 곳은 { fresh: true }로 DB에서 바로 읽는다(표지 디자인은 cover/store가 캐시 없이 따로 다룬다).
+ */
+export async function getSetting<T>(key: string, opts: { fresh?: boolean } = {}): Promise<T | null> {
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL) return hit.value as T | null;
+  if (!opts.fresh && hit && Date.now() - hit.at < TTL) return hit.value as T | null;
   const row = await prisma.appSetting.findUnique({ where: { key } }).catch(() => null);
   let value: T | null = null;
   try {

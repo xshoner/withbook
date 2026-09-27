@@ -8,7 +8,7 @@ import { registerJobKind, sectionBusyWith } from '../src/components/editor/jobSt
 function setup(save) {
   let local;
   const q = new AutosaveQueue({ save, persist: async d => { local = d; },
-    acknowledge: async token => { if (local?.token === token) local = undefined; }, offline: () => false });
+    acknowledge: async token => { if (local?.token === token) local = undefined; }, offline: () => false, persistDelay: 0 });
   return { q, local: () => local };
 }
 

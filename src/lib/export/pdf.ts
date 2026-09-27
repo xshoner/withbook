@@ -2,6 +2,7 @@ import "server-only";
 import fs from "node:fs";
 import { BLEED, DOC, SIZE_TOLERANCE_MM, TRIM } from "../print/spec";
 import { RENDER_HEADER, makeRenderToken } from "../render-token";
+import { getRequestContext } from "../request-context";
 
 const CANDIDATES = [
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -37,24 +38,54 @@ async function launchBrowser() {
 }
 
 /**
- * 시간 예산 (Vercel maxDuration 300초 안): 브라우저 실행부터 조판 완료까지 합쳐 최대 250초,
- * 그중 페이지 열기(goto)는 최대 60초. 남은 시간은 PDF 인쇄·후처리·업로드 몫이다.
+ * 시간 예산 (Vercel maxDuration 300초 안) — 요청이 시작된 시각(handle()의 startedAt)부터 잰다.
+ * 책 불러오기·사전 점검에 쓴 시간도 포함하고, 끝의 50초는 PDF 인쇄·판형 보정·점검·업로드 몫으로 남긴다.
+ *   조판 완료: 시작 + 245초까지 (페이지 열기는 그중 최대 60초)
+ *   PDF 인쇄(page.pdf): 시작 + 280초까지 — 판형 보정·점검·업로드에 15초 이상 남긴다
  */
-export const PDF_BUDGET_MS = 250_000;
+export const REQUEST_LIMIT_MS = 295_000;
+export const POST_RESERVE_MS = 50_000;
+const UPLOAD_RESERVE_MS = 15_000;
+/** 이전 호환: 조판까지의 예산 */
+export const PDF_BUDGET_MS = REQUEST_LIMIT_MS - POST_RESERVE_MS;
 const GOTO_MAX_MS = 60_000;
 const MIN_LAYOUT_MS = 10_000;
+
+/** 요청 시작 시각 기준 마감 시각들 (순수 함수 — 테스트용) */
+export function pdfDeadlines(startedAt: number, budgetMs?: number) {
+  const end = startedAt + REQUEST_LIMIT_MS;
+  return { layout: budgetMs ? startedAt + budgetMs : end - POST_RESERVE_MS, print: end - UPLOAD_RESERVE_MS };
+}
 
 export class PdfTimeoutError extends Error {
   readonly expose = true;
   readonly httpStatus = 504;
-  constructor(stage: "open" | "layout") {
+  constructor(stage: "open" | "layout" | "print") {
     super(
       stage === "open"
         ? "조판 페이지를 제한 시간 안에 열지 못했습니다. 잠시 후 다시 시도하세요."
-        : "조판이 제한 시간(약 4분) 안에 끝나지 않았습니다. 장·절 단위로 나눠 출력하거나 이미지 수를 줄인 뒤 다시 시도하세요.",
+        : stage === "print"
+          ? "PDF 인쇄가 제한 시간(5분) 안에 끝나지 않았습니다. 장·절 단위로 나눠 출력하거나 이미지 수를 줄인 뒤 다시 시도하세요."
+          : "조판이 제한 시간(약 4분) 안에 끝나지 않았습니다. 장·절 단위로 나눠 출력하거나 이미지 수를 줄인 뒤 다시 시도하세요.",
     );
     this.name = "PdfTimeoutError";
   }
+}
+
+/** 조판 페이지가 알린 오류(글꼴·이미지 누락 등) — 한국어 안내를 그대로 보인다 */
+export class PdfLayoutError extends Error {
+  readonly expose = true;
+  readonly httpStatus = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = "PdfLayoutError";
+  }
+}
+
+/** ms 안에 끝나지 않으면 onTimeout 오류로 끊는다 */
+function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<never>((_, reject) => (t = setTimeout(() => reject(onTimeout()), Math.max(0, ms))))]).finally(() => clearTimeout(t));
 }
 
 const isTimeout = (e: any) => e?.name === "TimeoutError" || /Timeout .*exceeded/i.test(String(e?.message ?? ""));
@@ -62,8 +93,10 @@ const isTimeout = (e: any) => e?.name === "TimeoutError" || /Timeout .*exceeded/
 /** 책 본문이 아닌 용지(표지 펼침면 등): 재단 여백 포함 크기와 재단 여백 */
 export type PdfSheet = { widthMm: number; heightMm: number; bleedMm: number };
 
-export async function renderPdf(url: string, opts: { projectId?: string; budgetMs?: number; sheet?: PdfSheet; extraOrigins?: string[] } = {}): Promise<PdfResult> {
-  const deadline = Date.now() + (opts.budgetMs ?? PDF_BUDGET_MS);
+export async function renderPdf(url: string, opts: { projectId?: string; budgetMs?: number; sheet?: PdfSheet; extraOrigins?: string[]; startedAt?: number } = {}): Promise<PdfResult> {
+  const startedAt = opts.startedAt ?? getRequestContext()?.startedAt ?? Date.now();
+  const { layout: deadline, print: printDeadline } = pdfDeadlines(startedAt, opts.budgetMs);
+  if (deadline - Date.now() < MIN_LAYOUT_MS) throw new PdfTimeoutError("layout");
   const browser = await launchBrowser();
   try {
     const origin = new URL(url).origin;
@@ -94,18 +127,27 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
     }
     const info = await page.evaluate("window.__PAGED_INFO");
     const err = await page.evaluate("window.__PAGED_ERROR");
-    if (err) throw new Error("조판 오류: " + err);
+    if (err) throw new PdfLayoutError("출력할 수 없습니다: " + String(err));
     const trim = url.includes("size=trim");
     const sheet: PdfSheet = opts.sheet ?? (trim ? { widthMm: TRIM.width, heightMm: TRIM.height, bleedMm: 0 } : { widthMm: DOC.width, heightMm: DOC.height, bleedMm: BLEED });
-    const raw = await page.pdf({
-      width: `${sheet.widthMm}mm`,
-      height: `${sheet.heightMm}mm`,
-      preferCSSPageSize: false,
-      printBackground: true,
-      margin: { top: 0, right: 0, bottom: 0, left: 0 },
-    });
+    // 인쇄도 남은 시간 안에서만 — 넘으면 브라우저를 닫고(finally) 504로 알린다
+    const raw = await withTimeout(
+      page.pdf({
+        width: `${sheet.widthMm}mm`,
+        height: `${sheet.heightMm}mm`,
+        preferCSSPageSize: false,
+        printBackground: true,
+        margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      }),
+      printDeadline - Date.now(),
+      () => new PdfTimeoutError("print"),
+    );
     const pdf = await fixBoxes(raw, sheet);
-    return { pdf, info, check: await checkPdf(pdf, trim, opts.sheet) };
+    const check = await checkPdf(pdf, trim, opts.sheet);
+    // 본문 PDF는 KoPub 글꼴이 실제로 들어가 있어야 한다 (대체 글꼴로 조용히 나가지 않게)
+    if (!opts.sheet && !check.kopubEmbedded)
+      throw new PdfLayoutError(`출력할 수 없습니다: PDF에 KoPub 글꼴이 들어가지 않았습니다(들어간 글꼴: ${check.fontsEmbedded.slice(0, 5).join(", ") || "없음"}). 글꼴 파일을 확인한 뒤 다시 출력하세요.`);
+    return { pdf, info, check };
   } finally {
     await browser.close();
   }

@@ -1,9 +1,11 @@
 import "server-only";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { dataDir } from "./backup";
 import { supabaseAdmin, storageConfigured } from "./supabase/admin";
 import { webMode } from "./security";
+
+/** 로컬 데이터 폴더 (로컬 저장소 모드의 data/storage 등) */
+export const dataDir = () => path.resolve(/* turbopackIgnore: true */ process.env.DATA_DIR || path.join(process.cwd(), "data"));
 
 /**
  * 파일 저장소 — 웹 배포(Supabase 설정 있음)는 Supabase Storage, 로컬은 data/storage 폴더.
@@ -120,4 +122,43 @@ export async function signedUploadUrl(key: string) {
   const { data, error } = await supabaseAdmin().storage.from("incoming").createSignedUploadUrl(safeKey(key));
   if (error || !data) throw new Error(`업로드 주소를 만들지 못했습니다: ${error?.message}`);
   return { path: data.path, token: data.token };
+}
+
+/**
+ * 오래된 파일 지우기 (일일 정리용) — 버킷 안을 폴더까지 훑어 olderThanMs보다 오래된 파일을 지운다. 지운 개수 반환.
+ * 웹: Supabase 목록의 created_at 기준(폴더는 id 없음), 로컬: 파일 수정 시각 기준. 한 번에 최대 5,000개까지만 본다.
+ */
+export async function purgeOldObjects(bucket: Bucket, olderThanMs: number, prefix = ""): Promise<number> {
+  const cutoff = Date.now() - olderThanMs;
+  const old: string[] = [];
+  const LIMIT = 5000;
+  if (storageConfigured()) {
+    const store = supabaseAdmin().storage.from(bucket);
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 4 || old.length >= LIMIT) return;
+      const { data, error } = await store.list(dir, { limit: 1000 });
+      if (error) throw new Error(`파일 목록 실패: ${error.message}`);
+      for (const f of data ?? []) {
+        const key = dir ? `${dir}/${f.name}` : f.name;
+        if (!f.id) await walk(key, depth + 1);
+        else if (Date.parse(f.created_at ?? f.updated_at ?? "") < cutoff) old.push(key);
+      }
+    };
+    await walk(prefix, 0);
+    for (let i = 0; i < old.length; i += 100) await store.remove(old.slice(i, i + 100));
+    return old.length;
+  }
+  const root = path.join(dataDir(), "storage", bucket);
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 4 || old.length >= LIMIT) return;
+    const ents = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(p, depth + 1);
+      else if ((await fs.stat(p)).mtimeMs < cutoff) old.push(p);
+    }
+  };
+  await walk(prefix ? path.join(root, safeKey(prefix)) : root, 0);
+  await Promise.all(old.map((p) => fs.rm(p, { force: true })));
+  return old.length;
 }

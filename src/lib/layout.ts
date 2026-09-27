@@ -1,4 +1,4 @@
-import { MARGIN, type Margins } from "./print/spec";
+import { DOC, MARGIN, type Margins } from "./print/spec";
 
 export type NumberFormat = "basic" | "formal"; // basic: 1장 / 1.1, formal: 제1장 / 01
 
@@ -50,6 +50,24 @@ export const DEFAULT_LAYOUT: LayoutSettings = {
   },
 };
 
+/** 여백 값 범위(mm, 문서 기준) — 숫자가 아니거나 범위를 벗어나면 잘라 낸다 */
+const MARGIN_BOUNDS: Record<keyof Margins, [number, number]> = { inner: [5, 60], outer: [5, 60], top: [3, 60], bottom: [3, 60], header: [0, 30], footer: [0, 30] };
+/** 본문 영역이 이보다 작아지면(그림 높이·쪽 계산이 무너진다) 기본 여백으로 되돌린다 */
+const MIN_BODY_MM = { width: 60, height: 80 };
+
+export function cleanMargins(v: unknown): Margins {
+  const src = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const out = { ...MARGIN } as Margins;
+  for (const k of Object.keys(MARGIN_BOUNDS) as (keyof Margins)[]) {
+    const n = typeof src[k] === "string" && src[k] !== "" ? Number(src[k]) : src[k];
+    const [lo, hi] = MARGIN_BOUNDS[k];
+    if (typeof n === "number" && Number.isFinite(n)) out[k] = Math.min(hi, Math.max(lo, n));
+  }
+  const w = DOC.width - out.inner - out.outer;
+  const h = DOC.height - out.top - out.header - out.bottom - out.footer;
+  return w >= MIN_BODY_MM.width && h >= MIN_BODY_MM.height ? out : { ...MARGIN };
+}
+
 export function parseLayout(raw: string | null | undefined): LayoutSettings {
   let v: Partial<LayoutSettings> = {};
   try {
@@ -62,7 +80,7 @@ export function parseLayout(raw: string | null | undefined): LayoutSettings {
     bodySizePt: num(v.bodySizePt, DEFAULT_LAYOUT.bodySizePt, 8, 14),
     lineHeight: num(v.lineHeight, DEFAULT_LAYOUT.lineHeight, 1.2, 2.4),
     paraSpacingMm: num(v.paraSpacingMm, DEFAULT_LAYOUT.paraSpacingMm, 0, 8),
-    margins: { ...DEFAULT_LAYOUT.margins, ...(v.margins ?? {}) },
+    margins: cleanMargins(v.margins),
     colophon: { ...DEFAULT_LAYOUT.colophon, ...(v.colophon ?? {}) },
   };
 }

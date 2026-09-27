@@ -4,6 +4,8 @@ import { Node, mergeAttributes } from "@tiptap/core";
 import { NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import { useEffect, useRef, useState } from "react";
 import { dpiLevel, figureDpi, printWidthMm, type FigureLayout } from "@/lib/print/figure";
+import type { Margins } from "@/lib/print/spec";
+import { figureAttrsFromDom, figureDataAttrs } from "./figureAttrs";
 
 const LAYOUTS: { v: FigureLayout; label: string }[] = [
   { v: "fit", label: "본문 폭 맞춤" },
@@ -36,6 +38,7 @@ function CaptionInput({ value, onCommit }: { value: string; onCommit: (v: string
       onKeyDown={(e) => {
         if (e.key === "Enter" && !e.nativeEvent.isComposing) (e.target as HTMLInputElement).blur();
         if (e.key === "Escape") {
+          e.preventDefault(); // 입력 취소 Esc — 집필 중지로 새지 않게
           setDraft(value);
           (e.target as HTMLInputElement).blur();
         }
@@ -44,11 +47,13 @@ function CaptionInput({ value, onCommit }: { value: string; onCommit: (v: string
   );
 }
 
-function FigureView({ node, updateAttributes, deleteNode, selected }: NodeViewProps) {
+function FigureView({ node, updateAttributes, deleteNode, selected, extension }: NodeViewProps) {
   const a = node.attrs as any;
   const layout = (a.layout ?? "fit") as FigureLayout;
-  const mm = printWidthMm(layout, a.widthMm, a.widthPx, a.heightPx);
-  const dpi = figureDpi(layout, a.widthMm, a.widthPx, a.heightPx);
+  // 책 여백·캡션 유무까지 넣어 PDF 조판과 같은 인쇄 폭·DPI를 보여 준다
+  const opts = { margins: (extension.options as FigureOptions).margins, caption: Boolean(a.caption) };
+  const mm = printWidthMm(layout, a.widthMm, a.widthPx, a.heightPx, opts);
+  const dpi = figureDpi(layout, a.widthMm, a.widthPx, a.heightPx, opts);
   const lv = dpiLevel(dpi);
   const shownMm = layout === "fullbleed" ? 103 : mm;
   return (
@@ -105,8 +110,14 @@ function FigureView({ node, updateAttributes, deleteNode, selected }: NodeViewPr
   );
 }
 
-export const Figure = Node.create({
+type FigureOptions = { margins?: Margins };
+
+/** Figure.configure({ margins }) — 책 여백 (편집기 DPI 표시를 PDF와 맞춘다) */
+export const Figure = Node.create<FigureOptions>({
   name: "figure",
+  addOptions() {
+    return { margins: undefined };
+  },
   group: "block",
   atom: true,
   draggable: true,
@@ -122,11 +133,12 @@ export const Figure = Node.create({
       caption: { default: "" },
     };
   },
+  // 잘라내기·복사·붙여넣기는 HTML로 오간다 — 모든 속성을 data-*에 적고 그대로 읽어 들여야 빈 그림이 되지 않는다
   parseHTML() {
-    return [{ tag: "figure[data-asset]" }];
+    return [{ tag: "figure[data-asset]", getAttrs: (el) => figureAttrsFromDom(el) }];
   },
-  renderHTML({ HTMLAttributes }) {
-    return ["figure", mergeAttributes({ "data-asset": HTMLAttributes.assetId }), ["img", { src: HTMLAttributes.src }]];
+  renderHTML({ node }) {
+    return ["figure", mergeAttributes(figureDataAttrs(node.attrs)), ["img", { src: node.attrs.src ?? "" }]];
   },
   addNodeView() {
     return ReactNodeViewRenderer(FigureView);

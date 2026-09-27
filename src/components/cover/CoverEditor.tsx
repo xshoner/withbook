@@ -56,6 +56,10 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [design, setDesign] = useState<CoverDesign | null>(null);
   const [savedJson, setSavedJson] = useState("");
+  /** 책의 실제 조판 쪽수 (집필 화면 측정·본문 PDF) — 모르면 null */
+  const [actualPages, setActualPages] = useState<number | null>(null);
+  /** 끄는 동안에는 끌기 전 디자인으로 저장 여부·인쇄 점검을 계산한다(움직일 때마다 JSON·점검을 다시 하지 않게) */
+  const [frozen, setFrozen] = useState<CoverDesign | null>(null);
   const [err, setErr] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("ai");
@@ -80,17 +84,20 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const aiAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    Promise.all([api<Project>(`/api/projects/${projectId}`), api<{ design: CoverDesign; saved: boolean }>(`/api/projects/${projectId}/cover`)])
+    Promise.all([api<Project>(`/api/projects/${projectId}`), api<{ design: CoverDesign; saved: boolean; actualPages: number | null }>(`/api/projects/${projectId}/cover`)])
       .then(([p, c]) => {
         setProject(p);
+        // 쪽수를 직접 고치지 않았으면 서버가 실제 조판 쪽수로 맞춰 준다(책등 폭 자동 계산)
         setDesign(c.design);
+        setActualPages(c.actualPages ?? null);
         setSavedJson(c.saved ? JSON.stringify(c.design) : "");
         document.title = `커버 디자인 — ${p.title}`;
       })
       .catch((e) => setErr(e.message));
   }, [projectId]);
 
-  const dirty = design ? JSON.stringify(design) !== savedJson : false;
+  const settled = frozen ?? design;
+  const dirty = useMemo(() => (settled ? JSON.stringify(settled) !== savedJson : false), [settled, savedJson]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -130,7 +137,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   };
 
   const l = useMemo(() => (design ? coverLayout(design) : null), [design]);
-  const issues = useMemo(() => (design ? coverIssues(design) : []), [design]);
+  const issues = useMemo(() => (settled ? coverIssues(settled, { actualPages }) : []), [settled, actualPages]);
   const selected = design?.elements.find((e) => e.id === sel) ?? null;
 
   // 화면에 맞춤 확대율
@@ -163,49 +170,71 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     drag.current = { id: el.id, kind: "resize", sx: e.clientX, sy: e.clientY, el, before: design, moved: false };
   };
 
+  // 끌기 처리는 창에 한 번만 붙이고(최신 배치·확대율은 ref로 읽는다), 움직임은 화면 갱신 한 번(requestAnimationFrame)에 한 번만 반영한다
+  const lRef = useRef(l);
+  const zRef = useRef(z);
   useEffect(() => {
-    const move = (e: PointerEvent) => {
+    lRef.current = l;
+    zRef.current = z;
+  });
+
+  useEffect(() => {
+    let raf = 0;
+    let last: PointerEvent | null = null;
+    const r1 = (n: number) => Math.round(n * 10) / 10;
+    const apply = () => {
+      raf = 0;
       const g = drag.current;
-      if (!g || !l) return;
-      const dx = (e.clientX - g.sx) / (PX_PER_MM * z);
-      const dy = (e.clientY - g.sy) / (PX_PER_MM * z);
-      if (!g.moved && Math.hypot(dx, dy) * PX_PER_MM * z < 3) return;
-      g.moved = true;
-      const r1 = (n: number) => Math.round(n * 10) / 10;
-      setDesign((d) => {
-        if (!d) return d;
-        return {
-          ...d,
-          elements: d.elements.map((el) => {
-            if (el.id !== g.id) return el;
-            if (g.kind === "resize") {
-              if (el.kind === "image" && g.el.kind === "image") {
-                const w = Math.max(5, g.el.w + dx);
-                return { ...el, w: r1(w), h: r1(w * (g.el.h / g.el.w)) };
-              }
-              if (el.kind === "text" && g.el.kind === "text") return { ...el, w: r1(Math.max(5, g.el.w + (el.vertical ? dy : dx))) };
-              return el;
-            }
-            let x = g.el.x + dx;
-            const y = g.el.y + dy;
-            // 패널 가운데 맞춤 (±1.5mm)
-            const p = l.panels[el.panel];
-            const w = boxWidth(el);
-            const center = x + w / 2;
-            if (Math.abs(center - p.w / 2) < 1.5 && !e.altKey) {
-              x = p.w / 2 - w / 2;
-              setSnapX(p.x + p.w / 2);
-            } else setSnapX(null);
-            return { ...el, x: r1(x), y: r1(y) };
-          }),
-        };
-      });
+      const lay = lRef.current;
+      const e = last;
+      if (!g || !lay || !e) return;
+      const zz = zRef.current;
+      const dx = (e.clientX - g.sx) / (PX_PER_MM * zz);
+      const dy = (e.clientY - g.sy) / (PX_PER_MM * zz);
+      if (!g.moved && Math.hypot(dx, dy) * PX_PER_MM * zz < 3) return;
+      if (!g.moved) {
+        g.moved = true;
+        setFrozen(g.before);
+      }
+      const el0 = g.el;
+      let patch: Partial<TextEl> | Partial<ImageEl>;
+      let snap: number | null = null;
+      if (g.kind === "resize") {
+        if (el0.kind === "image") {
+          const w = Math.max(5, el0.w + dx);
+          patch = { w: r1(w), h: r1(w * (el0.h / el0.w)) };
+        } else patch = { w: r1(Math.max(5, el0.w + (el0.vertical ? dy : dx))) };
+      } else {
+        let x = el0.x + dx;
+        const y = el0.y + dy;
+        // 패널 가운데 맞춤 (±1.5mm)
+        const p = lay.panels[el0.panel];
+        const w = boxWidth(el0);
+        if (p && Math.abs(x + w / 2 - p.w / 2) < 1.5 && !e.altKey) {
+          x = p.w / 2 - w / 2;
+          snap = p.x + p.w / 2;
+        }
+        patch = { x: r1(x), y: r1(y) };
+      }
+      setSnapX(snap);
+      setDesign((d) => (d ? { ...d, elements: d.elements.map((el) => (el.id === g.id ? ({ ...el, ...patch } as CoverEl) : el)) } : d));
+    };
+    const move = (e: PointerEvent) => {
+      if (!drag.current) return;
+      last = e;
+      if (!raf) raf = requestAnimationFrame(apply);
     };
     const up = () => {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        apply(); // 마지막 움직임까지 반영
+      }
       const g = drag.current;
       drag.current = null;
+      last = null;
       setSnapX(null);
-      if (!g?.moved || !l) return;
+      setFrozen(null);
+      if (!g?.moved) return;
       snapshot(g.before);
       // 끌어 놓은 곳의 패널로 옮긴다 (쪽수가 바뀌어도 그 패널을 따라가게)
       setDesign((d) => {
@@ -228,8 +257,9 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     return () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      if (raf) cancelAnimationFrame(raf);
     };
-  }, [l, z, snapshot]);
+  }, [snapshot]);
 
   /* ---------- 저장·내보내기 ---------- */
 
@@ -272,9 +302,15 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
 
   /* ---------- AI 제작 ---------- */
 
-  const book: BookInfo | null = project
-    ? { title: project.title, subtitle: project.subtitle, author: project.author, topic: project.topic, keyMessage: project.keyMessage, audience: project.audience, tone: project.tone, chapters: project.chapters.filter((c) => c.kind === "body").map((c) => c.title) }
-    : null;
+  const book: BookInfo | null = useMemo(
+    () =>
+      project
+        ? { title: project.title, subtitle: project.subtitle, author: project.author, topic: project.topic, keyMessage: project.keyMessage, audience: project.audience, tone: project.tone, chapters: project.chapters.filter((c) => c.kind === "body").map((c) => c.title) }
+        : null,
+    [project],
+  );
+  // 프롬프트 미리보기는 요소를 끄는 동안 다시 만들지 않는다
+  const promptText = useMemo(() => (settled && book ? buildImagePrompt(settled, book, region) : ""), [settled, book, region]);
 
   // 영역을 바꾸면 지정한 부분은 버린다
   useEffect(() => {
@@ -431,8 +467,15 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
 
   /* ---------- 키보드 ---------- */
 
+  // 처리 함수는 렌더마다 새로 두되(최신 상태를 읽게), 창 리스너는 한 번만 붙인다
+  const keyRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
+    const f = (e: KeyboardEvent) => keyRef.current?.(e);
+    window.addEventListener("keydown", f);
+    return () => window.removeEventListener("keydown", f);
+  }, []);
+  useEffect(() => {
+    keyRef.current = (e: KeyboardEvent) => {
       const typing = e.target instanceof HTMLElement && (e.target.closest("input, textarea, select, [contenteditable]") !== null);
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key.toLowerCase() === "s") {
@@ -471,15 +514,13 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         patchEl(selected.id, { x: Math.round((selected.x + dx) * 10) / 10, y: Math.round((selected.y + dy) * 10) / 10 }, `nudge:${selected.id}`);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   });
 
   if (err) return <div className="p-8 text-red-600">{err}</div>;
   if (!design || !project || !l || !book) return <div className="p-8 text-stone-400">불러오는 중…</div>;
 
   /** 판형·쪽수·날개 바꾸기 — 책등 폭이 바뀌면 책등 요소를 가운데 기준으로 옮긴다 */
-  const setLayout = (patch: Partial<Pick<CoverDesign, "size" | "pages" | "paper" | "spineOverride" | "flaps">>, key: string) =>
+  const setLayout = (patch: Partial<Pick<CoverDesign, "size" | "pages" | "pagesManual" | "paper" | "spineOverride" | "flaps">>, key: string) =>
     update((d) => {
       const next = { ...d, ...patch };
       return { ...next, elements: reflowSpine(d.elements, coverLayout(d).spine, coverLayout(next).spine) };
@@ -490,6 +531,8 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const rbox = regionBox(l, region);
   const regions: Region[] = ["full", ...panelsOf(l)];
   const errorCount = issues.filter((i) => i.level === "error").length;
+  /** 쪽수를 직접 고쳤는데 실제 조판 쪽수와 다르면 알리고 [적용] 버튼을 보인다 */
+  const pagesDiffer = actualPages != null && design.pagesManual && design.pages !== actualPages;
 
   return (
     <div className="flex h-screen flex-col bg-stone-100">
@@ -512,9 +555,21 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
             ))}
           </select>
         </label>
-        <label className="flex items-center gap-1" title="책등 = {(쪽수 ÷ 2) × 0.11} + 1.6mm (미색모조 100g)">
+        <label
+          className="flex items-center gap-1"
+          title={`책등 = {(쪽수 ÷ 2) × 0.11} + 1.6mm (미색모조 100g)\n${actualPages != null ? `책의 실제 조판 쪽수: ${actualPages}쪽` : "실제 쪽수를 아직 재지 않았습니다(집필 화면의 조판이 끝나거나 본문 PDF를 만들면 잽니다)."}\n쪽수를 고치면 직접 입력으로 바뀌고 책등 폭을 바로 다시 계산합니다.`}
+        >
           쪽수
-          <input type="number" min={2} max={3000} step={2} className="input w-20 py-1" value={design.pages} onChange={(e) => setLayout({ pages: Math.max(2, Math.round(Number(e.target.value) || 2)) }, "pages")} />
+          <input
+            type="number"
+            min={2}
+            max={3000}
+            step={2}
+            className="input w-20 py-1"
+            value={design.pages}
+            onChange={(e) => setLayout({ pages: Math.max(2, Math.round(Number(e.target.value) || 2)), pagesManual: true }, "pages")}
+          />
+          <span className={`text-[11px] ${design.pagesManual ? "text-amber-700" : "text-stone-400"}`}>{design.pagesManual ? "직접" : actualPages != null ? "실제" : "목표"}</span>
         </label>
         <label className="flex items-center gap-1">
           종이
@@ -580,6 +635,17 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         </div>
       </header>
 
+      {pagesDiffer && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-xs text-amber-900">
+          <span>
+            책의 실제 조판 쪽수는 <b>{actualPages}쪽</b>입니다. 지금 표지는 직접 입력한 {design.pages}쪽(책등 {spineWidth(design.pages, design.paper)}mm)으로 계산되어 있습니다.
+          </span>
+          <button className="btn px-2 py-0.5 text-xs" onClick={() => setLayout({ pages: actualPages!, pagesManual: false }, "")}>
+            실제 쪽수 {actualPages}쪽 적용 (책등 {spineWidth(actualPages!, design.paper)}mm)
+          </button>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
         {/* ---------- 왼쪽: AI 제작 · 그림 · 글 ---------- */}
         <aside className="flex w-80 shrink-0 flex-col border-r border-stone-200 bg-white">
@@ -630,7 +696,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     <span className="font-mono text-stone-500">→ {requestSize(rbox, design.ai.requestSize)}</span>
                   </div>
                   <pre className="h-56 overflow-auto whitespace-pre-wrap rounded border border-stone-200 bg-stone-50 p-2 text-[11px] leading-4 text-stone-600">
-                    {`[요청 크기] ${requestSize(rbox, design.ai.requestSize)}${design.ai.requestSize === "auto" ? " (auto: 영역 비율에 맞춘 최대 크기)" : ""} · 거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxAt300(rbox.w)}×${pxAt300(rbox.h)}px(300 DPI)로 저장\n\n${buildImagePrompt(design, book, region)}`}
+                    {`[요청 크기] ${requestSize(rbox, design.ai.requestSize)}${design.ai.requestSize === "auto" ? " (auto: 영역 비율에 맞춘 최대 크기)" : ""} · 거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxAt300(rbox.w)}×${pxAt300(rbox.h)}px(300 DPI)로 저장\n\n${promptText}`}
                   </pre>
                   <p className="mt-1 text-[11px] text-stone-500">디자이너 역할 지시·책 정보·펼침면 배치는 자동으로 들어갑니다. 아래 추가 지시와 체크를 바꾸면 바로 반영됩니다.</p>
                 </div>

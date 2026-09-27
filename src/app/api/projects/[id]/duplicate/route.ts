@@ -2,7 +2,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
-import { assetKey } from "@/lib/backup";
+import { assetKey } from "@/lib/maintenance";
 import { copyObject, mapLimit, removeObjects } from "@/lib/storage";
 
 export const maxDuration = 300;

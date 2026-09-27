@@ -20,6 +20,7 @@ const REASON: Record<string, string> = {
   check: "확인 표시 처리 전",
   chapter_revise: "장 퇴고 전",
   factcheck: "AI 팩트체크 전",
+  conflict: "저장 충돌 때 고르지 않은 원고",
 };
 
 type V = { id: string; reason: string; charCount: number; createdAt: string };
@@ -31,6 +32,7 @@ export default function VersionsPanel({
   onRestore,
   onSnapshot,
   beforeRestore,
+  lockReason,
 }: {
   sectionId: string;
   refreshKey: number;
@@ -38,14 +40,23 @@ export default function VersionsPanel({
   onRestore: (content: string) => void;
   onSnapshot: () => Promise<void>;
   beforeRestore: () => Promise<boolean>;
+  /** 절이 잠긴 이유 (AI 집필·교정 등) — 그동안은 복원하지 않는다 */
+  lockReason?: string;
 }) {
   const [list, setList] = useState<V[]>([]);
+  const [loadErr, setLoadErr] = useState("");
   const [view, setView] = useState<{
     v: V;
     before: string[];
     after: string[];
   } | null>(null);
-  const load = () => api<V[]>(`/api/sections/${sectionId}/versions`).then(setList);
+  const load = () =>
+    api<V[]>(`/api/sections/${sectionId}/versions`)
+      .then((l) => {
+        setList(l);
+        setLoadErr("");
+      })
+      .catch((e) => setLoadErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => {
     load();
     setView(null);
@@ -66,6 +77,7 @@ export default function VersionsPanel({
   };
 
   const restore = async (v: V) => {
+    if (lockReason) return toast.error(`${lockReason} — 끝난 뒤에 복원하세요.`);
     if (!(await confirmDialog(`${fmtDate(v.createdAt)} 버전(${REASON[v.reason] ?? v.reason})으로 되돌릴까요? 지금 내용은 버전 기록에 남습니다.`, { okLabel: "복원" }))) return;
     if (!(await beforeRestore())) return toast.error("현재 원고 저장을 완료한 뒤 복원해주세요.");
     try {
@@ -89,20 +101,34 @@ export default function VersionsPanel({
         <button
           className="btn-ghost text-xs"
           onClick={async () => {
-            await onSnapshot();
+            try {
+              await onSnapshot();
+              toast("지금 원고를 버전 기록에 남겼습니다.");
+            } catch (e) {
+              toastError(e, "스냅샷을 남기지 못했습니다: ");
+            }
             load();
           }}
         >
           + 지금 스냅샷
         </button>
       </div>
+      {loadErr && (
+        <p className="border-b border-red-100 bg-red-50 px-3 py-1.5 text-[11px] text-red-700">
+          버전 목록을 불러오지 못했습니다: {loadErr}{" "}
+          <button className="underline" onClick={load}>
+            다시
+          </button>
+        </p>
+      )}
+      {lockReason && <p className="border-b border-stone-100 bg-stone-50 px-3 py-1.5 text-[11px] text-stone-500">{lockReason} — 끝날 때까지 복원할 수 없습니다.</p>}
       {view ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-stone-100 px-3 py-2 text-xs">
             <button className="btn-ghost text-xs" onClick={() => setView(null)}>
               ← 목록
             </button>
-            <button className="btn-primary px-2 py-1 text-xs" onClick={() => restore(view.v)}>
+            <button className="btn-primary px-2 py-1 text-xs" disabled={!!lockReason} title={lockReason || undefined} onClick={() => restore(view.v)}>
               이 버전으로 복원
             </button>
           </div>
@@ -124,7 +150,7 @@ export default function VersionsPanel({
                   {fmtDate(v.createdAt)} · {v.charCount.toLocaleString()}자
                 </div>
               </button>
-              <button className="btn-ghost text-xs" onClick={() => restore(v)}>
+              <button className="btn-ghost text-xs disabled:opacity-40" disabled={!!lockReason} title={lockReason || undefined} onClick={() => restore(v)}>
                 복원
               </button>
             </li>

@@ -31,6 +31,16 @@ const { jobs, appliers, emit } = store;
 const ctrls = new Map<string, AbortController>();
 
 export const useProofJobs = store.useJobs;
+/** 이 절의 교정 작업만 구독한다 */
+export const useProofJob = store.useJob;
+/** 교정 중인 절 id (쉼표로 이은 문자열 — 목록이 바뀔 때만 다시 그린다) */
+export const useProofRunningIds = () =>
+  store.useSelect((m) =>
+    [...m.values()]
+      .filter((j) => j.state === "running")
+      .map((j) => j.sectionId)
+      .join(","),
+  );
 
 export const proofRunning = (sectionId: string) => jobs.get(sectionId)?.state === "running";
 registerJobKind("proof", { label: "교정·교열", busy: proofRunning, any: () => [...jobs.values()].some((j) => j.state === "running") });
@@ -96,6 +106,7 @@ export async function runProof(o: { sectionId: string; label: string; before: JN
   emit();
   void clearProofResult(o.sectionId); // 지난 교정 내역은 이제 기준이 아니다
   try {
+    // api()의 기본 시간 한도(310초)가 멈춘 서버에서도 잠금을 풀어 준다. [중지]는 stopProof
     const r = await api<{ changes: Change[]; failed: Change[] }>(`/api/sections/${o.sectionId}/proofread`, {
       method: "POST",
       json: { content: JSON.stringify(o.before), level: o.level },

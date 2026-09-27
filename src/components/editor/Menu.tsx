@@ -11,7 +11,11 @@ export default function Menu({ label, tone = "", title, disabled, children }: { 
     const onDown = (e: MouseEvent) => {
       if (!box.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault(); // 메뉴를 닫는 Esc — 편집기의 집필 중지로 새지 않게
+      setOpen(false);
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {

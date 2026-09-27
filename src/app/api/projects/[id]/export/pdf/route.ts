@@ -3,6 +3,7 @@ import { fail, handle } from "@/lib/api";
 import { preflight } from "@/lib/export/preflight";
 import { renderPdf } from "@/lib/export/pdf";
 import { deliverFile } from "@/lib/deliver";
+import { savePageCount } from "@/lib/print/page-count";
 
 export const maxDuration = 300;
 
@@ -22,6 +23,9 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   if (b.scope === "section" && b.targetId) q.set("scope", "section"), q.set("sid", b.targetId);
   if (b.padEven) q.set("padEven", "1");
   // 조판 시간 초과는 PdfTimeoutError(504, 한국어 안내)로 handle()이 그대로 전달한다
+  // 시간 예산은 이 요청이 시작된 때부터 잰다(책 불러오기·사전 점검 포함) — renderPdf가 요청 문맥에서 읽는다
   const { pdf, check } = await renderPdf(`${origin}/book/${id}?${q}`, { projectId: id });
+  // 책 전체를 뽑았으면 실제 쪽수로 기록한다 — 표지 책등 폭의 기준 (실패해도 PDF는 준다)
+  if (!q.has("scope")) await savePageCount(id, check.pages, "pdf").catch((e) => console.warn("[page-count] 기록 실패", e?.message));
   return deliverFile(pdf, `${book.project.title}_${size === "trim" ? "148x210" : "154x216"}.pdf`, "application/pdf", { check });
 });

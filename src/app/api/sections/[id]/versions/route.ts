@@ -16,7 +16,7 @@ export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/sections
 export const POST = handle(async (req: Request, ctx: RouteContext<"/api/sections/[id]/versions">) => {
   const { id } = await ctx.params;
   const b = await req.json().catch(() => ({}));
-  const reason = ["ai_output", "rewrite"].includes(b.reason) ? b.reason : "manual";
+  const reason = ["ai_output", "rewrite", "conflict"].includes(b.reason) ? b.reason : "manual";
   const v = await snapshot(id, reason, typeof b.content === "string" ? b.content : undefined);
   return ok({ id: v?.id });
 });

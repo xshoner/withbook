@@ -26,15 +26,58 @@ export default function TocDesign() {
   const [reports, setReports] = useState<Report[] | null>(null);
   const [cur, setCur] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
+  const [since, setSince] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [err, setErr] = useState<{ msg: string; raw?: string } | null>(null);
   const [project, setProject] = useState<any>(null);
   const started = useRef(false);
+  const reportsRef = useRef<Report[] | null>(null);
+  const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+  reportsRef.current = reports;
+
+  type Running = { startedAt: string; label: string };
+
+  /**
+   * 서버에서 이미 설계 중이면(다른 탭·화면을 떠났다 돌아옴) 새로 시작하지 않고 끝날 때까지 기다린다.
+   * 5초마다 설계 중 표시를 확인하고, 끝나면 보고서 목록을 다시 읽는다.
+   */
+  function watch(run: Running) {
+    const before = reportsRef.current?.length ?? 0;
+    setBusy(run.label || "목차 설계 중");
+    setSince(Date.parse(run.startedAt) || Date.now());
+    setErr(null);
+    if (poll.current) clearInterval(poll.current);
+    poll.current = setInterval(async () => {
+      try {
+        const st = await api<{ running: Running | null }>(`/api/projects/${id}/toc/design`);
+        if (st.running) return;
+        if (poll.current) clearInterval(poll.current);
+        poll.current = null;
+        const r = await api<Report[]>(`/api/projects/${id}/toc/reports`);
+        setReports(r);
+        setCur(0);
+        setBusy(null);
+        if (r.length <= before) setErr({ msg: "목차 설계가 끝났지만 새 안이 만들어지지 않았습니다(실패했거나 중단됨). 다시 시도하세요." });
+      } catch {
+        // 잠깐의 연결 오류는 다음 확인 때 다시 본다
+      }
+    }, 5000);
+  }
+
+  useEffect(() => () => {
+    if (poll.current) clearInterval(poll.current);
+  }, []);
 
   useEffect(() => {
     api(`/api/projects/${id}`).then(setProject);
-    api<Report[]>(`/api/projects/${id}/toc/reports`).then((r) => {
+    Promise.all([api<Report[]>(`/api/projects/${id}/toc/reports`), api<{ running: Running | null }>(`/api/projects/${id}/toc/design`).catch(() => ({ running: null }))]).then(([r, st]) => {
       setReports(r);
+      reportsRef.current = r;
+      if (st.running) {
+        started.current = true;
+        watch(st.running);
+        return;
+      }
       if (!r.length && sp.get("auto") === "1" && !started.current) {
         started.current = true;
         design({});
@@ -45,17 +88,24 @@ export default function TocDesign() {
 
   useEffect(() => {
     if (!busy) return;
-    setElapsed(0);
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
+    const tick = () => setElapsed(Math.max(0, Math.round((Date.now() - since) / 1000)));
+    tick();
+    const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [busy]);
+  }, [busy, since]);
 
   async function design(body: { regenerate?: boolean; chapterIndex?: number; baseReportId?: string }) {
     setBusy(body.chapterIndex ? `${body.chapterIndex}장 다시 설계 중` : body.regenerate ? "다른 구성으로 설계 중" : "목차 설계 중");
+    setSince(Date.now());
     setErr(null);
+    let waiting = false;
     try {
-      const r = await api<{ report?: Report; error?: string; raw?: string }>(`/api/projects/${id}/toc/design`, { method: "POST", json: body });
-      if (r.error) setErr({ msg: r.error, raw: r.raw });
+      const r = await api<{ report?: Report; error?: string; raw?: string; running?: Running }>(`/api/projects/${id}/toc/design`, { method: "POST", json: body });
+      if (r.running) {
+        // 이미 서버에서 설계 중 — 그 결과를 기다린다
+        waiting = true;
+        watch(r.running);
+      } else if (r.error) setErr({ msg: r.error, raw: r.raw });
       else if (r.report) {
         setReports((rs) => [r.report!, ...(rs ?? [])]);
         setCur(0);
@@ -63,17 +113,23 @@ export default function TocDesign() {
     } catch (e: any) {
       setErr({ msg: e.message });
     } finally {
-      setBusy(null);
+      if (!waiting) setBusy(null);
     }
   }
 
   async function apply(rep: Report) {
-    const r = await api<{ needConfirm?: boolean; written?: number }>(`/api/projects/${id}/toc/apply`, { method: "POST", json: { reportId: rep.id } });
-    if (r.needConfirm) {
-      if (!(await confirmDialog(`이미 본문이 작성된 절이 ${r.written}개 있습니다. 목차를 교체하면 기존 장/절과 본문이 모두 삭제됩니다. 계속할까요?`, { danger: true, okLabel: "목차 교체" }))) return;
-      await api(`/api/projects/${id}/toc/apply`, { method: "POST", json: { reportId: rep.id, force: true } });
+    setErr(null);
+    try {
+      const r = await api<{ needConfirm?: boolean; written?: number }>(`/api/projects/${id}/toc/apply`, { method: "POST", json: { reportId: rep.id } });
+      if (r.needConfirm) {
+        const msg = `본문이나 스케치가 있는 절이 ${r.written}개 있습니다. 목차를 교체하면 기존 장·절은 목차 아래 [삭제한 장·절]로 옮겨지고, 30일 안에 되돌릴 수 있습니다. 계속할까요?`;
+        if (!(await confirmDialog(msg, { danger: true, okLabel: "목차 교체" }))) return;
+        await api(`/api/projects/${id}/toc/apply`, { method: "POST", json: { reportId: rep.id, force: true } });
+      }
+      router.push(`/projects/${id}`);
+    } catch (e: any) {
+      setErr({ msg: `목차를 적용하지 못했습니다. ${e?.message ?? ""}`.trim() });
     }
-    router.push(`/projects/${id}`);
   }
 
   const shown = (reports ?? []).slice(0, 3);

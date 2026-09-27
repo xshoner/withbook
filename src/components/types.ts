@@ -41,6 +41,8 @@ export type PagedInfo = {
   total: number;
   bodyStart: number;
   fontOk: boolean;
+  /** 조판 중 불러오지 못한 그림 수 (예전 조판 결과에는 없다) */
+  missingImages?: number;
   sections: Record<string, SectionPageInfo>;
   chapters: Record<string, { start: number }>;
   pages: { i: number; n: number; side: string; blank: boolean }[];

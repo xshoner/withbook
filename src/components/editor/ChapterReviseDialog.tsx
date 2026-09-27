@@ -2,13 +2,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client";
+import { sectionBusyWith } from "./jobStore";
 
 type Change = { sectionId: string; sectionLabel: string; sectionTitle: string; paragraph: number; before: string; after: string; type: string; reason: string };
 
 const TYPE: Record<string, string> = { duplicate: "중복", transition: "연결", flow: "흐름", consistency: "통일" };
 
-/** 전체 장 퇴고에 쓰는 장 목록 (책 순서) */
-export type ReviseChapter = { id: string; name: string };
+/** 전체 장 퇴고에 쓰는 장 목록 (책 순서) — sectionIds: AI 집필·교정 중인 절이 있는 장은 건너뛴다 */
+export type ReviseChapter = { id: string; name: string; sectionIds?: string[] };
+
+/** 이 장에서 돌고 있는 작업(AI 집필·이어쓰기·교정·자동 집필 점검) 이름 — 퇴고가 고친 원고를 그 작업이 덮지 않게 */
+const busyIn = (ids?: string[]) => (ids ?? []).map((id) => sectionBusyWith(id)).find(Boolean) ?? null;
 
 type RunRow = { id: string; name: string; state: "wait" | "plan" | "apply" | "done" | "skip" | "fail"; note: string };
 
@@ -71,11 +75,23 @@ export default function ChapterReviseDialog({
         if (stopRef.current) break;
         const ctrl = new AbortController();
         abortRef.current = ctrl;
+        const ids = chapters.find((c) => c.id === row.id)?.sectionIds;
+        const busyNow = busyIn(ids);
+        if (busyNow) {
+          set(row.id, { state: "skip", note: `${busyNow} 중인 절이 있어 건너뜀` });
+          continue;
+        }
         try {
           set(row.id, { state: "plan" });
           const r = await api<{ changes: Change[] }>(`/api/chapters/${row.id}/revise`, { method: "POST", json: { focus }, signal: ctrl.signal });
           if (!r.changes.length) {
             set(row.id, { state: "done", note: "고칠 곳 없음" });
+            continue;
+          }
+          // 퇴고안을 만드는 동안(1~3분) 이 장에서 AI 작업이 시작됐으면 적용하지 않는다
+          const busyLater = busyIn(ids);
+          if (busyLater) {
+            set(row.id, { state: "skip", note: `${busyLater} 중인 절이 생겨 적용하지 않음` });
             continue;
           }
           set(row.id, { state: "apply" });
@@ -130,6 +146,8 @@ export default function ChapterReviseDialog({
     setBusy("apply");
     try {
       if (!(await beforeRun())) throw new Error("원고 저장을 완료한 뒤 다시 시도하세요.");
+      const busyNow = busyIn(chapters.find((c) => c.id === chapterId)?.sectionIds);
+      if (busyNow) throw new Error(`이 장에서 ${busyNow} 중인 절이 있습니다. 끝난 뒤에 적용하세요.`);
       const changes = plan.changes.filter((_, i) => picked.has(i)).map(({ sectionId, paragraph, before, after }) => ({ sectionId, paragraph, before, after }));
       const r = await api<{ applied: number; failed: number; sections: string[] }>(`/api/chapters/${chapterId}/revise/apply`, { method: "POST", json: { changes } });
       onApplied(r.sections);

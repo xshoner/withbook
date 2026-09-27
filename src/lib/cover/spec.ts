@@ -101,6 +101,8 @@ export type CoverDesign = {
   size: BookSize;
   paper: Paper;
   pages: number;
+  /** 쪽수를 작가가 직접 고쳤는지 — false면 책의 실제 조판 쪽수를 따라간다(열 때마다 맞춤) */
+  pagesManual?: boolean;
   /** 직접 넣은 책등 폭(mm). 없으면 쪽수로 계산 */
   spineOverride: number | null;
   flaps: boolean;
@@ -254,12 +256,20 @@ export function newId() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-export function defaultCover(project: { title?: string; subtitle?: string; author?: string; targetPages?: number } = {}): CoverDesign {
+/** 쪽수 값 정리 (2~3000, 정수) — 잘못된 값이면 null */
+export function cleanPages(v: unknown): number | null {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n >= 1 ? Math.min(3000, Math.max(2, n)) : null;
+}
+
+/** 기본 디자인 — 쪽수는 실제 조판 쪽수, 아직 모르면 목표 쪽수(없으면 200) */
+export function defaultCover(project: { title?: string; subtitle?: string; author?: string; targetPages?: number } = {}, actualPages?: number | null): CoverDesign {
   const d: CoverDesign = {
     v: 1,
     size: "A5",
     paper: "ivory100",
-    pages: Math.max(2, Math.round(project.targetPages ?? 200)),
+    pages: cleanPages(actualPages) ?? Math.max(2, Math.round(project.targetPages ?? 200)),
+    pagesManual: false,
     spineOverride: null,
     flaps: true,
     bgColor: "#ffffff",
@@ -392,6 +402,7 @@ export function normalizeCover(v: any): CoverDesign {
     size: Object.hasOwn(BOOK_SIZES, v?.size) ? v.size : d.size,
     paper: Object.hasOwn(PAPERS, v?.paper) ? v.paper : d.paper,
     pages: Math.round(num(v?.pages, 2, 3000, d.pages)),
+    pagesManual: Boolean(v?.pagesManual),
     spineOverride: v?.spineOverride == null || v.spineOverride === "" ? null : num(v.spineOverride, 1, 200, 10),
     flaps: v?.flaps === undefined ? true : Boolean(v.flaps),
     bgColor: color(v?.bgColor, "#ffffff"),
@@ -408,6 +419,17 @@ export function normalizeCover(v: any): CoverDesign {
     },
     ...(typeof v?.updatedAt === "string" ? { updatedAt: v.updatedAt } : {}),
   };
+}
+
+/**
+ * 쪽수 자동 맞춤 — 직접 고친 쪽수가 아니면 실제 조판 쪽수로 바꾸고 책등 요소를 가운데 기준으로 옮긴다.
+ * 직접 고친 쪽수는 그대로 둔다(편집기가 실제 쪽수와 다르다고 알리고 [적용] 버튼을 보인다).
+ */
+export function syncActualPages(d: CoverDesign, actualPages: number | null | undefined): CoverDesign {
+  const actual = cleanPages(actualPages);
+  if (!actual || d.pagesManual || d.pages === actual) return d;
+  const next = { ...d, pages: actual };
+  return { ...next, elements: reflowSpine(d.elements, coverLayout(d).spine, coverLayout(next).spine) };
 }
 
 /** 이 디자인이 쓰는 이미지 ID (내 프로젝트 이미지인지 확인할 때) */
@@ -554,9 +576,16 @@ export function textHeight(el: TextEl) {
   return lines * lineMm;
 }
 
-export function coverIssues(d: CoverDesign): CoverIssue[] {
+/** actualPages: 책의 실제 조판 쪽수(편집기 측정·본문 PDF). 모르면 null */
+export function coverIssues(d: CoverDesign, opts: { actualPages?: number | null } = {}): CoverIssue[] {
   const l = coverLayout(d);
   const out: CoverIssue[] = [];
+  const actual = cleanPages(opts.actualPages);
+  if (actual && actual !== d.pages) {
+    out.push({ level: "warn", message: `쪽수가 ${d.pages}쪽으로, 책의 실제 조판 쪽수(${actual}쪽)와 다릅니다. 책등 폭(${spineWidth(d.pages, d.paper)}mm → 실제 ${spineWidth(actual, d.paper)}mm)을 확인하세요.` });
+  } else if (!actual && opts.actualPages !== undefined && !d.pagesManual) {
+    out.push({ level: "warn", message: `책의 실제 쪽수를 아직 재지 않아 ${d.pages}쪽으로 책등을 계산했습니다. 집필 화면에서 조판이 끝나거나 본문 PDF를 만들면 실제 쪽수로 맞춥니다.` });
+  }
   const hasFull = Boolean(d.images.full);
   for (const p of panelsOf(l)) {
     if (!hasFull && !d.images[p] && d.bgColor.toLowerCase() === "#ffffff") {

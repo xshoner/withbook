@@ -2,7 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../db";
-import { flatSections, loadBook, type Book, type BookChapter, type BookSection } from "../book";
+import { fillContent, flatSections, loadBookOutline, type BookOutline } from "../book";
 import { charCount, docPlainText, docToMarkdown, findFootnotes, hashText, parseDoc, textblocks } from "../doc/doc";
 import { numberChapters, parseLayout } from "../layout";
 import { editStats, pickLearningPairs, type EditPair } from "../style/edits";
@@ -68,7 +68,7 @@ function chapterName(c: { label: string; kind: string }) {
 }
 
 /** 전체 목차 — 절마다 같은 글이어야 system 프롬프트가 캐시된다(현재 절 표시는 user 메시지에) */
-function tocOutline(book: Book) {
+function tocOutline(book: BookOutline) {
   return book.chapters
     .map((c) => {
       const head = `${c.label ? c.label + " " : ""}${c.title}${c.promise ? ` — ${c.promise}` : ""}`;
@@ -78,7 +78,7 @@ function tocOutline(book: Book) {
     .join("\n");
 }
 
-function bookVars(book: Book) {
+function bookVars(book: BookOutline) {
   const p = book.project;
   return {
     title: p.title,
@@ -155,11 +155,14 @@ async function mapLimit<T, R>(items: T[], n: number, fn: (item: T, i: number) =>
   return out;
 }
 
-/** 절과 책 전체 (집필처럼 목차·앞뒤 절이 필요한 작업) */
+/**
+ * 절과 책 구조 (집필처럼 목차·앞뒤 절이 필요한 작업) — 절 본문은 빼고 읽는다.
+ * 본문은 쓰는 곳에서 fillContent()로 필요한 절(현재 절·앞 절·요약을 확인할 절)만 읽는다.
+ */
 async function sectionInBook(sectionId: string) {
   const sec = await prisma.section.findUnique({ where: { id: sectionId }, select: { chapter: { select: { projectId: true } } } });
   if (!sec) throw new Error("절을 찾을 수 없습니다.");
-  const book = await loadBook(sec.chapter.projectId);
+  const book = await loadBookOutline(sec.chapter.projectId);
   if (!book) throw new Error("프로젝트를 찾을 수 없습니다.");
   return book;
 }
@@ -215,7 +218,7 @@ export async function designToc(
   projectId: string,
   opts: { regenerate?: boolean; chapterIndex?: number; previousConcept?: string } = {},
 ): Promise<{ design?: TocDesign; raw: string; error?: string }> {
-  const book = await loadBook(projectId);
+  const book = await loadBookOutline(projectId);
   if (!book) throw new Error("프로젝트를 찾을 수 없습니다.");
   const { messages } = await buildMessages("toc-design", {
     ...bookVars(book),
@@ -237,11 +240,14 @@ export async function designToc(
 
 /* ---------------- 요약 (앞 내용 연결용) ---------------- */
 
-type SummaryTarget = { id: string; label: string; title: string; content: string; summary: string | null; summaryHash: string | null };
+/** content가 undefined면 아직 읽지 않은 본문 — 요약이 필요할 때 읽는다 */
+type SummaryTarget = { id: string; label: string; title: string; content?: string; summary: string | null; summaryHash: string | null };
 const pendingSectionSummary = singleFlight<string>();
 
 async function ensureSectionSummary(projectId: string, c: { label: string; kind: string }, s: SummaryTarget): Promise<string> {
-  const text = docPlainText(parseDoc(s.content));
+  await fillContent([s]);
+  const content = s.content ?? "";
+  const text = docPlainText(parseDoc(content));
   if (!text.trim()) return "";
   const h = hashText(text);
   if (s.summary && s.summaryHash === h) return s.summary;
@@ -257,7 +263,7 @@ async function ensureSectionSummary(projectId: string, c: { label: string; kind:
     });
     const r = await chat({ purpose: "summary", projectId, messages, temperature: 0.3, maxTokens: 5000 });
     const summary = r.text.trim();
-    await prisma.section.updateMany({ where: { id: s.id, content: s.content }, data: { summary, summaryHash: h } });
+    await prisma.section.updateMany({ where: { id: s.id, content }, data: { summary, summaryHash: h } });
     return summary;
   });
   s.summary = summary;
@@ -292,7 +298,9 @@ export async function summarizeSection(sectionId: string) {
 }
 
 const pendingChapterSummary = singleFlight<string>();
-async function ensureChapterSummary(projectId: string, c: Pick<BookChapter, "id" | "label" | "kind" | "title" | "summary" | "summaryHash"> & { sections: SummaryTarget[] }): Promise<string> {
+type ChapterTarget = { id: string; label: string; kind: string; title: string; summary: string | null; summaryHash: string | null; sections: SummaryTarget[] };
+async function ensureChapterSummary(projectId: string, c: ChapterTarget): Promise<string> {
+  await fillContent(c.sections); // 장의 절 본문을 한 번에 읽는다(요약이 최신인지 확인용)
   const sums = await mapLimit(c.sections, 3, (s) => ensureSectionSummary(projectId, c, s));
   const parts = c.sections.map((s, i) => (sums[i] ? `${s.label || "-"} ${s.title}: ${sums[i]}` : "")).filter(Boolean);
   if (!parts.length) return "";
@@ -310,7 +318,7 @@ async function ensureChapterSummary(projectId: string, c: Pick<BookChapter, "id"
     const r = await chat({ purpose: "chapter_summary", projectId, messages, temperature: 0.3, maxTokens: 6000 });
     const summary = r.text.trim();
     await prisma.chapter.updateMany({
-      where: { id: c.id, AND: c.sections.map((s) => ({ sections: { some: { id: s.id, content: s.content } } })) },
+      where: { id: c.id, AND: c.sections.map((s) => ({ sections: { some: { id: s.id, content: s.content ?? "" } } })) },
       data: { summary, summaryHash: h },
     });
     return summary;
@@ -323,7 +331,7 @@ async function ensureChapterSummary(projectId: string, c: Pick<BookChapter, "id"
 /**
  * 가까운 절부터 필요한 2,500자만 확보한다. 예산이 차면 오래된 장은 조회·생성하지 않는다.
  */
-async function previousSummaries(book: Book, chapterIdx: number, sectionIdx: number, signal?: AbortSignal) {
+async function previousSummaries(book: BookOutline, chapterIdx: number, sectionIdx: number, signal?: AbortSignal) {
   const cur = book.chapters[chapterIdx];
   const items = [
     ...cur.sections.slice(0, sectionIdx).reverse().map((s) => async () => {
@@ -454,6 +462,8 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
   const si = chapter.sections.findIndex((s) => s.id === sectionId);
   const prev = flat[idx - 1];
   const next = flat[idx + 1];
+  // 본문은 이 절과 앞 절만 읽는다 (앞 내용 요약에 필요한 절은 previousSummaries가 가까운 순으로 읽는다)
+  await fillContent(prev ? [section, prev.section] : [section]);
 
   clock.loadMs = Date.now() - loadStarted;
   const summaryStarted = Date.now();
@@ -462,7 +472,7 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
 
   const cpp = book.project.charsPerPage || 700;
   const targetChars = Math.round(opts.targetPages * cpp);
-  const existing = parseDoc(section.content);
+  const existing = parseDoc(section.content ?? "");
   const baseVars = {
     ...bookVars(book),
     chapterNo: chapterName(chapter),
@@ -471,7 +481,7 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
     sectionTitle: section.title,
     sectionGist: section.gist,
     previousSummaries: prevSummaries,
-    previousTail: prev ? tailOf(prev.section.content) || "(앞 절 미작성)" : "(책의 첫 절)",
+    previousTail: prev ? tailOf(prev.section.content ?? "") || "(앞 절 미작성)" : "(책의 첫 절)",
     nextGist: next ? `${next.section.title}: ${next.section.gist}` : "(마지막 절)",
     sketch: section.sketch,
     targetPages: opts.targetPages,
@@ -641,6 +651,9 @@ function splitValid<C extends { paragraph: number; before: string; after: string
   return { valid, failed };
 }
 
+/** 교정 한 번에 보내는 본문 분량(자, 문단 경계 기준) */
+export const PROOF_BATCH_CHARS = 5000;
+
 /** range: 이 문단 범위(1부터, 양끝 포함)만 교정 — 긴 절을 요청 여러 개로 나눠 서버 시간 한도 안에 끝내려고. 문단 번호는 절 전체 기준 그대로 */
 export async function proofread(sectionId: string, contentJson: string, level: "proof" | "light", range?: { from: number; to: number }) {
   const { project } = await sectionLite(sectionId);
@@ -649,8 +662,9 @@ export async function proofread(sectionId: string, contentJson: string, level: "
   const sig = signaturePhrases(project.styleProfile);
   const inRange = (i: number) => !range || (i + 1 >= range.from && i + 1 <= range.to);
 
-  // 약 2,000자 단위 문단 묶음, 동시에 3개
-  const results = await mapLimit(chunkBlocks(blocks.map((t, i) => (inRange(i) ? t : "")), 2000), 3, async (idxs) => {
+  // 문단 경계로 약 5,000자씩 묶어 보낸다 — 묶음마다 system 프롬프트(작가 서술 규칙 instruction.md 포함)가 다시 가므로
+  // 묶음을 크게 해 보내는 횟수를 줄인다. 출력 한도(16,000토큰)는 5,000자 묶음의 수정안을 담기에 넉넉하다. 동시에 3개
+  const results = await mapLimit(chunkBlocks(blocks.map((t, i) => (inRange(i) ? t : "")), PROOF_BATCH_CHARS), 3, async (idxs) => {
     const { messages, instructionIncluded } = await buildMessages("proofread", {
       glossary,
       level_light_edit: level === "light",
@@ -788,10 +802,11 @@ const reviseSchema = z.object({
 export async function reviseChapter(chapterId: string, focus = "") {
   const ch = await prisma.chapter.findUnique({ where: { id: chapterId }, select: { projectId: true } });
   if (!ch) throw new Error("장을 찾을 수 없습니다.");
-  const book = await loadBook(ch.projectId);
+  const book = await loadBookOutline(ch.projectId);
   const chapter = book?.chapters.find((c) => c.id === chapterId);
   if (!book || !chapter) throw new Error("장을 찾을 수 없습니다.");
-  const blocksOf = chapter.sections.map((s) => textblocks(parseDoc(s.content)).map((b) => b.text));
+  await fillContent(chapter.sections); // 이 장의 절 본문만 읽는다
+  const blocksOf = chapter.sections.map((s) => textblocks(parseDoc(s.content ?? "")).map((b) => b.text));
   const total = blocksOf.flat().join("").length;
   if (total < 300) throw Object.assign(new Error("퇴고할 본문이 거의 없습니다. 절을 먼저 집필하세요."), { status: 400 });
   if (total > 80000) throw Object.assign(new Error("장이 너무 깁니다(8만 자 초과). 절 단위 교정·교열을 쓰세요."), { status: 400 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ParagraphDiff } from "../InlineDiff";
 
 /**
@@ -18,11 +18,18 @@ export default function CandidateCompareDialog(props: {
 }) {
   const [view, setView] = useState<"side" | "diff">("side");
   const chars = (ps: string[]) => ps.join("").length.toLocaleString();
+  const onClose = useRef(props.onClose);
+  onClose.current = props.onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && props.onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [props]);
+    // document에서 먼저 받아 preventDefault — 창을 닫는 Esc가 편집기의 집필 중지(window)로 새지 않게
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+      e.preventDefault();
+      onClose.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   const column = (title: string, ps: string[], tone: string, empty: string) => (
     <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-stone-200">

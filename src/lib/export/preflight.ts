@@ -10,7 +10,7 @@ export type Issue = { level: "error" | "warn" | "info"; message: string; where?:
 /** PDF 출력 전 사전 점검 (조판 전 단계) */
 export async function preflight(book: Book, size: "bleed" | "trim"): Promise<Issue[]> {
   const issues: Issue[] = [];
-  for (const f of ["KoPubBatangLight.ttf", "KoPubDotumMedium.ttf"]) {
+  for (const f of ["KoPubBatangLight.ttf", "KoPubBatangBold.ttf", "KoPubDotumMedium.ttf"]) {
     if (!(await fontAvailable(f)))
       issues.push({ level: "error", message: `글꼴 파일 ${f}을(를) 찾지 못했습니다(로컬 public/fonts 또는 저장소 fonts 버킷). PDF에 KoPub 글꼴을 넣을 수 없습니다.` });
   }
@@ -30,7 +30,7 @@ export async function preflight(book: Book, size: "bleed" | "trim"): Promise<Iss
         const a = f.attrs ?? {};
         const layout = (a.layout ?? "fit") as FigureLayout;
         if (layout === "fullbleed") fullbleed++;
-        const dpi = figureDpi(layout, a.widthMm, a.widthPx, a.heightPx);
+        const dpi = figureDpi(layout, a.widthMm, a.widthPx, a.heightPx, { margins: book.layout.margins, caption: Boolean(a.caption) });
         const lv = dpiLevel(dpi);
         if (lv !== "ok")
           issues.push({

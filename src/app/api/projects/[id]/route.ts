@@ -52,7 +52,8 @@ export const DELETE = handle(async (req: Request, ctx: RouteContext<"/api/projec
   const permanent = new URL(req.url).searchParams.get("permanent") === "1";
   if (permanent) {
     await prisma.project.delete({ where: { id } });
-    await prisma.appSetting.deleteMany({ where: { key: `cover:${id}` } });
+    // 책마다 AppSetting에 둔 표지 디자인·실제 쪽수 기록·목차 설계 표시도 함께 지운다
+    await prisma.appSetting.deleteMany({ where: { key: { in: [`cover:${id}`, `pages:${id}`, `toc-design:${id}`] } } });
   }
   else await prisma.project.update({ where: { id }, data: { deletedAt: new Date() } });
   return ok({ ok: true });

@@ -10,9 +10,10 @@ export const maxDuration = 300;
 /** 표지 PDF — 저장된 디자인을 /cover/{id}로 조판해 재단 여백 포함 크기로 인쇄한다 (TrimBox·BleedBox 포함) */
 export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]/cover/export">) => {
   const { id } = await ctx.params;
-  const { design, saved } = await loadCover(id);
+  // 쪽수를 직접 고치지 않았으면 loadCover가 실제 조판 쪽수로 맞춘 디자인을 준다 (/cover/{id} 조판 페이지도 같다)
+  const { design, saved, actualPages } = await loadCover(id);
   if (!saved) return fail("먼저 표지를 저장하세요.");
-  const errors = coverIssues(design).filter((i) => i.level === "error");
+  const errors = coverIssues(design, { actualPages }).filter((i) => i.level === "error");
   if (errors.length) return fail("출력할 수 없습니다:\n" + errors.map((e) => "· " + e.message).join("\n"));
   const l = coverLayout(design);
   const p = await prisma.project.findUnique({ where: { id }, select: { title: true } });

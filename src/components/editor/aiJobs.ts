@@ -2,8 +2,8 @@
 
 import { useSyncExternalStore } from "react";
 import { createJobStore, registerJobKind, sectionBusyWith } from "./jobStore";
-import { api, readStream, type StreamEvent } from "@/lib/client";
-import { appendDocs, charCount, markdownToDoc, parseDoc, type JNode } from "@/lib/doc/doc";
+import { api, readStream, STREAM_STALL_AFTER_PING_MS, STREAM_STALL_MS, type StreamEvent } from "@/lib/client";
+import { appendDocs, charCount, contentHash, markdownToDoc, markdownToDocReport, MdCharCounter, parseDoc, type JNode } from "@/lib/doc/doc";
 import { toast } from "../ui/feedback";
 import { saveViaQueue, settleSection } from "./useAutosave";
 import type { WriteTiming } from "@/lib/ai/write-timing";
@@ -58,6 +58,18 @@ export function useLastWriteTiming(sectionId: string) {
 }
 
 export const useAiJobs = store.useJobs;
+/** 이 절의 작업만 구독한다 (다른 절이 쓰는 동안 이 편집기를 다시 그리지 않게) */
+export const useAiJob = store.useJob;
+/** 쓰고 있는 절 id (쉼표로 이은 문자열 — 목록이 바뀔 때만 다시 그린다) */
+export const useRunningIds = () =>
+  store.useSelect((m) =>
+    [...m.values()]
+      .filter((j) => j.state === "running")
+      .map((j) => j.sectionId)
+      .join(","),
+  );
+/** 이 절들 중 하나라도 AI가 쓰는 중인가 (장 퇴고는 이어쓰기 중에도 막는다) */
+export const useAnyRunningIn = (ids: string[]) => store.useSelect((m) => ids.some((id) => m.get(id)?.state === "running"));
 
 export const jobFor = (sectionId: string) => jobs.get(sectionId) ?? null;
 export const anyRunning = () => [...jobs.values()].some((j) => j.state === "running");
@@ -98,6 +110,18 @@ export function clearJob(sectionId: string) {
 }
 
 /**
+ * 편집기 없이(저장 큐로) 서버에 저장한 절 — 편집기가 열려 있었는데 결과를 직접 넣지 못한 경우 다시 불러와야 한다.
+ * 편집기는 한 번 읽고 지운다. 아무것도 저장하지 않은 작업(첫 글자 전 실패·중지)은 여기 없으므로 다시 불러오지 않는다.
+ */
+const detachedSaves = new Set<string>();
+export const takeDetachedSave = (sectionId: string) => detachedSaves.delete(sectionId);
+
+/** 서버에 보관된 끊긴 AI 원고(부분 원고)를 치운다 — 쓴 데까지 본문에 넣었거나 후보를 고른 뒤 */
+export function clearPartial(sectionId: string) {
+  return api(`/api/sections/${sectionId}/partial`, { method: "DELETE" }).catch(() => {});
+}
+
+/**
  * 진행 중인 작업 객체(runJob이 쥐고 고치는 것). jobs에는 화면용 복사본을 넣는다 — 그래서 "지금 이 절의 작업인가"는 복사본이 아니라 이것과 비교한다.
  * (예전에는 jobs의 값과 비교해 첫 갱신 뒤 복사본으로 바뀌면서 이후 진행·완료 상태가 화면에 반영되지 않았다)
  */
@@ -119,13 +143,16 @@ function forget(sectionId: string) {
 /** 편집기가 없을 때 — 서버의 지금 본문을 기준으로 결과를 만들어 저장 큐로 저장 */
 async function saveDetached(job: AiJob, doc: JNode): Promise<string> {
   let next = doc;
+  let baseHash: string | undefined;
   if (job.mode === "continue") {
     await settleSection(job.sectionId);
-    const cur = await api<{ content: string }>(`/api/sections/${job.sectionId}`);
+    const cur = await api<{ content: string; contentHash?: string }>(`/api/sections/${job.sectionId}`);
     next = appendDocs(parseDoc(cur.content), doc);
+    baseHash = cur.contentHash ?? contentHash(cur.content); // 읽은 뒤 다른 곳에서 고쳤으면 덮지 않는다
   }
   const content = JSON.stringify(next);
-  if (!(await saveViaQueue(job.sectionId, { content, status: "ai_draft" }))) throw new Error("AI가 쓴 원고를 저장하지 못했습니다. 연결을 확인하세요 (브라우저에 보관 중).");
+  if (!(await saveViaQueue(job.sectionId, { content, status: "ai_draft" }, { baseHash }))) throw new Error("AI가 쓴 원고를 저장하지 못했습니다. 연결을 확인하세요 (브라우저에 보관 중).");
+  detachedSaves.add(job.sectionId);
   return content;
 }
 
@@ -150,7 +177,10 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   const other = sectionBusyWith(o.sectionId, "ai");
   if (other) throw new Error(`${o.label}: ${other} 중이라 AI 집필을 시작할 수 없습니다.`);
   const ctrl = new AbortController();
-  if (o.signal) o.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+  // 다중·자동 집필이 같은 신호를 절마다 넘긴다 — 작업이 끝나면 떼어 내야 듣는 함수가 쌓이지 않는다
+  const onOuterAbort = () => ctrl.abort();
+  if (o.signal?.aborted) ctrl.abort();
+  else o.signal?.addEventListener("abort", onOuterAbort, { once: true });
   ctrls.set(o.sectionId, ctrl);
   const job: AiJob = { sectionId: o.sectionId, label: o.label, mode: o.mode, state: "running", status: "준비 중…", md: "", chars: 0, target: o.target, batch: o.batch, figures: o.figures ?? [], startedAt: Date.now(), auto: o.auto };
   jobs.set(o.sectionId, { ...job });
@@ -158,6 +188,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   emit();
   let md = "";
   let last = 0;
+  const counter = new MdCharCounter(); // 250ms마다 전체 원고를 다시 변환하지 않고 늘어난 부분만 센다
   type Resume = { fromPart: number; parts: NonNullable<StreamEvent["parts"]> };
   let resumeFrom: Resume | null = null;
   // 긴 절은 한 요청의 시간 한도로 멈추면(resume) 같은 개요로 다음 요청을 이어 보낸다 — 사용자가 [이어쓰기]를 누르지 않아도 끝까지 쓴다
@@ -167,31 +198,37 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
       resume = null as Resume | null;
       const body = round === 0 ? o.body : { ...o.body, resume: { fromPart: resumeFrom!.fromPart, parts: resumeFrom!.parts, written: md } };
       const res = await fetch(o.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
-      await readStream(res, (e) => {
-        if (e.t === "timing" && e.timing) {
-          lastTimings.delete(o.sectionId);
-          lastTimings.set(o.sectionId, e.timing);
-          if (lastTimings.size > 100) lastTimings.delete(lastTimings.keys().next().value!);
-          emit();
-          return;
-        }
-        if (e.t === "resume" && e.parts && e.fromPart) {
-          resume = { fromPart: e.fromPart, parts: e.parts };
-          return;
-        }
-        if (e.t === "status" && e.v === "truncated") return update(job, { truncated: true, notice: "AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다." });
-        if (e.t === "status" && e.v === "partial") return; // 아래에서 자동으로 이어 쓴다
-        if (e.t === "status") return update(job, { status: e.v ?? "" });
-        if (e.t === "delta") {
-          md += e.v ?? "";
-          if (Date.now() - last > 250) {
-            last = Date.now();
-            update(job, { md, chars: charCount(markdownToDoc(md)), status: job.status.startsWith("구상") ? "집필 중…" : job.status });
+      // 스트림이 오래 멈추면(연결이 조용히 끊긴 경우) '집필 중'에 머물지 않고 오류로 끝낸다 — 쓴 데까지는 아래에서 넣는다
+      await readStream(
+        res,
+        (e) => {
+          if (e.t === "ping") return;
+          if (e.t === "timing" && e.timing) {
+            lastTimings.delete(o.sectionId);
+            lastTimings.set(o.sectionId, e.timing);
+            if (lastTimings.size > 100) lastTimings.delete(lastTimings.keys().next().value!);
+            emit();
+            return;
           }
-        }
-        if (e.t === "error") throw new Error(e.v);
-      });
-      update(job, { md, chars: charCount(markdownToDoc(md)) });
+          if (e.t === "resume" && e.parts && e.fromPart) {
+            resume = { fromPart: e.fromPart, parts: e.parts };
+            return;
+          }
+          if (e.t === "status" && e.v === "truncated") return update(job, { truncated: true, notice: "AI 출력이 한도에 걸려 중간에 끊겼습니다. [집필하기 → 뒤에 이어쓰기]로 이어 쓸 수 있습니다." });
+          if (e.t === "status" && e.v === "partial") return; // 아래에서 자동으로 이어 쓴다
+          if (e.t === "status") return update(job, { status: e.v ?? "" });
+          if (e.t === "delta") {
+            md += e.v ?? "";
+            if (Date.now() - last > 250) {
+              last = Date.now();
+              update(job, { md, chars: counter.count(md), status: job.status.startsWith("구상") ? "집필 중…" : job.status });
+            }
+          }
+          if (e.t === "error") throw new Error(e.v);
+        },
+        { stallMs: STREAM_STALL_MS, stallAfterPingMs: STREAM_STALL_AFTER_PING_MS },
+      );
+      update(job, { md, chars: counter.count(md) });
       const next = resume as Resume | null;
       if (!next || ctrl.signal.aborted) break;
       resumeFrom = next;
@@ -203,6 +240,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
     if (!ctrl.signal.aborted) update(job, { error: e instanceof Error ? e.message : String(e) });
   } finally {
     ctrls.delete(o.sectionId);
+    o.signal?.removeEventListener("abort", onOuterAbort);
   }
 
   const aborted = ctrl.signal.aborted;
@@ -225,11 +263,16 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
     return job;
   }
   // 중지했어도 쓴 데까지는 넣는다
-  const doc = markdownToDoc(md, job.figures);
+  const { doc, report } = markdownToDocReport(md, job.figures);
+  if (job.figures.length && (report.appended || report.duplicates)) {
+    const parts = [report.appended ? `AI가 자리를 빠뜨린 그림 ${report.appended}개를 절 끝에 붙였습니다` : "", report.duplicates ? `두 번 나온 그림 자리 ${report.duplicates}곳은 한 번만 넣었습니다` : ""].filter(Boolean);
+    job.notice = [job.notice, `${parts.join(" · ")} — 그림 위치를 확인하세요.`].filter(Boolean).join(" ");
+  }
   let content: string | null = null;
   try {
     const ap = appliers.get(o.sectionId);
-    content = ap ? await ap(job, doc) : await saveDetached(job, doc);
+    // 편집기가 넣지 못했으면(그사이 닫힘 등) 저장 큐로 저장한다 — 쓴 글을 버리지 않는다
+    content = (ap ? await ap(job, doc) : null) ?? (await saveDetached(job, doc));
   } catch (e) {
     if (!job.error) job.error = e instanceof Error ? e.message : String(e);
     if (!o.quiet) toast.error(e instanceof Error ? e.message : String(e));
@@ -237,6 +280,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   forget(o.sectionId);
   emit();
   if (content) {
+    void clearPartial(o.sectionId); // 쓴 데까지 본문에 넣었다 — 서버 보관본은 이제 필요 없다
     api(`/api/sections/${o.sectionId}/versions`, { method: "POST", json: { content, reason: "ai_output" } }).catch(() => {});
     scheduleSummaryPreparation(o.sectionId, undefined, 0);
     if (!appliers.has(o.sectionId) && !o.quiet) toast.success(`${job.label} ${aborted ? "쓴 데까지 저장했습니다" : "집필을 마쳤습니다"}.`);

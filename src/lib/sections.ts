@@ -1,7 +1,7 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
-import { charCount, parseDoc } from "./doc/doc";
+import { charCount, contentHash, parseDoc } from "./doc/doc";
 import { sectionInput } from "./section-input";
 import { versionsToDrop } from "./version-policy";
 
@@ -20,14 +20,24 @@ export async function pruneVersions(tx: Tx, sectionId: string) {
   if (drop.length) await tx.version.deleteMany({ where: { id: { in: drop } } });
 }
 
+/** 저장 충돌 — 화면이 기준으로 삼은 본문(baseHash)과 지금 저장된 본문이 다르다. 라우트가 409와 서버 본문으로 돌려준다 */
+export class SaveConflictError extends Error {
+  status = 409;
+  constructor(public current: { content: string; contentHash: string; updatedAt: Date }) {
+    super("다른 창이나 서버 작업(바꾸기·장 퇴고·팩트체크 등)이 이 절을 먼저 고쳤습니다.");
+  }
+}
+
 /**
  * 절 저장. 내용이 바뀌면 5분에 한 번 이전 내용을 autosave 버전으로 보관한다.
  * opts.tx: 바깥 트랜잭션 안에서 실행 · opts.skipAutosave: 호출자가 이미 버전을 남긴 경우(복원 등)
+ * opts.baseHash: 화면이 기준으로 삼은 본문의 해시(contentHash) — 지금 저장된 본문과 다르면 덮지 않고 SaveConflictError.
+ *   없으면 확인하지 않는다 (서버 작업·예전 화면과 호환)
  */
 export async function saveSection(
   id: string,
   b: { content?: string; sketch?: string; status?: string },
-  opts: { tx?: Tx; skipAutosave?: boolean } = {},
+  opts: { tx?: Tx; skipAutosave?: boolean; baseHash?: string } = {},
 ) {
   b = sectionInput.parse(b);
   const data: Record<string, unknown> = {};
@@ -37,17 +47,32 @@ export async function saveSection(
   }
   if (typeof b.sketch === "string") data.sketch = b.sketch;
   if (b.status && STATUSES.has(b.status)) data.status = b.status;
+  const check = b.content !== undefined && !!opts.baseHash;
+  const select = { updatedAt: true, charCount: true, status: true } as const;
   const run = async (tx: Tx) => {
     // 자동 저장은 1초마다 올 수 있으므로 필요한 칸만 읽는다
-    const current = b.content === undefined || opts.skipAutosave ? null : await tx.section.findUniqueOrThrow({ where: { id }, select: { content: true, charCount: true } });
-    if (current && b.content !== current.content && current.charCount > 0) {
+    const current = b.content === undefined || (opts.skipAutosave && !check) ? null : await tx.section.findUniqueOrThrow({ where: { id }, select: { content: true, charCount: true, updatedAt: true } });
+    if (check && current && contentHash(current.content) !== opts.baseHash) {
+      throw new SaveConflictError({ content: current.content, contentHash: contentHash(current.content), updatedAt: current.updatedAt });
+    }
+    if (current && !opts.skipAutosave && b.content !== current.content && current.charCount > 0) {
       const latest = await tx.version.findFirst({ where: { sectionId: id, reason: "autosave" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
       if (!latest || Date.now() - latest.createdAt.getTime() >= 5 * 60_000) {
         await tx.version.create({ data: { sectionId: id, reason: "autosave", content: current.content, charCount: current.charCount } });
         await pruneVersions(tx, id);
       }
     }
-    return tx.section.update({ where: { id }, data, select: { updatedAt: true, charCount: true, status: true } });
+    const withHash = <T extends object>(r: T) => (typeof b.content === "string" ? { ...r, contentHash: contentHash(b.content) } : r);
+    if (check && current) {
+      // 읽은 뒤 다른 저장이 끼어들었으면(같은 순간 두 창) 덮지 않는다 — 읽은 본문 그대로일 때만 쓴다
+      const n = await tx.section.updateMany({ where: { id, content: current.content }, data });
+      if (!n.count) {
+        const now = await tx.section.findUniqueOrThrow({ where: { id }, select: { content: true, updatedAt: true } });
+        throw new SaveConflictError({ content: now.content, contentHash: contentHash(now.content), updatedAt: now.updatedAt });
+      }
+      return withHash(await tx.section.findUniqueOrThrow({ where: { id }, select }));
+    }
+    return withHash(await tx.section.update({ where: { id }, data, select }));
   };
   return opts.tx ? run(opts.tx) : prisma.$transaction(run);
 }

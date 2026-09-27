@@ -132,7 +132,10 @@ function AskDialog({ ask }: { ask: Ask }) {
       className="fixed inset-0 z-[80] flex items-center justify-center bg-black/30 p-6"
       onMouseDown={(e) => e.target === e.currentTarget && close(ask, ask.kind === "prompt" ? null : false)}
       onKeyDown={(e) => {
-        if (e.key === "Escape") close(ask, ask.kind === "prompt" ? null : false);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          close(ask, ask.kind === "prompt" ? null : false);
+        }
       }}
     >
       <div role="dialog" aria-modal="true" aria-label={ask.text} className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl">

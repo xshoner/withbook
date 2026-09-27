@@ -3,6 +3,7 @@ import type { Book } from "../book";
 import { findFigures, parseDoc } from "../doc/doc";
 import { BLEED, DOC, TRIM, TYPO } from "./spec";
 import { docToHtml, esc, type FigureCtx } from "./render";
+import { figureMaxHeightMm } from "./figure";
 
 export type BookHtmlOptions = {
   mode: "preview" | "print" | "measure";
@@ -33,6 +34,8 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
   const scope = o.scope ?? { kind: "all" };
   const full = scope.kind === "all";
   const breakChapter = layout.chapterStartRight ? "right" : "page";
+  // 그림 최대 높이 — 이 책의 여백으로 계산한 본문 높이에서 그림 여백·캡션 자리를 뺀다 (DPI 계산과 같은 값)
+  const figH = (l: "fit" | "fullpage", caption: boolean) => figureMaxHeightMm(l, { margins: m, caption });
 
   /* ---------- 본문 ---------- */
   const parts: string[] = [];
@@ -147,11 +150,13 @@ li p { text-indent: 0; }
 hr { border: 0; text-align: center; margin: 4mm 0; }
 hr::after { content: "* * *"; font-size: 9pt; }
 .fig { margin: 4mm 0; text-align: center; break-inside: avoid; }
-.fig img { max-width: 100%; max-height: 150mm; display: block; margin: 0 auto; }
+.fig img { max-width: 100%; max-height: ${figH("fit", false)}mm; display: block; margin: 0 auto; }
+.fig.cap img { max-height: ${figH("fit", true)}mm; }
 .fig.fit img { width: 100%; }
 .fig figcaption { font-size: 8.5pt; line-height: 1.4; margin-top: 2mm; text-align: center; }
 .fig.fullpage { break-before: page; break-after: page; margin: 0; height: 100%; display: flex; flex-direction: column; justify-content: center; }
-.fig.fullpage img { width: 100%; max-height: 145mm; object-fit: contain; }
+.fig.fullpage img { width: 100%; max-height: ${figH("fullpage", false)}mm; object-fit: contain; }
+.fig.fullpage.cap img { max-height: ${figH("fullpage", true)}mm; }
 .fig.fullbleed { page: fullbleed; break-before: page; break-after: page; margin: 0; width: ${W}mm; height: ${H}mm; }
 .fig.fullbleed img { width: ${W}mm; height: ${H}mm; max-width: none; max-height: none; object-fit: cover; }
 .title-page { break-after: page; padding-top: 42mm; text-align: left; }
@@ -238,15 +243,19 @@ window.__CFG = ${JSON.stringify(cfg)};
 window.PagedConfig = {
   auto: true,
   before: async () => {
-    try {
-      await Promise.all([
-        document.fonts.load('10pt ${TYPO.bodyFontCss}'),
-        document.fonts.load('bold 10pt ${TYPO.bodyFontCss}'),
-        document.fonts.load('10pt ${TYPO.headingFontCss}'),
-      ]);
-    } catch (e) {}
+    // KoPub 세 글꼴(바탕 Light·Bold, 돋움)을 하나씩 받아 실패한 것을 적어 둔다 → 조판 후 PDF면 오류로 멈춘다
+    const faces = [['10pt ${TYPO.bodyFontCss}', 'KoPub바탕 Light'], ['bold 10pt ${TYPO.bodyFontCss}', 'KoPub바탕 Bold'], ['10pt ${TYPO.headingFontCss}', 'KoPub돋움 Medium']];
+    window.__FONT_FAIL = [];
+    await Promise.all(faces.map(([q, name]) => document.fonts.load(q).then((got) => { if (!got.length) window.__FONT_FAIL.push(name); }, () => window.__FONT_FAIL.push(name))));
+    // 이미지가 모두 받아졌는지(깨졌거나 주소가 빈 그림 포함) 적어 둔다
     const imgs = [...document.images];
     await Promise.all(imgs.map((i) => i.complete ? 0 : new Promise((r) => { i.onload = i.onerror = r; })));
+    window.__IMG_FAIL = imgs.filter((i) => !i.getAttribute('src') || !i.naturalWidth).map((i) => {
+      const f = i.closest('figure'), sec = i.closest('[data-sid]');
+      const cap = f && f.querySelector('figcaption b');
+      const st = sec && sec.querySelector('.sec-title');
+      return (cap ? cap.textContent : '캡션 없는 그림') + (st ? ' (' + st.textContent.trim() + ')' : '');
+    });
   },
   after: () => { try { window.__afterPaged(); } catch (e) { console.error(e); window.__PAGED_ERROR = String(e); window.__PAGED_DONE = true; } },
 };
@@ -266,7 +275,18 @@ window.__afterPaged = function () {
   const pageOf = (el) => pages.indexOf(el.closest('.pagedjs_page'));
   const bs = document.querySelector('.body-start');
   const B = bs ? pageOf(bs) : 0;
-  const fontOk = document.fonts.check('10pt BookBody');
+  // 글꼴: 불러오기 실패 + 글꼴 목록의 KoPub 얼굴 상태(loaded가 아니면 대체 글꼴로 조판된 것)
+  const fontFail = (window.__FONT_FAIL || []).slice();
+  const kopub = [...document.fonts].filter((f) => /BookBody|BookHeading/.test(f.family));
+  if (kopub.length < 3 || kopub.some((f) => f.status === 'error')) fontFail.push('KoPub 글꼴 파일');
+  const fontOk = !fontFail.length;
+  const imgFail = window.__IMG_FAIL || [];
+  if (C.mode === 'print') {
+    const errs = [];
+    if (!fontOk) errs.push('KoPub 글꼴(' + [...new Set(fontFail)].join(', ') + ')을 불러오지 못해 대체 글꼴로 조판되었습니다. 글꼴 파일(public/fonts 또는 저장소 fonts 버킷)을 확인한 뒤 다시 출력하세요.');
+    if (imgFail.length) errs.push('이미지 ' + imgFail.length + '개를 불러오지 못했습니다: ' + imgFail.slice(0, 5).join(', ') + (imgFail.length > 5 ? ' 외' : '') + '. 원고에서 그 그림을 다시 넣거나 지운 뒤 다시 출력하세요.');
+    if (errs.length) window.__PAGED_ERROR = errs.join(' ');
+  }
 
   // 짝수 쪽 맞춤: 마지막 쪽을 복제해 빈 쪽 추가
   if (C.padEven && pages.length % 2 === 1) {
@@ -280,7 +300,7 @@ window.__afterPaged = function () {
   }
 
   const numOf = (i) => (i >= B ? i - B + 1 : 0);
-  const info = { total: pages.length, bodyStart: B + 1, fontOk, sections: {}, chapters: {}, pages: [] };
+  const info = { total: pages.length, bodyStart: B + 1, fontOk, missingImages: imgFail.length, sections: {}, chapters: {}, pages: [] };
 
   pages.forEach((pg, i) => {
     const right = pg.classList.contains('pagedjs_right_page');

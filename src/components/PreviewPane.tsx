@@ -122,6 +122,9 @@ export default function PreviewPane({ projectId, focus, reloadKey, onInfo }: { p
       {info && !info.fontOk && (
         <div className="bg-red-50 px-4 py-2 text-xs text-red-700">KoPub바탕체 Light 글꼴을 불러오지 못했습니다. public/fonts 폴더에 KoPubBatangLight.ttf가 있는지 확인하세요.</div>
       )}
+      {info && (info.missingImages ?? 0) > 0 && (
+        <div className="bg-red-50 px-4 py-2 text-xs text-red-700">그림 {info.missingImages}개를 불러오지 못해 빈 자리로 조판했습니다. 해당 절에서 그림을 다시 넣거나 지우세요 — 이대로 내보내면 PDF에도 빠집니다.</div>
+      )}
       <div className="relative min-h-0 flex-1 bg-stone-300">
         {loading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-stone-300/70 text-sm text-stone-600">

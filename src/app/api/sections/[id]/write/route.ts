@@ -2,6 +2,7 @@ import { handle, ndjson } from "@/lib/api";
 import { writeSection } from "@/lib/ai/tasks";
 import { snapshot } from "@/lib/sections";
 import { writeInput } from "@/lib/ai/write-input";
+import { loadPartial, partialStore, withPartialSave } from "@/lib/ai/partial";
 
 export const maxDuration = 300;
 
@@ -12,8 +13,15 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/sections
   // 이어 쓰기 요청은 같은 집필의 계속이므로 버전을 다시 남기지 않는다
   if (mode !== "newVersion" && !b.resume) await snapshot(id, "ai_write");
   const ctrl = new AbortController();
+  // 받은 본문을 5초마다 ai-partial:{절 id}에 보관 — 스트림이 끊겨도 되살릴 수 있게 (정상 완료면 지운다)
+  // 이어 쓰기(resume)는 처음 요청이 쓴 글에 이어 붙이고 시작 시각을 그대로 둔다
+  const prev = b.resume ? await loadPartial(id).catch(() => null) : null;
   return ndjson(
-    writeSection(id, { targetPages, mode, extraInstruction: b.extraInstruction, resume: b.resume, signal: AbortSignal.any([req.signal, ctrl.signal]) }),
+    withPartialSave(
+      writeSection(id, { targetPages, mode, extraInstruction: b.extraInstruction, resume: b.resume, signal: AbortSignal.any([req.signal, ctrl.signal]) }),
+      partialStore(id),
+      { mode, initialText: b.resume?.written, startedAt: prev?.startedAt },
+    ),
     () => ctrl.abort(),
   );
 });

@@ -4,7 +4,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { STATUS_LABEL, api } from "@/lib/client";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 import TrashDialog from "./TrashDialog";
@@ -88,7 +88,10 @@ function Inline({
       onKeyDown={(e) => {
         e.stopPropagation();
         if (e.key === "Enter" && !e.nativeEvent.isComposing) (e.target as HTMLInputElement).blur();
-        if (e.key === "Escape") setEdit(false);
+        if (e.key === "Escape") {
+          e.preventDefault(); // 이름 바꾸기 취소 — 편집기의 집필 중지로 새지 않게
+          setEdit(false);
+        }
       }}
     />
   );
@@ -106,6 +109,7 @@ function useMenu() {
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      e.preventDefault();
       setOpen(false);
       trigger.current?.focus();
     };
@@ -360,7 +364,10 @@ function ChapterBlock({ c, props, actions, filter }: { c: LabeledChapter; props:
   );
 }
 
-export default function TocPanel(props: Props) {
+/** 저장·AI 진행 상태가 바뀌어도 목차 값이 그대로면 다시 그리지 않는다 (부모가 넘기는 함수·배열은 늘 같은 참조) */
+export default memo(TocPanel);
+
+function TocPanel(props: Props) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const [filter, setFilterState] = useState<Filter>("all");
   const [trashOpen, setTrashOpen] = useState(false);

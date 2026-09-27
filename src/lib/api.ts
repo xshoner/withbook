@@ -46,18 +46,27 @@ export function handle<A extends unknown[]>(fn: (...args: A) => Promise<Response
   };
 }
 
-/** NDJSON 스트림 응답 — 스트림은 핸들러가 끝난 뒤에 읽히므로 요청 문맥(사용자)을 이어 붙인다 */
+const NDJSON_PING_MS = 20_000;
+
+/** NDJSON 스트림 응답 —스트림은 핸들러가 끝난 뒤에 읽히므로 요청 문맥(사용자)을 이어 붙인다 */
 export function ndjson(gen: AsyncGenerator<unknown>, onClose?: () => void) {
   const enc = new TextEncoder();
   const ctx = getRequestContext();
   const inCtx = <T,>(fn: () => Promise<T>) => (ctx ? runWithContext(ctx, fn) : fn());
   let cancelled = false;
+  // AI가 오래 생각하는 동안에도 20초마다 ping을 보내 브라우저가 연결이 살아 있음을 안다(멈춤 감지 단축)
+  let pending: Promise<IteratorResult<unknown>> | null = null;
   const stream = new ReadableStream({
     pull: (controller) =>
       inCtx(async () => {
         try {
-          const next = await gen.next();
+          pending ??= gen.next();
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const tick = new Promise<"ping">((r) => { timer = setTimeout(() => r("ping"), NDJSON_PING_MS); });
+          const next = await Promise.race([pending, tick]).finally(() => clearTimeout(timer));
           if (cancelled) return;
+          if (next === "ping") { controller.enqueue(enc.encode('{"t":"ping"}\n')); return; }
+          pending = null;
           if (next.done) { onClose?.(); controller.close(); }
           else controller.enqueue(enc.encode(JSON.stringify(next.value) + "\n"));
         } catch (e: any) {

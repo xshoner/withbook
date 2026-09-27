@@ -2,7 +2,7 @@ import path from "node:path";
 import JSZip from "jszip";
 import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
-import { assetKey } from "@/lib/backup";
+import { assetKey } from "@/lib/maintenance";
 import { putObject, removeObjects } from "@/lib/storage";
 import { readUpload } from "@/lib/uploads";
 
