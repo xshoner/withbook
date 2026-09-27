@@ -20,7 +20,7 @@ const STAGE: Record<Stage, [string, string]> = {
 };
 
 /**
- * 전체 자동 집필 진행 창 — 편집 화면 오른쪽 아래에 떠 있다(절을 옮겨도 그대로).
+ * 자동 집필 진행 창 — 편집 화면 오른쪽 아래에 떠 있다(절을 옮겨도 그대로).
  * 창을 다시 열었을 때 끊긴 진행이 있으면 잠시 뒤 자동으로 이어 가고, 연속 실패로 멈췄으면 3분 뒤 다시 시도한다.
  */
 export default function AutoWritePanel({ projectId, onGoto, onEdited }: { projectId: string; onGoto: (sectionId: string) => void; onEdited: (sectionIds: string[]) => void }) {
@@ -40,7 +40,7 @@ export default function AutoWritePanel({ projectId, onGoto, onEdited }: { projec
       try {
         const r = await loadAutoRun(projectId);
         if (!alive) return;
-        if (r === "stale") setCountdown({ left: STALE_RESUME_S, retryFailed: false, why: "지난 전체 자동 집필이 중간에 끊겼습니다" });
+        if (r === "stale") setCountdown({ left: STALE_RESUME_S, retryFailed: false, why: "지난 자동 집필이 중간에 끊겼습니다" });
         if (r === "foreign") timer = setTimeout(check, 15_000);
       } catch {
         if (alive) timer = setTimeout(check, 30_000);
@@ -103,7 +103,7 @@ export default function AutoWritePanel({ projectId, onGoto, onEdited }: { projec
       <div className="flex items-center gap-2 rounded-t-xl bg-violet-900 px-3 py-2 text-white">
         {s.driving && <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-violet-200 border-t-transparent" />}
         <button className="font-semibold hover:underline" onClick={() => setOpen((o) => !o)} title={open ? "접기" : "펼치기"}>
-          ⚡ 전체 자동 집필 · {statusText}
+          ⚡ 자동 집필 · {statusText}
         </button>
         <span className="text-violet-200">{sum.percent}%</span>
         <div className="ml-auto flex items-center gap-1">
@@ -143,8 +143,8 @@ export default function AutoWritePanel({ projectId, onGoto, onEdited }: { projec
           <div className="space-y-0.5 border-b border-stone-100 px-3 py-2 text-stone-600">
             <div>
               집필 {sum.written}/{sum.n - sum.writeSkipped}
-              {run.options.factcheck && ` · 팩트체크 ${sum.checked}/${sum.n}`}
-              {run.options.review && ` · 검수 ${sum.reviewed}/${sum.n}`}
+              {run.options.factcheck && ` · 사실 확인 ${sum.checked}/${sum.n}`}
+              {run.options.review && ` · 교정 ${sum.reviewed}/${sum.n}`}
               {sum.failed > 0 && <span className="text-red-600"> · 실패 {sum.failed}</span>}
             </div>
             {s.driving && (
@@ -178,7 +178,7 @@ export default function AutoWritePanel({ projectId, onGoto, onEdited }: { projec
                 <button
                   className="text-stone-500 hover:underline"
                   onClick={async () => {
-                    if (await confirmDialog("전체 자동 집필을 끝낼까요? 지금까지 쓴 원고는 그대로 남습니다.", { okLabel: "끝내기" })) {
+                    if (await confirmDialog("자동 집필을 끝낼까요? 지금까지 쓴 원고는 그대로 남습니다.", { okLabel: "끝내기" })) {
                       setCountdown(null);
                       await stopAutoRun();
                     }
@@ -206,7 +206,7 @@ function Row({ it, i, fact, review, onGoto }: { it: AutoItem; i: number; fact: b
       {label} {STAGE[st][0]}
     </span>
   );
-  const facts = it.factStats ? `판정 통과 ${it.factStats.pass} · 보완 ${it.factStats.revise}${it.factStats.fail ? ` · 실패 ${it.factStats.fail}` : ""}` : "";
+  const facts = it.factStats ? `확인 통과 ${it.factStats.pass} · 보완 ${it.factStats.revise}${it.factStats.fail ? ` · 실패 ${it.factStats.fail}` : ""}` : "";
   return (
     <li className="px-3 py-1.5">
       <div className="flex items-center gap-1.5">
@@ -215,8 +215,8 @@ function Row({ it, i, fact, review, onGoto }: { it: AutoItem; i: number; fact: b
           {it.label}
         </button>
         {chip("집필", it.write)}
-        {fact && chip("팩트", it.fact)}
-        {review && chip("검수", it.review)}
+        {fact && chip("사실", it.fact)}
+        {review && chip("교정", it.review)}
       </div>
       {(it.error || facts || it.reviewFixes !== undefined) && (
         <div className="ml-6 mt-0.5 space-y-0.5 text-[11px]">
@@ -224,7 +224,7 @@ function Row({ it, i, fact, review, onGoto }: { it: AutoItem; i: number; fact: b
             <div className="text-stone-400">
               {facts}
               {facts && it.reviewFixes !== undefined && " · "}
-              {it.reviewFixes !== undefined && `검수 ${it.reviewFixes}곳 고침`}
+              {it.reviewFixes !== undefined && `교정 ${it.reviewFixes}곳 고침`}
             </div>
           )}
           {it.error && <div className={it.error.startsWith("참고") ? "text-stone-500" : "text-red-600"}>{it.error}</div>}

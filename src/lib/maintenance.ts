@@ -3,6 +3,7 @@ import { prisma } from "./db";
 import { purgeTrash } from "./trash";
 import { purgePartials } from "./ai/partial";
 import { purgeOldObjects } from "./storage";
+import { clearProjectSettings } from "./project-cleanup";
 
 /** 마지막으로 정리한 날(YYYY-MM-DD) — 서버리스 인스턴스가 여러 개여도 하루 한 번만 돌게 DB에 둔다 */
 export const MAINTENANCE_KEY = "maintenance:last";
@@ -24,9 +25,9 @@ async function claimToday(today: string) {
 const DAY = 24 * 3600 * 1000;
 
 /**
- * 하루 한 번 정리 — 프로젝트 목록 응답을 보낸 뒤(after) 돈다.
+ * 하루 한 번 정리 — 책 목록 응답을 보낸 뒤(after) 돈다.
  * - 휴지통에서 30일이 지난 프로젝트(표지 디자인·실제 쪽수 기록 포함), 지운 장·절(30일)
- * - 개요 캐시(1일), AI 집필 부분 원고(7일), 끊긴 목차 설계 표시(1일)
+ * - 개요 캐시(1일), AI 집필 부분 원고(7일), 끊긴 목차 설계 표시(1일), 확정하지 않은 원고 가져오기(1일)
  * - 내보내기(exports)·업로드 대기(incoming) 버킷의 하루 지난 파일
  * (DB 자체 백업은 Supabase가 맡는다. 프로젝트 단위 백업은 [내보내기 → 백업 ZIP])
  */
@@ -50,10 +51,12 @@ export async function dailyMaintenance() {
   await step("휴지통 프로젝트", async () => {
     const cutoff = new Date(Date.now() - 30 * DAY);
     const gone = await prisma.project.findMany({ where: { deletedAt: { lt: cutoff } }, select: { id: true } });
-    if (!gone.length) return;
-    await prisma.project.deleteMany({ where: { id: { in: gone.map((p) => p.id) } } });
-    // 책마다 AppSetting에 둔 표지 디자인·실제 쪽수 기록도 함께 지운다
-    await prisma.appSetting.deleteMany({ where: { key: { in: gone.flatMap((p) => [`cover:${p.id}`, `pages:${p.id}`, `toc-design:${p.id}`]) } } });
+    for (const p of gone) {
+      const sections = await prisma.section.findMany({ where: { chapter: { projectId: p.id } }, select: { id: true } });
+      await prisma.project.delete({ where: { id: p.id } });
+      // 책마다 AppSetting에 둔 표지 디자인·실제 쪽수·휴지통·절 참고 자료 등도 함께 지운다
+      await clearProjectSettings(prisma, p.id, sections.map((s) => s.id));
+    }
   });
   // 지운 장·절(휴지통)도 30일이 지나면 비운다
   await step("장·절 휴지통", () => purgeTrash(30));
@@ -62,6 +65,9 @@ export async function dailyMaintenance() {
     prisma.appSetting.deleteMany({ where: { key: { startsWith: "ai:outline-cache:" }, updatedAt: { lt: new Date(Date.now() - DAY) } } }),
   );
   await step("AI 부분 원고", () => purgePartials());
+  await step("원고 가져오기 대기", () =>
+    prisma.appSetting.deleteMany({ where: { key: { startsWith: "manuscript-import:" }, updatedAt: { lt: new Date(Date.now() - DAY) } } }),
+  );
   await step("목차 설계 표시", () =>
     prisma.appSetting.deleteMany({ where: { key: { startsWith: "toc-design:" }, updatedAt: { lt: new Date(Date.now() - DAY) } } }),
   );

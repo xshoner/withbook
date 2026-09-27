@@ -13,7 +13,7 @@ export const POST = handle(async (_req: Request, ctx: RouteContext<"/api/project
     where: { id },
     include: { chapters: { include: { sections: true } }, glossary: true, assets: true },
   });
-  if (!p) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!p) return fail("책을 찾을 수 없습니다.", 404);
   // 1) DB 복사는 한 트랜잭션으로 (중간에 실패하면 반쪽 프로젝트가 남지 않는다)
   const { copy, files } = await prisma.$transaction(
     async (tx) => {

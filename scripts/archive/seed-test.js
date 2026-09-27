@@ -1,4 +1,4 @@
-// 조판·출력 점검용 샘플 프로젝트 생성: node scripts/seed-test.js
+// 조판·출력 점검용 샘플 프로젝트 생성: node scripts/archive/seed-test.js
 const { PrismaClient } = require("@prisma/client");
 const p = new PrismaClient();
 const para = (t) => ({ type: "paragraph", content: [{ type: "text", text: t }] });

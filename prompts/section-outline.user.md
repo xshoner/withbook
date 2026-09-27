@@ -13,6 +13,9 @@
 [작가 스케치 — 빠짐없이 반영한다]
 {{sketch}}
 
+{{#if sectionReferences}}[이 절의 참고 자료 — 작가가 붙인 근거. 파트마다 어떤 자료를 쓸지 points에 적는다]
+{{sectionReferences}}
+{{/if}}
 [분량]
 목표 {{targetPages}}페이지 = 공백 포함 약 {{targetChars}}자 (허용 범위 {{minChars}}~{{maxChars}}자)
 분량은 반드시 {{minChars}}자 이상 채운다. 짧게 끝내지 말고, 모자라면 스케치 항목마다 사례·배경·해석을 한 단락씩 더 풀어 쓴다. 같은 말을 되풀이해 채우지는 않는다.

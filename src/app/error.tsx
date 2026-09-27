@@ -21,7 +21,7 @@ export default function RouteError({ error, reset }: { error: Error & { digest?:
             다시 시도
           </button>
           <Link href="/projects" className="btn">
-            프로젝트 목록
+            책 목록
           </Link>
         </div>
       </div>

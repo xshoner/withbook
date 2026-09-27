@@ -19,7 +19,7 @@ const REASON: Record<string, string> = {
   replace: "책 전체 바꾸기 전",
   check: "확인 표시 처리 전",
   chapter_revise: "장 퇴고 전",
-  factcheck: "AI 팩트체크 전",
+  factcheck: "AI 사실 확인 전",
   conflict: "저장 충돌 때 고르지 않은 원고",
 };
 

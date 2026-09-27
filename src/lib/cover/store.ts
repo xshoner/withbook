@@ -15,7 +15,7 @@ type ProjectInfo = { id: string; title: string; subtitle: string; author: string
 
 async function project(projectId: string): Promise<ProjectInfo> {
   const p = await prisma.project.findFirst({ where: { id: projectId, deletedAt: null }, select: { id: true, title: true, subtitle: true, author: true, targetPages: true } });
-  if (!p) throw Object.assign(new Error("프로젝트를 찾을 수 없습니다."), { status: 404 });
+  if (!p) throw Object.assign(new Error("책을 찾을 수 없습니다."), { status: 404 });
   return p;
 }
 

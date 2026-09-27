@@ -1,12 +1,19 @@
 # PRD — 작가 서포트 집필 에이전트 웹앱 (가칭: **BookK Writer**)
 
+> **현재 상태 (2026-09-27)** — 이 문서는 v1.0 초기 요구사항이다. 구현은 아래처럼 달라졌다(자세한 경과는 [docs/decisions.md](docs/decisions.md)).
+> - 이름은 **withbook**, 웹 배포(Vercel, https://withbook.vercel.app, 로그인 필요) — [docs/deployment.md](docs/deployment.md)
+> - 저장: SQLite 대신 **Supabase Postgres**(원고) + **Storage**(이미지·문체 자료·글꼴·내보내기) + **Auth**(로그인, 역할 superadmin/editor)
+> - AI 모델·제공자는 고정이 아니라 **[책 설정 → AI 설정]에서 선택**(게이트웨이·Gemini·OpenAI·Anthropic·직접 입력)
+> - v2 후보였던 **표지 디자이너(날개·책등 펼침면, AI 표지 그림, 인쇄용 PDF)를 구현** — [docs/cover-design.md](docs/cover-design.md)
+> - 런타임 프롬프트는 [`prompts/`](prompts/) 폴더. 초기 개발 프롬프트 문서는 [docs/archive/prompts-initial.md](docs/archive/prompts-initial.md)로 보관
+
 | 항목 | 내용 |
 |---|---|
 | 문서 버전 | v1.0 (2026-09-23) |
 | 대상 출판 | 부크크(BOOKK) 자가출판, **A5(148×210mm)** 단행본 |
 | AI 모델 | `claude-fable-5-1` (OpenAI 호환 `POST /v1/chat/completions`) |
 | 사용 형태 | 1인 작가용 웹앱 (로컬 실행 우선, 추후 배포 가능 구조) |
-| 관련 문서 | `instruction.md`(서술 스타일 규칙), `prompts.md`(개발·런타임 프롬프트) |
+| 관련 문서 | `instruction.md`(서술 스타일 규칙), `prompts/`(런타임 프롬프트), `docs/archive/prompts-initial.md`(초기 개발 프롬프트 보관본) |
 
 ---
 
@@ -30,7 +37,7 @@
 | 데이터 안전성 | 자동 저장으로 인한 유실 0건 (마지막 입력 후 ≤2초 내 저장) |
 
 ### 1.4 범위 밖 (v1)
-- 표지 디자인 제작(책등 계산·표지 PDF) → v2 후보
+- ~~표지 디자인 제작(책등 계산·표지 PDF) → v2 후보~~ → **구현됨**(표지 디자이너, [docs/cover-design.md](docs/cover-design.md))
 - 다중 사용자 실시간 공동 편집
 - 전자책(EPUB) 내보내기 → v2 후보
 
@@ -124,7 +131,7 @@
 
 ### F4. 레이아웃 & 네비게이션 (P0)
 - 3분할 레이아웃: **좌측 목차 패널**(접기 가능) | **중앙 편집기** | 우측 보조 패널(스케치/AI 설정/버전, 접기 가능).
-- 편집기 상단 **브레드크럼**: `책 제목 > 3장 제목 > 3.2 절 제목`, 이전/다음 절 이동 버튼, 단축키(Ctrl+↑/↓).
+- 편집기 상단 **브레드크럼**: `책 제목 > 3장 제목 > 3.2 절 제목`, 이전/다음 절 이동 버튼, 단축키(Alt+↑/↓).
 - 현재 절이 전체 책에서 차지하는 **쪽 범위 표시**(예: p.45–48).
 
 ### F5. 편집기 (P0)
@@ -216,7 +223,7 @@
 | 보안 | **API 키는 서버 환경변수(`.env`)에만 저장**, 클라이언트 번들·로그·Git에 노출 금지. 모든 AI 호출은 서버 라우트 경유. `.env`는 `.gitignore` 처리 |
 | 성능 | 절 전환 ≤300ms, 300쪽 책 전체 페이지네이션 ≤5초(웹 워커/증분 계산), 첫 토큰 표시 ≤5초 |
 | 안정성 | AI 호출 타임아웃 120초, 429/5xx 지수 백오프 재시도 최대 3회, 중단 시 부분 결과 보존 |
-| 데이터 | 로컬 SQLite 파일 + 이미지 폴더. 모든 쓰기는 트랜잭션. 일일 자동 백업 7개 보관 |
+| 데이터 | ~~로컬 SQLite 파일 + 이미지 폴더, 일일 자동 백업 7개~~ → **Supabase Postgres + Storage**. 모든 쓰기는 트랜잭션. DB 백업은 Supabase, 프로젝트 단위는 백업 ZIP 내보내기 |
 | 접근성 | 키보드만으로 목차 이동·집필·저장 가능, 대비 AA |
 | 폰트 라이선스 | KoPub 서체는 사용자가 설치/제공한 파일을 `public/fonts`에 배치. 저장소에 폰트 파일 커밋 금지(라이선스 확인 후 결정) |
 | 브라우저 | 최신 Chrome/Edge 우선 |
@@ -232,7 +239,7 @@
 | UI | Tailwind CSS + shadcn/ui, dnd-kit(목차 드래그) | 빠른 구현 |
 | 편집기 | **Tiptap(ProseMirror)** | 스키마 제어, 이미지·각주 확장, JSON 저장 |
 | 상태/저장 | Zustand + 디바운스 저장, IndexedDB(오프라인 버퍼) | 자동 저장 |
-| DB | **SQLite + Prisma** (추후 Postgres 전환 가능) | 1인 로컬 실행 |
+| DB | ~~SQLite + Prisma~~ → **Supabase Postgres + Prisma 6** (`withbook` 스키마) | 웹 배포(서버리스) |
 | 페이지네이션/미리보기 | **Paged.js** (CSS Paged Media: `@page`, `:left/:right`, `bleed`, `marks`) | 편집 화면과 PDF가 같은 CSS로 조판 |
 | PDF | **Playwright(Chromium) `page.pdf()`** 서버 렌더링 + Paged.js | 폰트 임베딩·mm 정밀도 |
 | HWPX | JSZip + OWPML XML 템플릿 직접 생성 | 표준 규격 zip 구조 |
@@ -251,7 +258,7 @@ Authorization: Bearer {LLM_API_KEY}
 }
 ```
 - 환경변수: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL=claude-fable-5-1`
-- ⚠️ **Base URL(게이트웨이 호스트)은 아직 정해지지 않았다 → 확인 필요.**
+- **현재:** 제공자·Base URL·모델·인증 방식(`x-api-key`/`bearer`)은 [책 설정 → AI 설정]에서 고르고 DB에 저장한다(`src/lib/ai/settings.ts`). 위 환경변수는 설정이 없을 때의 초기값.
 - 최대 출력 토큰: 목표 글자 수 × 1.6 + 여유분(한국어 1자 ≈ 1~1.5 토큰 가정, 실측 후 보정). 10페이지 이상은 **소제목 단위 분할 생성**(개요 → 파트별 생성 → 연결부 다듬기).
 - 서버 모듈 `lib/ai/`에 목적별 함수(`designToc`, `writeSection`, `proofread`, `summarize`, `analyzeStyle`, `rewriteSelection`)와 프롬프트 빌더 분리. 프롬프트 원문은 `prompts/` 폴더 파일로 관리.
 - `instruction.md`는 **매 집필·교정 호출 시 파일에서 읽어** system 프롬프트에 포함(수정 즉시 반영, 캐시는 mtime 기준).

@@ -5,7 +5,7 @@ import { getObject, listObjects, putObject, removeObjects } from "../storage";
 import { storageConfigured } from "../supabase/admin";
 
 /**
- * style reference 자료(또는 업로드 파일)에서 텍스트를 뽑아 문체 분석용 코퍼스를 만든다.
+ * 문체 학습 자료(또는 업로드 파일)에서 텍스트를 뽑아 문체 분석용 코퍼스를 만든다.
  * 웹 배포: Supabase Storage style-reference 버킷(한글 파일명은 base64url 키로 저장) / 로컬: style reference 폴더
  */
 
@@ -47,7 +47,10 @@ export async function listReferenceFiles() {
   }
 }
 
-export async function extractText(name: string, buf: Buffer): Promise<string> {
+/**
+ * 파일에서 글 뽑기. keepAll: PDF 앞 6쪽·뒤 4쪽(표지·판권·차례)을 빼지 않는다 — 문체 학습이 아닌 참고 자료·원고 가져오기용
+ */
+export async function extractText(name: string, buf: Buffer, opts: { keepAll?: boolean } = {}): Promise<string> {
   const ext = path.extname(name).toLowerCase();
   if (ext === ".txt" || ext === ".md") return buf.toString("utf8").replace(/^﻿/, "");
   if (ext === ".pdf") {
@@ -56,7 +59,7 @@ export async function extractText(name: string, buf: Buffer): Promise<string> {
     const { text } = await extractText(pdf, { mergePages: false });
     const pages = text as string[];
     // 앞붙이·뒷붙이(표지, 판권, 목차) 영향을 줄이기 위해 앞 6쪽·뒤 4쪽 제외
-    const body = pages.length > 20 ? pages.slice(6, -4) : pages;
+    const body = !opts.keepAll && pages.length > 20 ? pages.slice(6, -4) : pages;
     return body.join("\n");
   }
   if (ext === ".docx") {

@@ -16,7 +16,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   const { id } = await ctx.params;
   const b = await req.json();
   const p = await prisma.project.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
-  if (!p) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!p) return fail("책을 찾을 수 없습니다.", 404);
   if (!(await savePageCount(id, b?.total, "editor"))) return fail("쪽수가 올바르지 않습니다.");
   return ok({ ok: true });
 });

@@ -22,7 +22,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
     where: { id, deletedAt: null },
     select: { title: true, subtitle: true, author: true, topic: true, keyMessage: true, audience: true, tone: true, chapters: { where: { kind: "body" }, orderBy: { order: "asc" }, select: { title: true } } },
   });
-  if (!project) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!project) return fail("책을 찾을 수 없습니다.", 404);
 
   const l = coverLayout(design);
   const box = regionBox(l, region);

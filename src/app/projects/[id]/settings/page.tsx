@@ -3,32 +3,53 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import AiSettingsPanel from "@/components/AiSettingsPanel";
 import BookInfoForm, { type BookInfo } from "@/components/BookInfoForm";
 import StyleProfileView from "@/components/StyleProfileView";
 import { api } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
 import type { LayoutSettings } from "@/lib/layout";
 import { BLEED, SAFE_MIN_FROM_TRIM } from "@/lib/print/spec";
-import { toast, toastError } from "@/components/ui/feedback";
+import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
+import { useMe } from "@/lib/me-client";
 
-type Tab = "info" | "style" | "layout" | "glossary" | "ai";
+type Tab = "info" | "style" | "layout" | "glossary";
 
 export default function ProjectSettings() {
   const { id } = useParams<{ id: string }>();
   const [p, setP] = useState<any>(null);
   const [tab, setTab] = useState<Tab>("info");
   const [msg, setMsg] = useState("");
-  const load = () => api(`/api/projects/${id}`).then(setP);
+  const [loadErr, setLoadErr] = useState("");
+  const load = () =>
+    api(`/api/projects/${id}`).then(
+      (r) => {
+        setP(r);
+        setLoadErr("");
+      },
+      (e) => {
+        setLoadErr(e.message);
+        throw e;
+      },
+    );
   useEffect(() => {
-    load();
+    load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
   const flash = (m: string) => {
     setMsg(m);
     setTimeout(() => setMsg(""), 2500);
   };
-  if (!p) return <div className="p-10 text-stone-400">불러오는 중…</div>;
+  if (!p)
+    return loadErr ? (
+      <div className="p-10 text-red-600">
+        책 설정을 불러오지 못했습니다: {loadErr}{" "}
+        <button className="underline" onClick={() => load().catch(() => {})}>
+          다시 시도
+        </button>
+      </div>
+    ) : (
+      <div className="p-10 text-stone-400">불러오는 중…</div>
+    );
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-8">
@@ -44,14 +65,16 @@ export default function ProjectSettings() {
             ["style", "문체"],
             ["layout", "조판 · 판권면"],
             ["glossary", "용어집"],
-            ["ai", "AI 설정"],
           ] as const
         ).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`-mb-px border-b-2 px-4 py-2 text-sm ${tab === k ? "border-amber-700 font-semibold" : "border-transparent text-stone-500"}`}>
             {l}
           </button>
         ))}
-        {msg && <span className="ml-auto self-center text-xs text-emerald-700">{msg}</span>}
+        <Link href="/settings" className="ml-auto self-center px-2 text-xs text-stone-500 hover:underline" title="AI 연결·기본 문체·서술 규칙은 모든 책에 공통이라 설정 화면에 있습니다">
+          AI 연결·기본 문체는 설정 →
+        </Link>
+        {msg && <span className="self-center text-xs text-emerald-700">{msg}</span>}
       </div>
 
       {tab === "info" && (
@@ -60,9 +83,13 @@ export default function ProjectSettings() {
             initial={p as BookInfo}
             submitLabel="저장"
             onSubmit={async (v) => {
-              await api(`/api/projects/${id}`, { method: "PATCH", json: v });
-              await load();
-              flash("저장했습니다.");
+              try {
+                await api(`/api/projects/${id}`, { method: "PATCH", json: v });
+                await load();
+                flash("저장했습니다.");
+              } catch (e) {
+                toastError(e, "책 정보를 저장하지 못했습니다: ");
+              }
             }}
           />
         </div>
@@ -70,18 +97,11 @@ export default function ProjectSettings() {
       {tab === "style" && <StyleTab p={p} reload={load} flash={flash} />}
       {tab === "layout" && <LayoutTab p={p} reload={load} flash={flash} />}
       {tab === "glossary" && <GlossaryTab id={id} />}
-      {tab === "ai" && (
-        <div className="card space-y-2 p-6">
-          <h2 className="font-semibold">AI 설정</h2>
-          <p className="mb-2 text-sm text-stone-500">집필·교정·각주 등 모든 AI 기능이 쓰는 연결입니다. 지금 적용된 값이 표시됩니다. [수정]을 눌러 바꾸고 [확인]을 누르면 새 값으로 바로 연결을 점검합니다.</p>
-          <AiSettingsPanel />
-        </div>
-      )}
     </main>
   );
 }
 
-function StyleTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m: string) => void }) {
+function StyleTab({ p, reload, flash }: { p: any; reload: () => Promise<unknown>; flash: (m: string) => void }) {
   const [busy, setBusy] = useState("");
   const [samples, setSamples] = useState("");
   const [useRef_, setUseRef] = useState(true);
@@ -110,29 +130,39 @@ function StyleTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m:
   return (
     <div className="space-y-6">
       <div className="card p-6">
-        <h2 className="mb-3 font-semibold">현재 문체 프로필</h2>
+        <h2 className="mb-1 font-semibold">이 책의 문체 프로필</h2>
+        <p className="mb-3 text-xs leading-5 text-stone-500">
+          이 책의 집필·교정에만 쓰는 문체입니다. 책을 만들 때 <Link href="/settings#style" className="underline">설정의 기본 문체</Link>(모든 새 책 공통)가 복사되어 들어오고, 여기서 고치거나 다시 학습해도 다른 책과 기본 문체는 바뀌지 않습니다.
+        </p>
         {profile ? (
           <StyleProfileView
             profile={profile}
             onSave={async (np) => {
-              await api(`/api/projects/${p.id}`, { method: "PATCH", json: { styleProfile: np } });
-              await reload();
-              flash("저장했습니다.");
+              try {
+                await api(`/api/projects/${p.id}`, { method: "PATCH", json: { styleProfile: np } });
+                await reload();
+                flash("저장했습니다.");
+              } catch (e) {
+                toastError(e, "문체 프로필을 저장하지 못했습니다: ");
+              }
             }}
           />
         ) : (
-          <p className="text-sm text-stone-500">아직 문체 프로필이 없습니다. 아래에서 학습하세요.</p>
+          <p className="text-sm text-stone-500">아직 문체 프로필이 없습니다. 아래에서 기본 문체를 적용하거나 학습하세요.</p>
         )}
       </div>
       <EditLearnCard p={p} reload={reload} flash={flash} />
       <div className="card space-y-4 p-6">
-        <h2 className="font-semibold">문체 다시 학습</h2>
-        <button className="btn" disabled={!!busy} onClick={() => run("global")}>
-          style reference 폴더로 학습한 기본 프로필 적용
-        </button>
+        <h2 className="font-semibold">이 책의 문체 다시 학습</h2>
+        <div>
+          <button className="btn" disabled={!!busy} onClick={() => run("global")}>
+            설정의 기본 문체를 이 책에 적용
+          </button>
+          <p className="mt-1 text-xs text-stone-500">지금 이 책의 문체 프로필을 기본 문체로 바꿉니다(다른 책에는 영향 없음).</p>
+        </div>
         <div className="border-t border-stone-100 pt-4">
           <label className="mb-2 flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={useRef_} onChange={(e) => setUseRef(e.target.checked)} /> style reference 폴더 글 포함
+            <input type="checkbox" checked={useRef_} onChange={(e) => setUseRef(e.target.checked)} /> 설정에 올린 기본 학습 자료도 함께 분석
           </label>
           <label className="label">추가 샘플 붙여넣기</label>
           <textarea className="input min-h-[120px]" value={samples} onChange={(e) => setSamples(e.target.value)} placeholder="이 책에 가까운 문체의 글을 붙여 넣으세요" />
@@ -174,7 +204,8 @@ function StyleTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m:
   );
 }
 
-function LayoutTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m: string) => void }) {
+function LayoutTab({ p, reload, flash }: { p: any; reload: () => Promise<unknown>; flash: (m: string) => void }) {
+  const me = useMe();
   const [l, setL] = useState<LayoutSettings>(p.layout);
   const [cpp, setCpp] = useState<number>(p.charsPerPage);
   const [err, setErr] = useState("");
@@ -190,6 +221,7 @@ function LayoutTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m
       flash("저장했습니다.");
     } catch (e: any) {
       setErr(e.message);
+      toastError(e, "조판 설정을 저장하지 못했습니다: ");
     }
   };
   const num = (label: string, k: keyof typeof m, hint?: string) => (
@@ -238,11 +270,17 @@ function LayoutTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m
               <option value="formal">제1장 / 01</option>
             </select>
           </div>
-          <div>
-            <label className="label">1쪽당 글자 수(자동 보정)</label>
-            <input type="number" className="input" value={cpp} onChange={(e) => setCpp(Number(e.target.value))} />
-          </div>
         </div>
+        {me?.role === "superadmin" && (
+          <details className="rounded-lg border border-stone-200 px-4 py-2">
+            <summary className="cursor-pointer text-sm text-stone-600">고급 (관리자) — 1쪽당 글자 수 보정값</summary>
+            <div className="mt-3 max-w-xs pb-2">
+              <label className="label">1쪽당 글자 수(자동 보정)</label>
+              <input type="number" className="input" value={cpp} onChange={(e) => setCpp(Number(e.target.value))} />
+              <p className="mt-0.5 text-[11px] text-stone-400">집필 화면이 조판할 때마다 자동으로 맞춥니다. 분량(쪽 → 글자 수) 계산에 쓰이며 보통 고칠 필요가 없습니다.</p>
+            </div>
+          </details>
+        )}
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={l.chapterStartRight} onChange={(e) => setL({ ...l, chapterStartRight: e.target.checked })} />새 장은 오른쪽(홀수) 페이지에서 시작 — 필요하면 빈 쪽 자동 삽입
         </label>
@@ -298,14 +336,40 @@ function LayoutTab({ p, reload, flash }: { p: any; reload: () => void; flash: (m
   );
 }
 
+type Gloss = { id: string; term: string; preferred: string; note: string };
+
 function GlossaryTab({ id }: { id: string }) {
-  const [list, setList] = useState<{ id: string; term: string; preferred: string; note: string }[]>([]);
+  const [list, setList] = useState<Gloss[]>([]);
   const [f, setF] = useState({ term: "", preferred: "", note: "" });
-  const load = () => api(`/api/projects/${id}/glossary`).then(setList);
+  const [edit, setEdit] = useState<Gloss | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => api<Gloss[]>(`/api/projects/${id}/glossary`).then(setList, (e) => toastError(e, "용어집을 불러오지 못했습니다: "));
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+  const saveEdit = async () => {
+    if (!edit) return;
+    setBusy(true);
+    try {
+      await api(`/api/projects/${id}/glossary`, { method: "PATCH", json: { gid: edit.id, term: edit.term, preferred: edit.preferred, note: edit.note } });
+      setEdit(null);
+      await load();
+    } catch (e) {
+      toastError(e, "용어를 고치지 못했습니다: ");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (g: Gloss) => {
+    if (!(await confirmDialog(`용어 「${g.term} → ${g.preferred}」을(를) 지울까요?`, { okLabel: "지우기" }))) return;
+    try {
+      await api(`/api/projects/${id}/glossary?gid=${g.id}`, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      toastError(e, "용어를 지우지 못했습니다: ");
+    }
+  };
   return (
     <div className="card p-6">
       <p className="mb-4 text-sm text-stone-500">집필·교정·부분 수정 때 AI가 이 표기를 반드시 따릅니다. 예) 인공지능 → AI, 챗GPT → 챗GPT(ChatGPT)</p>
@@ -337,24 +401,48 @@ function GlossaryTab({ id }: { id: string }) {
           </tr>
         </thead>
         <tbody>
-          {list.map((g) => (
-            <tr key={g.id} className="border-t border-stone-100">
-              <td className="py-1.5">{g.term}</td>
-              <td className="font-semibold">{g.preferred}</td>
-              <td className="text-stone-500">{g.note}</td>
-              <td className="text-right">
-                <button
-                  className="btn-ghost text-xs text-red-600"
-                  onClick={async () => {
-                    await api(`/api/projects/${id}/glossary?gid=${g.id}`, { method: "DELETE" });
-                    load();
-                  }}
-                >
-                  삭제
-                </button>
-              </td>
-            </tr>
-          ))}
+          {list.map((g) =>
+            edit?.id === g.id ? (
+              <tr key={g.id} className="border-t border-stone-100 bg-amber-50/40">
+                <td className="py-1 pr-1">
+                  <input className="input py-1 text-sm" value={edit.term} onChange={(e) => setEdit({ ...edit, term: e.target.value })} />
+                </td>
+                <td className="pr-1">
+                  <input className="input py-1 text-sm" value={edit.preferred} onChange={(e) => setEdit({ ...edit, preferred: e.target.value })} />
+                </td>
+                <td className="pr-1">
+                  <input
+                    className="input py-1 text-sm"
+                    value={edit.note}
+                    onChange={(e) => setEdit({ ...edit, note: e.target.value })}
+                    onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && saveEdit()}
+                  />
+                </td>
+                <td className="whitespace-nowrap text-right">
+                  <button className="btn-ghost text-xs text-emerald-700" disabled={busy || !edit.term.trim() || !edit.preferred.trim()} onClick={saveEdit}>
+                    저장
+                  </button>
+                  <button className="btn-ghost text-xs" disabled={busy} onClick={() => setEdit(null)}>
+                    취소
+                  </button>
+                </td>
+              </tr>
+            ) : (
+              <tr key={g.id} className="border-t border-stone-100">
+                <td className="py-1.5">{g.term}</td>
+                <td className="font-semibold">{g.preferred}</td>
+                <td className="text-stone-500">{g.note}</td>
+                <td className="whitespace-nowrap text-right">
+                  <button className="btn-ghost text-xs" onClick={() => setEdit({ ...g })}>
+                    고치기
+                  </button>
+                  <button className="btn-ghost text-xs text-red-600" onClick={() => remove(g)}>
+                    삭제
+                  </button>
+                </td>
+              </tr>
+            ),
+          )}
           {!list.length && (
             <tr>
               <td colSpan={4} className="py-6 text-center text-stone-400">
@@ -379,7 +467,7 @@ const LEARN_KEYS: [keyof Learned & string, string][] = [
 ];
 
 /** 작가 수정에서 배우기 — AI 초안 원본과 작가가 고친 지금 원고를 비교해 문체 프로필에 더할 규칙을 제안 */
-function EditLearnCard({ p, reload, flash }: { p: any; reload: () => void; flash: (m: string) => void }) {
+function EditLearnCard({ p, reload, flash }: { p: any; reload: () => Promise<unknown>; flash: (m: string) => void }) {
   const [stats, setStats] = useState<EditStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [learned, setLearned] = useState<Learned | null>(null);
@@ -413,10 +501,14 @@ function EditLearnCard({ p, reload, flash }: { p: any; reload: () => void; flash
       // 발췌는 프롬프트에 앞 3개만 들어가므로 새 것을 앞에 둔다
       next[k] = k === "sampleExcerpts" ? [...add, ...base.filter((x) => !add.includes(x))].slice(0, 6) : merged.slice(-20);
     }
-    await api(`/api/projects/${p.id}`, { method: "PATCH", json: { styleProfile: next } });
-    setLearned(null);
-    await reload();
-    flash("문체 프로필에 반영했습니다. 다음 집필부터 적용됩니다.");
+    try {
+      await api(`/api/projects/${p.id}`, { method: "PATCH", json: { styleProfile: next } });
+      setLearned(null);
+      await reload();
+      flash("이 책의 문체 프로필에 반영했습니다. 다음 집필부터 적용됩니다.");
+    } catch (e) {
+      toastError(e, "문체 프로필에 반영하지 못했습니다: ");
+    }
   };
 
   const top = stats?.sections.filter((s) => s.rate > 0).sort((a, b) => b.rate - a.rate).slice(0, 5) ?? [];

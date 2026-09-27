@@ -145,14 +145,3 @@ model AppSetting {
   value     String
   updatedAt DateTime @updatedAt
 }
-
-/**
- * 로그인 허용 사용자 (Supabase Auth 계정과 이메일로 연결). role: superadmin | editor
- */
-model AppUser {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  role      String   @default("editor")
-  authId    String?  @unique
-  createdAt DateTime @default(now())
-}

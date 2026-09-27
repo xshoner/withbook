@@ -7,8 +7,9 @@ import FindPanel from "./FindPanel";
 import Menu from "./Menu";
 import ToolGroup from "./ToolGroup";
 
-export type RewriteAction = "polish" | "expand" | "shorten" | "tone" | "example";
-export const REWRITE_LABEL: Record<RewriteAction, string> = { polish: "다듬기", expand: "늘리기", shorten: "줄이기", tone: "톤 바꾸기", example: "예시 추가" };
+export type RewriteAction = "polish" | "expand" | "shorten" | "tone" | "example" | "custom";
+/** 선택 AI 메뉴·말풍선 순서 — custom(직접 지시)은 지시를 물은 뒤 보낸다 */
+export const REWRITE_LABEL: Record<RewriteAction, string> = { polish: "다듬기", expand: "늘리기", shorten: "줄이기", tone: "톤 바꾸기", example: "예시 추가", custom: "직접 지시…" };
 
 type Props = {
   editor: Editor;
@@ -69,7 +70,21 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
         {tb("•", () => editor.chain().focus().toggleBulletList().run(), active.bulletList, "글머리 목록")}
         {tb("1.", () => editor.chain().focus().toggleOrderedList().run(), active.orderedList, "번호 목록")}
         {tb("―", () => editor.chain().focus().setHorizontalRule().run(), false, "구분선")}
-        {tb("🖼", onPickImage, false, "이미지 넣기 (끌어다 놓거나 붙여 넣어도 됩니다)")}
+        <button
+          title={busyReason || "그림 넣기 — 파일을 고르거나, 본문에 끌어다 놓거나 붙여 넣어도 됩니다"}
+          aria-label="그림 넣기"
+          disabled={!!busyReason}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onPickImage}
+          className="flex items-center gap-1 px-1.5 py-1 text-xs text-stone-700 hover:bg-stone-100 disabled:opacity-40"
+        >
+          <svg aria-hidden viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
+            <rect x="2.5" y="3.5" width="15" height="13" rx="1.5" />
+            <circle cx="7" cy="8" r="1.5" />
+            <path d="M3 15l4.5-4.5 3 3 2.5-2.5L17 15" />
+          </svg>
+          그림
+        </button>
         {tb("↶", () => editor.chain().focus().undo().run(), false, "실행 취소 (Ctrl+Z)")}
         {tb("↷", () => editor.chain().focus().redo().run(), false, "다시 실행 (Ctrl+Y)")}
       </ToolGroup>
@@ -90,7 +105,7 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
         label={rewriteBusy ? `✦ ${REWRITE_LABEL[rewriteBusy as RewriteAction] ?? ""} 중…` : "✦ 선택 AI ▾"}
         tone="text-violet-800"
         disabled={!!busyReason || selEmpty}
-        title={selEmpty ? "본문을 드래그해 선택하면 다듬기·늘리기·줄이기·톤·예시를 쓸 수 있습니다" : busyReason || "선택한 부분을 AI로 고칩니다 (결과를 비교한 뒤 적용)"}
+        title={selEmpty ? "본문을 드래그해 선택하면 다듬기·늘리기·줄이기·톤·예시·직접 지시를 쓸 수 있습니다" : busyReason || "선택한 부분을 AI로 고칩니다 (결과를 비교한 뒤 적용)"}
       >
         {(Object.keys(REWRITE_LABEL) as RewriteAction[]).map((a) => (
           <button key={a} className="block w-full px-3 py-1.5 text-left text-xs hover:bg-violet-50" onMouseDown={(e) => e.preventDefault()} onClick={() => onRewrite(a)}>

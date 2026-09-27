@@ -1,5 +1,7 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import {
+  BARCODE_NOTE,
+  barcodeRect,
   type CoverDesign,
   type CoverEl,
   type CoverLayout,
@@ -16,7 +18,7 @@ import {
   regionBox,
 } from "@/lib/cover/spec";
 
-export type Guides = { bleed: boolean; fold: boolean; safe: boolean; labels: boolean };
+export type Guides = { bleed: boolean; fold: boolean; safe: boolean; labels: boolean; barcode?: boolean };
 
 type Props = {
   design: CoverDesign;
@@ -175,6 +177,20 @@ function GuideLayer({ l, g }: { l: CoverLayout; g: Guides }) {
           if (p.w <= inset * 2) return null;
           return <div key={id} style={{ position: "absolute", left: mm(p.x + inset), top: mm(p.y + SAFE_INSET), width: mm(p.w - inset * 2), height: mm(p.h - SAFE_INSET * 2), border: `${HAIR} dashed rgba(16, 185, 129, .8)` }} />;
         })}
+      {g.barcode && l.panels.back.w > 0 && (() => {
+        const r = barcodeRect(l);
+        const p = l.panels.back;
+        return (
+          <div
+            title={BARCODE_NOTE}
+            style={{ position: "absolute", left: mm(p.x + r.x), top: mm(p.y + r.y), width: mm(r.w), height: mm(r.h), border: `${HAIR} dashed rgba(124, 58, 237, .9)`, background: "rgba(124, 58, 237, .08)", display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", fontSize: "calc(10px / var(--z, 1))", color: "rgba(91, 33, 182, .85)", fontFamily: "sans-serif", lineHeight: 1.3 }}
+          >
+            ISBN 바코드
+            <br />
+            (예상 자리)
+          </div>
+        );
+      })()}
       {g.labels &&
         ids.map((id) => {
           const p = l.panels[id];

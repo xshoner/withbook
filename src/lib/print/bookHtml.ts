@@ -150,7 +150,7 @@ li p { text-indent: 0; }
 hr { border: 0; text-align: center; margin: 4mm 0; }
 hr::after { content: "* * *"; font-size: 9pt; }
 .fig { margin: 4mm 0; text-align: center; break-inside: avoid; }
-.fig img { max-width: 100%; max-height: ${figH("fit", false)}mm; display: block; margin: 0 auto; }
+.fig img { max-width: 100%; max-height: ${figH("fit", false)}mm; display: block; margin: 0 auto; object-fit: contain; }
 .fig.cap img { max-height: ${figH("fit", true)}mm; }
 .fig.fit img { width: 100%; }
 .fig figcaption { font-size: 8.5pt; line-height: 1.4; margin-top: 2mm; text-align: center; }
@@ -283,7 +283,7 @@ window.__afterPaged = function () {
   const imgFail = window.__IMG_FAIL || [];
   if (C.mode === 'print') {
     const errs = [];
-    if (!fontOk) errs.push('KoPub 글꼴(' + [...new Set(fontFail)].join(', ') + ')을 불러오지 못해 대체 글꼴로 조판되었습니다. 글꼴 파일(public/fonts 또는 저장소 fonts 버킷)을 확인한 뒤 다시 출력하세요.');
+    if (!fontOk) errs.push('KoPub 글꼴(' + [...new Set(fontFail)].join(', ') + ')을 불러오지 못해 대체 글꼴로 조판되었습니다. 잠시 후 다시 출력하고, 계속되면 관리자에게 글꼴 저장소(fonts) 설정을 확인해 달라고 요청하세요.');
     if (imgFail.length) errs.push('이미지 ' + imgFail.length + '개를 불러오지 못했습니다: ' + imgFail.slice(0, 5).join(', ') + (imgFail.length > 5 ? ' 외' : '') + '. 원고에서 그 그림을 다시 넣거나 지운 뒤 다시 출력하세요.');
     if (errs.length) window.__PAGED_ERROR = errs.join(' ');
   }

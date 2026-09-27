@@ -72,7 +72,7 @@ async function tasksHarness() {
     const findSection = id => state.book.chapters.flatMap(c => c.sections).find(s => s.id === id);
     export const prisma = {
       section: {
-        findUnique: async args => { const s = findSection(args.where.id); return s ? { ...s, chapter: { projectId: state.book.project.id } } : null; },
+        findUnique: async args => { const s = findSection(args.where.id); return s ? { ...s, chapter: { projectId: state.book.project.id, project: state.book.project } } : null; },
         updateMany: async args => { state.updates.push(args); const s = findSection(args.where.id); if (s?.content === args.where.content) { Object.assign(s, args.data); return {count: 1}; } return {count: 0}; },
       },
       chapter: {
@@ -91,15 +91,17 @@ async function tasksHarness() {
     export const buildMessages = async (name, vars) => ({ messages: [{ role: 'user', content: JSON.stringify({ name, vars, template: state.template }) }], instructionIncluded: false });
     export const loadAiSettings = async () => state.settings;
     export const getSetting = async key => state.store.get(key) ?? null;
+    export const loadSectionReferences = async id => state.refs?.[id] ?? { block: '', ids: [] };
     export const setSetting = async (key, value) => { state.store.set(key, value); };
     export const extractJson = JSON.parse;
     export const chat = async opts => {
       state.calls.push(opts.purpose);
+      state.lastMessages = opts.messages;
       if (state.beforeChat) await state.beforeChat(opts);
       const text = opts.purpose === 'section_outline' ? JSON.stringify({ parts: [{ heading: 'Part', points: ['point'], sketchItems: [], chars: 5000 }] }) : 'summary';
       return { text, usage: {} };
     };
-    export async function* chatStream(opts) { state.calls.push(opts.purpose); yield 'draft body'; return {}; }
+    export async function* chatStream(opts) { state.calls.push(opts.purpose); (state.streamed ??= []).push(opts.messages); yield 'draft body'; return {}; }
   `);
   let source = await readFile(new URL('../src/lib/ai/tasks.ts', import.meta.url), 'utf8');
   source += '\nexport { previousSummaries, preparedOutline };';
@@ -107,7 +109,7 @@ async function tasksHarness() {
   js = js.replace('import "server-only";', '').replace(/from "([^"]+)"/g, (whole, path) => {
     if (path === 'zod') return `from ${JSON.stringify(import.meta.resolve('zod'))}`;
     if (path.startsWith('node:')) return whole;
-    if (['../doc/doc', './single-flight', './recent-context', './write-timing'].includes(path)) {
+    if (['../doc/doc', './single-flight', './recent-context', './write-timing', './outline-text'].includes(path)) {
       return `from ${JSON.stringify(new URL(`../src/lib/ai/${path}.ts`, import.meta.url).href)}`;
     }
     return `from ${JSON.stringify(mockUrl)}`;
@@ -210,4 +212,70 @@ test('writing reads manuscript bodies only for the current, previous and summari
   assert.deepEqual(state.calls, ['section_write']);
   assert.deepEqual([...state.filled].sort(), ['current', 'recent']);
   assert.equal(state.book.chapters[0].sections[0].content, undefined);
+});
+
+const varsOf = messages => JSON.parse(messages[0].content).vars;
+const editedParts = [
+  { heading: '첫 파트', points: ['도입'], sketchItems: [], chars: 1500 },
+  { heading: '둘째 파트', points: ['전개'], sketchItems: ['메모'], chars: 1500 },
+];
+
+test('an author-edited outline is used verbatim and never replaced by generation or cache refresh', async () => {
+  const { tasks, state } = await tasksHarness();
+  state.store.clear(); state.calls = []; state.streamed = []; state.book = book([section('current')]);
+  state.store.set('outline-edit:current', { outline: '## 첫 파트', parts: editedParts, inputHash: 'h', editedAt: 'now' });
+  const prep = await tasks.prepareSection('current', { targetPages: 8, mode: 'overwrite' });
+  assert.deepEqual(prep, { ready: true, cached: true });
+  const events = [];
+  for await (const e of tasks.writeSection('current', { targetPages: 8, mode: 'overwrite', extraInstruction: '' })) events.push(e);
+  assert.deepEqual(state.calls, ['section_write_part', 'section_write_part']);
+  const text = events.filter(e => e.t === 'delta').map(e => e.v).join('');
+  assert.match(text, /## 첫 파트[\s\S]*## 둘째 파트/);
+  assert.equal(state.store.has('ai:outline-cache:current'), false);
+  assert.deepEqual(state.store.get('outline-edit:current').parts, editedParts);
+  // 짧은 절도 고친 개요가 있으면 그 개요대로 나눠 쓴다
+  state.calls = [];
+  for await (const _ of tasks.writeSection('current', { targetPages: 3, mode: 'newVersion', extraInstruction: '' }));
+  assert.deepEqual(state.calls, ['section_write_part', 'section_write_part']);
+  // 이어쓰기는 기존 본문 뒤라 고친 개요를 쓰지 않는다
+  state.calls = [];
+  for await (const _ of tasks.writeSection('current', { targetPages: 3, mode: 'continue', extraInstruction: '' }));
+  assert.deepEqual(state.calls, ['section_write']);
+});
+
+test('generating an outline on demand ignores a matching cache and records what it was made from', async () => {
+  const { tasks, state } = await tasksHarness();
+  state.store.clear(); state.calls = []; state.book = book([section('current')]);
+  await tasks.prepareSection('current', { targetPages: 8, mode: 'overwrite' });
+  assert.deepEqual(state.calls, ['section_outline']);
+  const r = await tasks.generateOutline('current', { targetPages: 8, sketch: 'unsaved notes' });
+  assert.deepEqual(state.calls, ['section_outline', 'section_outline']);
+  assert.equal(r.parts[0].heading, 'Part');
+  assert.equal(varsOf(state.lastMessages).sketch, 'unsaved notes');
+  assert.equal(state.store.get('ai:outline-cache:current').inputHash, r.inputHash);
+});
+
+test('section references reach the write prompt and change the outline input hash', async () => {
+  const { tasks, state } = await tasksHarness();
+  state.store.clear(); state.calls = []; state.streamed = []; state.book = book([section('current')]);
+  const before = await tasks.generateOutline('current', { targetPages: 8 });
+  const block = '### 자료 1: 보고서\n근거 문장';
+  state.refs = { current: { block, ids: ['r1'] } };
+  try {
+    const after = await tasks.generateOutline('current', { targetPages: 8 });
+    assert.notEqual(before.inputHash, after.inputHash);
+    assert.equal(varsOf(state.lastMessages).sectionReferences, block);
+    for await (const _ of tasks.writeSection('current', { targetPages: 3, mode: 'overwrite', extraInstruction: '' }));
+    assert.equal(varsOf(state.streamed.at(-1)).sectionReferences, block);
+  } finally { state.refs = undefined; }
+});
+
+test('custom rewrite sends the author instruction in the user variables', async () => {
+  const { tasks, state } = await tasksHarness();
+  state.calls = []; state.book = book([section('current')]);
+  await tasks.rewriteSelection('current', { action: 'custom', before: '앞', selection: '고칠 문장', after: '뒤', instruction: '더 짧게, 예시는 빼고' });
+  assert.deepEqual(state.calls, ['rewrite_custom']);
+  assert.equal(varsOf(state.lastMessages).customInstruction, '더 짧게, 예시는 빼고');
+  await tasks.rewriteSelection('current', { action: 'polish', before: '', selection: '문장', after: '', instruction: '무시' });
+  assert.equal(varsOf(state.lastMessages).customInstruction, '');
 });

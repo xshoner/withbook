@@ -14,6 +14,9 @@ public/fonts/*.otf
 public/fonts/*.woff
 public/fonts/*.woff2
 
+# 참고 자료 (표지 가이드 등 — 저장소에 올리지 않는다)
+cover guide.jpg
+
 # 빌드·테스트 산출물
 node_modules/
 .next/

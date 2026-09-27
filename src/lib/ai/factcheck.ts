@@ -49,7 +49,7 @@ export async function factCheckMarker(projectId: string, sectionId: string, targ
     sentence: found.sentence,
   });
   const r = await chatJson(factSchema, { purpose: "factcheck", projectId, messages, temperature: null, maxTokens: 16000, webSearch: true });
-  if (!r.value) throw Object.assign(new Error("팩트체크 응답을 해석하지 못했습니다. 다시 시도하세요."), { expose: true, httpStatus: 502 });
+  if (!r.value) throw Object.assign(new Error("사실 확인 응답을 해석하지 못했습니다. 다시 시도하세요."), { expose: true, httpStatus: 502 });
   const v = r.value;
   const clean = withoutMarkers(found.sentence);
   const revised = withoutMarkers(v.revised);

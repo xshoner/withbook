@@ -37,3 +37,26 @@ export async function savePageCount(projectId: string, total: unknown, source: P
   await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
   return true;
 }
+
+/**
+ * 마지막으로 만든 책 전체 PDF의 점검 결과 — 제출 전 점검(판형·KoPub 글꼴 임베딩·짝수 쪽)이 쓴다. AppSetting `pdf-check:{책 id}`
+ */
+export type SavedPdfCheck = { pages: number; widthMm: number; heightMm: number; sizeOk: boolean; fontsEmbedded: string[]; kopubEmbedded: boolean; size: "bleed" | "trim"; padEven: boolean; at: string };
+export const pdfCheckKey = (projectId: string) => `pdf-check:${projectId}`;
+
+export async function savePdfCheck(projectId: string, check: Omit<SavedPdfCheck, "at">) {
+  const key = pdfCheckKey(projectId);
+  const value = JSON.stringify({ ...check, fontsEmbedded: check.fontsEmbedded.slice(0, 20), at: new Date().toISOString() } satisfies SavedPdfCheck);
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+}
+
+export async function loadPdfCheck(projectId: string): Promise<SavedPdfCheck | null> {
+  const row = await prisma.appSetting.findUnique({ where: { key: pdfCheckKey(projectId) } }).catch(() => null);
+  if (!row) return null;
+  try {
+    const v = JSON.parse(row.value) as SavedPdfCheck;
+    return cleanTotal(v?.pages) ? v : null;
+  } catch {
+    return null;
+  }
+}

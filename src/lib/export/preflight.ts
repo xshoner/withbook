@@ -12,7 +12,7 @@ export async function preflight(book: Book, size: "bleed" | "trim"): Promise<Iss
   const issues: Issue[] = [];
   for (const f of ["KoPubBatangLight.ttf", "KoPubBatangBold.ttf", "KoPubDotumMedium.ttf"]) {
     if (!(await fontAvailable(f)))
-      issues.push({ level: "error", message: `글꼴 파일 ${f}을(를) 찾지 못했습니다(로컬 public/fonts 또는 저장소 fonts 버킷). PDF에 KoPub 글꼴을 넣을 수 없습니다.` });
+      issues.push({ level: "error", message: `글꼴 파일 ${f}을(를) 찾지 못해 PDF에 KoPub 글꼴을 넣을 수 없습니다. 관리자에게 글꼴 저장소(fonts) 설정을 확인해 달라고 요청하세요.` });
   }
   for (const e of validateMargins(book.layout.margins)) issues.push({ level: "error", message: e });
 

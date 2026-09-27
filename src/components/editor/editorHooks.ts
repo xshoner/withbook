@@ -28,7 +28,7 @@ export function useEditLock(
     : s.proofBusy
       ? "교정·교열 중입니다"
       : s.autoChecking
-        ? "전체 자동 집필이 이 절을 점검하는 중입니다"
+        ? "자동 집필이 이 절을 점검하는 중입니다"
         : s.rewrite
           ? "선택 영역 AI 결과를 먼저 적용하거나 취소하세요"
           : s.footnote

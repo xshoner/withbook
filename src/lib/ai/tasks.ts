@@ -13,6 +13,8 @@ import { collectRecentContext } from "./recent-context";
 import { WriteClock, type WriteTiming } from "./write-timing";
 import { getSetting, setSetting } from "../app-settings";
 import { loadAiSettings } from "./settings";
+import { loadSectionReferences } from "../section-refs-store";
+import { editedOutlineKey, outlineCacheKey, outlineInputHash, type EditedOutline, type OutlinePart } from "./outline-text";
 
 /* ---------------- 공통 텍스트 조립 ---------------- */
 
@@ -59,11 +61,11 @@ function signaturePhrases(raw: string | null | undefined): string {
 
 type GlossaryRow = { term: string; preferred: string; note: string };
 
-function glossaryText(glossary: GlossaryRow[]) {
+export function glossaryText(glossary: GlossaryRow[]) {
   return glossary.map((g) => `- ${g.term} → ${g.preferred}${g.note ? ` (${g.note})` : ""}`).join("\n");
 }
 
-function chapterName(c: { label: string; kind: string }) {
+export function chapterName(c: { label: string; kind: string }) {
   return c.label || (c.kind === "front" ? "앞붙이" : "뒷붙이");
 }
 
@@ -163,7 +165,7 @@ async function sectionInBook(sectionId: string) {
   const sec = await prisma.section.findUnique({ where: { id: sectionId }, select: { chapter: { select: { projectId: true } } } });
   if (!sec) throw new Error("절을 찾을 수 없습니다.");
   const book = await loadBookOutline(sec.chapter.projectId);
-  if (!book) throw new Error("프로젝트를 찾을 수 없습니다.");
+  if (!book) throw new Error("책을 찾을 수 없습니다.");
   return book;
 }
 
@@ -219,7 +221,7 @@ export async function designToc(
   opts: { regenerate?: boolean; chapterIndex?: number; previousConcept?: string } = {},
 ): Promise<{ design?: TocDesign; raw: string; error?: string }> {
   const book = await loadBookOutline(projectId);
-  if (!book) throw new Error("프로젝트를 찾을 수 없습니다.");
+  if (!book) throw new Error("책을 찾을 수 없습니다.");
   const { messages } = await buildMessages("toc-design", {
     ...bookVars(book),
     regenerate: opts.regenerate,
@@ -299,7 +301,7 @@ export async function summarizeSection(sectionId: string) {
 
 const pendingChapterSummary = singleFlight<string>();
 type ChapterTarget = { id: string; label: string; kind: string; title: string; summary: string | null; summaryHash: string | null; sections: SummaryTarget[] };
-async function ensureChapterSummary(projectId: string, c: ChapterTarget): Promise<string> {
+export async function ensureChapterSummary(projectId: string, c: ChapterTarget): Promise<string> {
   await fillContent(c.sections); // 장의 절 본문을 한 번에 읽는다(요약이 최신인지 확인용)
   const sums = await mapLimit(c.sections, 3, (s) => ensureSectionSummary(projectId, c, s));
   const parts = c.sections.map((s, i) => (sums[i] ? `${s.label || "-"} ${s.title}: ${sums[i]}` : "")).filter(Boolean);
@@ -397,41 +399,73 @@ const outlineSchema = z.object({
 
 type OutlineParts = z.infer<typeof outlineSchema>["parts"];
 const pendingOutline = singleFlight<{ parts: OutlineParts; cached: boolean }>();
-async function preparedOutline(sectionId: string, projectId: string, vars: Record<string, unknown>) {
+/**
+ * 긴 절 개요 — 같은 프롬프트·모델 설정으로 만든 개요가 24시간 안에 있으면 다시 쓴다(ai:outline-cache:{절 id}).
+ * force: 캐시를 보지 않고 새로 만든다(작가가 [개요 다시 만들기]를 누른 경우). inputHash: 무엇을 보고 만들었는지(오래된 개요 표시용)
+ */
+async function preparedOutline(sectionId: string, projectId: string, vars: Record<string, unknown>, opts: { force?: boolean; inputHash?: string } = {}) {
   const om = await buildMessages("section-outline", vars);
   const { provider, baseUrl, model, reasoningEffort, maxOutputTokens } = await loadAiSettings("outline");
   // Include all rendered inputs and generation settings, but no credentials.
   const hash = createHash("sha256").update(JSON.stringify({ messages: om.messages, provider, baseUrl, model, reasoningEffort, maxOutputTokens })).digest("hex");
-  const key = `ai:outline-cache:${sectionId}`;
+  const key = outlineCacheKey(sectionId);
   const read = async () => {
     const saved = await getSetting<{ hash: string; expires: number; parts: unknown }>(key);
     const parsed = outlineSchema.safeParse({ parts: saved?.parts });
     return saved?.hash === hash && saved.expires > Date.now() && parsed.success ? parsed.data.parts : null;
   };
-  const saved = await read();
-  if (saved) return { parts: saved, cached: true };
-  return pendingOutline(`${key}:${hash}`, async () => {
-    const existing = await read();
-    if (existing) return { parts: existing, cached: true };
+  if (!opts.force) {
+    const saved = await read();
+    if (saved) return { parts: saved, cached: true };
+  }
+  return pendingOutline(`${key}:${hash}${opts.force ? ":force" : ""}`, async () => {
+    if (!opts.force) {
+      const existing = await read();
+      if (existing) return { parts: existing, cached: true };
+    }
     const outline = await chatJson(outlineSchema, {
       purpose: "section_outline", projectId, messages: om.messages,
       temperature: 0.5, maxTokens: 8000, instructionIncluded: om.instructionIncluded,
     });
     const parts = outline.value?.parts;
     if (!parts) return { parts: [{ heading: "", points: [], sketchItems: [], chars: Number(vars.targetChars) }], cached: false };
-    await setSetting(key, { hash, parts, expires: Date.now() + 24 * 60 * 60_000 }).catch(() => {
+    await setSetting(key, { hash, parts, expires: Date.now() + 24 * 60 * 60_000, ...(opts.inputHash ? { inputHash: opts.inputHash } : {}) }).catch(() => {
       console.warn("[outline-cache] 개요 캐시 저장 실패");
     });
     return { parts, cached: false };
   });
 }
 
+/** 작가가 고친 개요 — 있으면 새로 쓰기·새 버전 집필이 이 개요를 그대로 쓴다(개요를 만들지도, 캐시로 덮어쓰지도 않는다) */
+export async function loadEditedOutline(sectionId: string): Promise<EditedOutline | null> {
+  const v = await getSetting<EditedOutline>(editedOutlineKey(sectionId), { fresh: true });
+  const parsed = outlineSchema.safeParse({ parts: v?.parts });
+  return v && parsed.success ? { ...v, parts: parsed.data.parts } : null;
+}
+
 /** Prepares only the outline, never a draft or a version of the manuscript. */
 export async function prepareSection(sectionId: string, opts: WriteOptions) {
   if (opts.targetPages <= 5) return { ready: false };
-  const { projectId, baseVars } = await writeContext(sectionId, opts, new WriteClock());
-  const result = await preparedOutline(sectionId, projectId, baseVars);
+  if (opts.mode !== "continue" && (await loadEditedOutline(sectionId))) return { ready: true, cached: true };
+  const { projectId, baseVars, inputHash } = await writeContext(sectionId, opts, new WriteClock());
+  const result = await preparedOutline(sectionId, projectId, baseVars, { inputHash });
   return { ready: true, cached: result.cached };
+}
+
+/**
+ * 지금 개요를 새로 만든다 (POST /api/sections/[id]/outline) — 캐시를 보지 않는다.
+ * sketch: 아직 저장하지 않은 스케치로 만들 때. targetPages가 없으면 절에 저장된 목표 쪽수
+ */
+export async function generateOutline(sectionId: string, input: { sketch?: string; targetPages?: number; signal?: AbortSignal } = {}): Promise<{ parts: OutlinePart[]; inputHash: string }> {
+  let targetPages = Number(input.targetPages);
+  if (!Number.isFinite(targetPages) || targetPages <= 0) {
+    const sec = await prisma.section.findUnique({ where: { id: sectionId }, select: { targetPages: true } });
+    targetPages = sec?.targetPages || 3;
+  }
+  const opts: WriteOptions = { targetPages, mode: "overwrite", signal: input.signal };
+  const { projectId, baseVars, inputHash } = await writeContext(sectionId, opts, new WriteClock(), { sketch: input.sketch });
+  const r = await preparedOutline(sectionId, projectId, baseVars, { force: true, inputHash });
+  return { parts: r.parts, inputHash };
 }
 
 /** 새 파트를 시작할 수 있는 마지막 시점 — AI 호출 예산(요청 시작 후 240초, client.ts) 안에 파트 하나(보통 1분 안팎)를 끝낼 수 있게 */
@@ -450,7 +484,7 @@ async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undef
   if (r.value?.truncated) yield { t: "status", v: "truncated" };
 }
 
-async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteClock) {
+async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteClock, override: { sketch?: string } = {}) {
   const loadStarted = Date.now();
   const book = await sectionInBook(sectionId);
   const projectId = book.project.id;
@@ -464,6 +498,8 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
   const next = flat[idx + 1];
   // 본문은 이 절과 앞 절만 읽는다 (앞 내용 요약에 필요한 절은 previousSummaries가 가까운 순으로 읽는다)
   await fillContent(prev ? [section, prev.section] : [section]);
+  const refs = await loadSectionReferences(sectionId);
+  const sketch = typeof override.sketch === "string" ? override.sketch : section.sketch;
 
   clock.loadMs = Date.now() - loadStarted;
   const summaryStarted = Date.now();
@@ -483,7 +519,8 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
     previousSummaries: prevSummaries,
     previousTail: prev ? tailOf(prev.section.content ?? "") || "(앞 절 미작성)" : "(책의 첫 절)",
     nextGist: next ? `${next.section.title}: ${next.section.gist}` : "(마지막 절)",
-    sketch: section.sketch,
+    sketch,
+    sectionReferences: refs.block,
     targetPages: opts.targetPages,
     targetChars,
     minChars: Math.round(targetChars * 0.9),
@@ -494,7 +531,8 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
     mode_continue: opts.mode === "continue",
     existingContent: opts.mode === "continue" ? docToMarkdown(existing).md.slice(-6000) : "",
   };
-  return { projectId, baseVars, targetChars };
+  const inputHash = outlineInputHash({ sketch, targetPages: opts.targetPages, title: section.title, gist: section.gist, refIds: refs.ids });
+  return { projectId, baseVars, targetChars, inputHash };
 }
 
 export async function* writeSection(sectionId: string, opts: WriteOptions): AsyncGenerator<WriteEvent> {
@@ -503,8 +541,10 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
   let result = "aborted";
   try {
     yield { t: "status", v: "앞 내용 정리 중…" };
-    const { projectId, baseVars, targetChars } = await writeContext(sectionId, opts, clock);
+    const { projectId, baseVars, targetChars, inputHash } = await writeContext(sectionId, opts, clock);
     opts.signal?.throwIfAborted();
+    // 작가가 고친 개요 — 새로 쓰기·새 버전이면 분량과 상관없이 그 개요대로 파트를 나눠 쓴다(이어쓰기는 기존 본문 뒤라 쓰지 않는다)
+    const edited = opts.mode !== "continue" && !opts.resume ? await loadEditedOutline(sectionId) : null;
     let total = 0;
     const count = (t: string) => { clock.text(); total += t.length; };
     const track = async function* (events: AsyncGenerator<WriteEvent>) {
@@ -514,7 +554,7 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
       }
     };
 
-    if (opts.targetPages <= 5) {
+    if (opts.targetPages <= 5 && !edited) {
       yield { t: "status", v: "구상 중… 문체와 앞뒤 흐름을 살펴보고 있습니다" };
       const { messages, instructionIncluded } = await buildMessages("section-write", baseVars);
       clock.startGeneration();
@@ -524,10 +564,14 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
       ));
     } else {
       // 긴 절: 개요 → 파트별 생성
-      yield { t: "status", v: "긴 절의 집필 개요 준비 중…" };
+      yield { t: "status", v: edited ? "작가가 고친 개요로 집필 준비 중…" : "긴 절의 집필 개요 준비 중…" };
       const outlineStarted = Date.now();
       // 이어 쓰기면 처음 요청의 개요를 그대로 쓴다 (같은 개요·같은 파트 프롬프트 → 한 번에 쓸 때와 같은 결과)
-      const outline = opts.resume ? { parts: opts.resume.parts, cached: true } : await preparedOutline(sectionId, projectId, baseVars);
+      const outline = opts.resume
+        ? { parts: opts.resume.parts, cached: true }
+        : edited
+          ? { parts: edited.parts, cached: true }
+          : await preparedOutline(sectionId, projectId, baseVars, { inputHash });
       clock.outlineMs = Date.now() - outlineStarted;
       clock.outlineCached = outline.cached;
       const parts = outline.parts;
@@ -682,7 +726,7 @@ export async function proofread(sectionId: string, contentJson: string, level: "
 
 export async function rewriteSelection(
   sectionId: string,
-  input: { action: string; before: string; selection: string; after: string; toneTarget?: string },
+  input: { action: string; before: string; selection: string; after: string; toneTarget?: string; instruction?: string },
 ) {
   const { project } = await sectionLite(sectionId);
   const ratio = input.action === "expand" ? 1.5 : input.action === "shorten" ? 0.6 : 1;
@@ -692,6 +736,8 @@ export async function rewriteSelection(
     ratio,
     toneTarget: input.toneTarget ?? "",
     action: input.action,
+    // 작가가 직접 쓴 지시(custom) — system이 아니라 user 메시지에 넣어 system 프롬프트 캐시를 지킨다
+    customInstruction: input.action === "custom" ? (input.instruction ?? "") : "",
     before: input.before.slice(-800),
     selection: input.selection,
     after: input.after.slice(0, 800),
@@ -898,7 +944,7 @@ export type StyleLearning = z.infer<typeof learnSchema>;
 /** 작가가 많이 고친 문장 짝을 모아 문체 프로필에 더할 규칙을 제안한다 (반영은 작가가 확인한 뒤) */
 export async function learnFromEdits(projectId: string): Promise<StyleLearning & { pairs: number; editRate: number | null }> {
   const project = await prisma.project.findUnique({ where: { id: projectId }, select: { styleProfile: true } });
-  if (!project) throw new Error("프로젝트를 찾을 수 없습니다.");
+  if (!project) throw new Error("책을 찾을 수 없습니다.");
   const stats = await projectEditStats(projectId);
   const pairs = pickLearningPairs(stats.rows.filter((r) => r.rate >= 5).flatMap((r) => r.pairs));
   if (pairs.length < 3) throw new Error("배울 만한 수정이 아직 적습니다. AI 초안을 직접 더 고친 뒤 다시 시도하세요.");

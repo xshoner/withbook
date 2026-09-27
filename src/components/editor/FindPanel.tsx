@@ -1,11 +1,12 @@
 "use client";
 
 import type { Editor } from "@tiptap/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { KEYS } from "./shortcuts";
 
 type Range = { from: number; to: number };
 
-/** 이 절에서 찾기·바꾸기 + 책 전체 찾기 창 열기 */
+/** 이 절에서 찾기·바꾸기 + 책 전체 찾기 창 열기 — Ctrl+F 찾기 칸, Ctrl+H 바꾸기 칸 (본문에서 고른 짧은 글이 있으면 검색어로 채운다) */
 export default function FindPanel({ editor, onBookSearch, disabled }: { editor: Editor | null; onBookSearch: (query: string) => void; disabled?: boolean }) {
   const [query, setQuery] = useState("");
   const [replacement, setReplacement] = useState("");
@@ -14,6 +15,40 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
   useEffect(() => {
     setMessage("");
   }, [query]);
+  const findRef = useRef<HTMLInputElement>(null);
+  const replaceRef = useRef<HTMLInputElement>(null);
+  const focusReplace = useRef(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.isComposing) return;
+      const k = e.key.toLowerCase();
+      if (k !== "f" && k !== "h") return;
+      if (document.querySelector('[role="dialog"]')) return; // 창이 떠 있으면 그 창이 쓴다
+      e.preventDefault();
+      if (editor && !editor.isDestroyed) {
+        const { from, to, $from, $to } = editor.state.selection;
+        const picked = $from.sameParent($to) ? editor.state.doc.textBetween(from, to, " ", "￼") : "";
+        if (picked.trim() && picked.length <= 60) setQuery(picked);
+      }
+      if (k === "h") {
+        focusReplace.current = true;
+        setReplaceOpen(true);
+        replaceRef.current?.focus();
+      } else {
+        findRef.current?.focus();
+        findRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editor]);
+  // 바꾸기 칸은 펼친 뒤에 생긴다 — 그때 초점을 준다
+  useEffect(() => {
+    if (replaceOpen && focusReplace.current) {
+      focusReplace.current = false;
+      replaceRef.current?.focus();
+    }
+  }, [replaceOpen]);
 
   function matches(): Range[] {
     const out: Range[] = [];
@@ -71,6 +106,8 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
       <div className="flex items-center divide-x divide-stone-200">
         <input
           id="manuscript-find"
+          ref={findRef}
+          title={`이 절에서 찾기 (${KEYS.find})`}
           className="w-24 border-0 px-1.5 py-1 text-xs outline-none"
           value={query}
           placeholder="검색어"
@@ -88,12 +125,25 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
         <button className={btn} disabled={!query} onClick={() => find()}>
           다음
         </button>
-        <button className={btn} onClick={() => setReplaceOpen(!replaceOpen)} title="이 절에서 바꾸기">
+        <button className={btn} onClick={() => setReplaceOpen(!replaceOpen)} title={`이 절에서 바꾸기 (${KEYS.replace})`}>
           바꾸기{replaceOpen ? " ▴" : " ▾"}
         </button>
         {replaceOpen && (
           <>
-            <input className="w-24 border-0 px-1.5 py-1 text-xs outline-none" value={replacement} placeholder="바꿀 말" onChange={(e) => setReplacement(e.target.value)} />
+            <input
+              ref={replaceRef}
+              aria-label="바꿀 말"
+              className="w-24 border-0 px-1.5 py-1 text-xs outline-none"
+              value={replacement}
+              placeholder="바꿀 말"
+              onChange={(e) => setReplacement(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && query && !disabled) {
+                  e.preventDefault();
+                  replaceOne();
+                }
+              }}
+            />
             <button className={btn} disabled={!query || disabled} onClick={replaceOne} title="선택된 검색어를 바꾸고 다음으로">
               하나
             </button>

@@ -14,7 +14,7 @@ const body = z.object({
 export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]/replace">) => {
   const { id } = await ctx.params;
   const b = body.parse(await req.json());
-  if (!(await prisma.project.findUnique({ where: { id }, select: { id: true } }))) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!(await prisma.project.findUnique({ where: { id }, select: { id: true } }))) return fail("책을 찾을 수 없습니다.", 404);
   const all = await projectSectionIds(id);
   const targets = b.sectionIds ? b.sectionIds.filter((s) => all.includes(s)) : all;
   let count = 0;

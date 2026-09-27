@@ -24,7 +24,7 @@ export const GET = handle(async (req: Request, ctx: RouteContext<"/api/projects/
       assets: true,
     },
   });
-  if (!p) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!p) return fail("책을 찾을 수 없습니다.", 404);
   const { chapters, ...head } = p;
   const out = await buildBackupZip({
     head,

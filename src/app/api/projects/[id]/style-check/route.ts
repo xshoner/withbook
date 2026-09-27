@@ -7,7 +7,7 @@ import { checkStyle } from "@/lib/style/check";
 export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/projects/[id]/style-check">) => {
   const { id } = await ctx.params;
   const book = await loadBook(id);
-  if (!book) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!book) return fail("책을 찾을 수 없습니다.", 404);
   const input = flatSections(book).map(({ section }) => ({
     sectionId: section.id,
     label: section.label,

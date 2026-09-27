@@ -3,7 +3,7 @@
 스케치를 작가의 문체로 원고화하고, 부크크 A5(148×210mm) 인쇄 규격 그대로 PDF·HWPX로 내보내는 웹앱.
 웹: https://withbook.vercel.app (로그인 필요) · 배포 구성: [docs/deployment.md](docs/deployment.md)
 
-요구사항: [prd.md](prd.md) · 프롬프트: [prompts.md](prompts.md) · 결정 기록: [docs/decisions.md](docs/decisions.md) · 검토 기록: [docs/review-2026-09-24.md](docs/review-2026-09-24.md)
+요구사항: [prd.md](prd.md) · 프롬프트: [prompts/](prompts/) · 결정 기록: [docs/decisions.md](docs/decisions.md) · 표지: [docs/cover-design.md](docs/cover-design.md) · 그 밖의 기록: [docs/](docs/)
 
 ## 구성
 
@@ -25,12 +25,13 @@ KoPub 글꼴은 로컬 `public/fonts/`(KoPubBatangLight/Bold, KoPubDotumMedium .
 
 ## 사용 흐름
 1. 로그인 → **프로젝트 선택** → 새 프로젝트: 책 정보 → AI 목차 설계 → [이 목차로 시작]
-2. 목차에서 절 선택 → 스케치 → 분량 → **[AI 집필하기]** (여러 절은 [다중 집필])
+2. 목차에서 절 선택 → 스케치 → 분량 → **[AI 집필하기]** (여러 절은 [⚡ 자동 집필]에서 범위를 골라)
 3. 직접 고치기(자동 저장) · 선택영역 AI · 각주 · 교정·교열
 4. **[펼침면 미리보기]** → **[내보내기]** PDF(부크크 제출용) / HWPX / 백업
+5. **[커버 디자인]** (새 창): 날개·책등 펼침면에 AI 표지 그림·글·사진 배치 → 인쇄용 표지 PDF(책등 폭은 실제 조판 쪽수 기준)
 
 - **삭제·되돌리기**: 장·절을 지우면 알림의 [되돌리기]로 바로 살리거나, 목차 아래 [삭제한 장·절]에서 30일 안에 되돌린다(버전 기록 포함, 용량이 크면 원고만). AI 집필·교정 중인 절을 지우려 하면 작업을 먼저 멈출지 묻는다.
-- **AI 집필·교정은 백그라운드로** 돈다: 쓰는 동안 다른 절로 옮겨 편집해도 계속되고, 끝나면 알림으로 알린다. 덮어쓰기·분량 조정·교정 중에는 그 절만 잠긴다. 이어쓰기는 쓰는 중에도 그 절을 고칠 수 있고, 다 쓰면 그때의 본문 끝에 붙인다. 한 절에서 집필과 교정은 동시에 하지 않는다(다중 집필은 작업 중인 절을 건너뛴다).
+- **AI 집필·교정은 백그라운드로** 돈다: 쓰는 동안 다른 절로 옮겨 편집해도 계속되고, 끝나면 알림으로 알린다. 덮어쓰기·분량 조정·교정 중에는 그 절만 잠긴다. 이어쓰기는 쓰는 중에도 그 절을 고칠 수 있고, 다 쓰면 그때의 본문 끝에 붙인다. 한 절에서 집필과 교정은 동시에 하지 않는다(자동 집필은 작업 중인 절을 건너뛴다).
 - 작업은 **브라우저 탭에서** 돈다 — 탭을 닫거나 새로 고치면 끊긴다(닫기 전에 한 번 묻는다). 끝난 교정 내역은 서버에 7일 보관해 새로 고친 뒤에도 [교정 내역]에서 확인·되돌리기할 수 있다.
 
 ## 폴더
@@ -39,9 +40,12 @@ prompts/            런타임 AI 프롬프트 (*.system.md / *.user.md, {{변수
 src/lib/print/      인쇄 규격 상수(spec.ts), 조판 HTML(bookHtml.ts)
 src/lib/ai/         AI 클라이언트·설정, 프롬프트 조립, 작업(목차·집필·교정·요약·문체·각주)
 src/lib/export/     PDF(Playwright+Chromium), HWPX(OWPML), 사전 점검
-src/lib/storage.ts  파일 저장소 (Supabase Storage / 로컬 data 폴더)
+src/lib/cover/      표지 규격(책등 계산)·디자인 저장·AI 표지 그림
+src/lib/storage.ts  파일 저장소 (Supabase Storage / 로컬 data/storage)
 src/proxy.ts        로그인 확인(Supabase 세션) · 요청 출처 검사
-scripts/            데이터 이전(migrate-to-supabase.mjs) · 통합 검사(smoke-test.mjs)
+scripts/            통합 검사(smoke-test.mjs) · 글꼴 올리기(upload-fonts.mjs) · HWPX 확인(verify-hwpx.ps1)
+scripts/archive/    한 번 쓰고 끝난 스크립트(Supabase 이전, SQLite 시절 샘플 생성)
+docs/               배포·결정 기록·기능별 설계·점검 기록 (docs/archive: 초기 개발 프롬프트)
 ```
 
 ## 보안

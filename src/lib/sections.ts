@@ -24,7 +24,7 @@ export async function pruneVersions(tx: Tx, sectionId: string) {
 export class SaveConflictError extends Error {
   status = 409;
   constructor(public current: { content: string; contentHash: string; updatedAt: Date }) {
-    super("다른 창이나 서버 작업(바꾸기·장 퇴고·팩트체크 등)이 이 절을 먼저 고쳤습니다.");
+    super("다른 창이나 서버 작업(바꾸기·장 퇴고·사실 확인 등)이 이 절을 먼저 고쳤습니다.");
   }
 }
 

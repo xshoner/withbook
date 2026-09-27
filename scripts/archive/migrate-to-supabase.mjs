@@ -7,7 +7,7 @@
 //   ADMIN_EMAIL, ADMIN_PASSWORD  최초 슈퍼관리자 (비밀번호는 저장하지 않고 Supabase Auth에만 전달)
 // 선택: SQLITE_PATH(기본 data/app.db), STYLE_REFERENCE_DIR(기본 ./style reference)
 //
-// 실행: node --env-file=.env scripts/migrate-to-supabase.mjs   (--db-only: 저장소·계정 없이 DB만 — 검증용)
+// 실행: node --env-file=.env scripts/archive/migrate-to-supabase.mjs   (--db-only: 저장소·계정 없이 DB만 — 검증용)
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';

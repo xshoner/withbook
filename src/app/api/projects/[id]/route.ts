@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
 import { parseLayout } from "@/lib/layout";
 import { validateMargins } from "@/lib/print/spec";
+import { clearProjectSettings } from "@/lib/project-cleanup";
 
 export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/projects/[id]">) => {
   const { id } = await ctx.params;
@@ -21,7 +22,7 @@ export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/projects
       _count: { select: { tocReports: true } },
     },
   });
-  if (!p) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!p) return fail("책을 찾을 수 없습니다.", 404);
   return ok({ ...p, layout: parseLayout(p.layout) });
 });
 
@@ -51,9 +52,9 @@ export const DELETE = handle(async (req: Request, ctx: RouteContext<"/api/projec
   const { id } = await ctx.params;
   const permanent = new URL(req.url).searchParams.get("permanent") === "1";
   if (permanent) {
+    const sections = await prisma.section.findMany({ where: { chapter: { projectId: id } }, select: { id: true } });
     await prisma.project.delete({ where: { id } });
-    // 책마다 AppSetting에 둔 표지 디자인·실제 쪽수 기록·목차 설계 표시도 함께 지운다
-    await prisma.appSetting.deleteMany({ where: { key: { in: [`cover:${id}`, `pages:${id}`, `toc-design:${id}`] } } });
+    await clearProjectSettings(prisma, id, sections.map((s) => s.id));
   }
   else await prisma.project.update({ where: { id }, data: { deletedAt: new Date() } });
   return ok({ ok: true });

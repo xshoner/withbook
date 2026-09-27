@@ -8,7 +8,7 @@ import dynamic from "next/dynamic";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
-import { clearJob, clearPartial, jobFor, locksSection, registerApplier, runBatch, runJob, stopBatch, stopJob, takeDetachedSave, useAiJob, useAnyRunningIn, useLastWriteTiming, useRunningIds, type AiJob, type JobMode } from "./aiJobs";
+import { clearJob, clearPartial, jobFor, locksSection, registerApplier, runJob, stopJob, takeDetachedSave, useAiJob, useAnyRunningIn, useLastWriteTiming, type AiJob, type JobMode } from "./aiJobs";
 import { scheduleOutlinePreparation, scheduleSummaryPreparation } from "./preparation";
 import { attachFile } from "@/lib/upload-client";
 import {
@@ -29,17 +29,19 @@ import type { ProjectTree, SectionPageInfo, TreeChapter, TreeSection } from "../
 import { Figure } from "./Figure";
 import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
+import { editorBlocks, matchPrintLayout, type SectionPrintLayout } from "./pageMap";
 import type { AppliedChange } from "./ProofPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround } from "./pmOps";
 import { conflictOf, noteServerContent, primeBase, recoverPending, registerCommit, resolveConflict, settleSection, useAutosave } from "./useAutosave";
-import type { BatchItem, SectionRef } from "./BatchWriteDialog";
-import { BATCH_MAX } from "./batch";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
 import { pauseAutoRun, startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
 import type { AutoItem, AutoOptions } from "@/lib/autowrite";
 import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, stopProof, takeProofResult, useProofJob, useProofRunningIds } from "./proofJobs";
 import WritingOverlay from "./WritingOverlay";
 import EditorToolbar, { REWRITE_LABEL, type RewriteAction } from "./EditorToolbar";
+import { SHORTCUT_HINT } from "./shortcuts";
+import OutlinePanel from "./OutlinePanel";
+import { useMe } from "@/lib/me-client";
 import FootnotesPanel, { FootnoteTabLabel, footnoteNumberAt } from "./FootnotesPanel";
 import PartialBanner from "./PartialBanner";
 import { clipboardHasText, compositionDone, trackPositions, useDocValue, useEditLock, useStableFn } from "./editorHooks";
@@ -48,41 +50,42 @@ import { clipboardHasText, compositionDone, trackPositions, useDocValue, useEdit
 const ProofPanel = dynamic(() => import("./ProofPanel"));
 const FootnotePopover = dynamic(() => import("./FootnotePopover"));
 const InlineDiff = dynamic(() => import("../InlineDiff"));
-const ParagraphDiff = dynamic(() => import("../InlineDiff").then((mod) => mod.ParagraphDiff));
 const VersionsPanel = dynamic(() => import("./VersionsPanel"));
 const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
-const BatchWriteDialog = dynamic(() => import("./BatchWriteDialog"));
 const AutoWriteDialog = dynamic(() => import("./AutoWriteDialog"));
 const CandidateCompareDialog = dynamic(() => import("./CandidateCompareDialog"));
 const SaveConflictDialog = dynamic(() => import("./SaveConflictDialog"));
+const ReferencesPanel = dynamic(() => import("./ReferencesPanel"));
 
 /**
- * AI 집필 중지 — 전체 자동 집필이 쓰는 절이면 전체가 일시 정지되므로 먼저 묻는다.
+ * AI 집필 중지 — 자동 집필이 쓰는 절이면 전체가 일시 정지되므로 먼저 묻는다.
  * 돌려준 값: 멈췄으면 true
  */
-export async function stopWriting(job: Pick<AiJob, "sectionId" | "auto" | "batch">) {
+export async function stopWriting(job: Pick<AiJob, "sectionId" | "auto">) {
   if (job.auto) {
-    if (!(await confirmDialog("전체 자동 집필이 쓰는 절입니다. 이 절을 멈추면 전체 자동 집필이 일시 정지됩니다(쓴 데까지는 넣습니다). 멈출까요?", { okLabel: "멈추고 일시 정지" }))) return false;
+    if (!(await confirmDialog("자동 집필이 쓰는 절입니다. 이 절을 멈추면 자동 집필이 일시 정지됩니다(쓴 데까지는 넣습니다). 멈출까요?", { okLabel: "멈추고 일시 정지" }))) return false;
     pauseAutoRun();
   }
-  if (job.batch) stopBatch();
   stopJob(job.sectionId);
   return true;
 }
 
 type Props = {
   project: ProjectTree;
-  chapter: TreeChapter & { label: string };
+  chapter: TreeChapter & { label: string; no?: number };
   section: TreeSection & { label: string };
   pageInfo?: SectionPageInfo;
+  /** 실제 조판(Paged.js)에서 이 절의 블록별 쪽 — 지금 원고와 맞으면 편집 화면 쪽 나눔이 따라간다 */
+  printLayout?: SectionPrintLayout;
+  /** 이 절 앞 절들(같은 장)의 그림 수 — 그림 번호는 장마다 이어서 센다 */
+  figureBase?: number;
   onMeta: (patch: Partial<TreeSection>) => void;
-  onSaved: (sectionId: string, chars: number) => void;
+  /** figures: 저장한 원고의 그림 수 (그림이 있으면 저장마다 실제 조판을 다시 잰다) */
+  onSaved: (sectionId: string, chars: number, figures?: number) => void;
   onRename: (title: string) => void;
   onRenameChapter: (title: string) => void;
   onTargetPages: (n: number) => void;
   onLayout: (patch: Partial<LayoutSettings>) => void;
-  allSections: SectionRef[];
-  onTreeChanged: () => void;
   /** 서버에서 절 본문을 고친 뒤(장 퇴고 등) 편집 화면을 다시 불러온다 */
   onServerEdited: () => void;
   /** 책 전체 찾기 창 열기 */
@@ -125,7 +128,7 @@ function SectionEditor(props: Props) {
   return <EditorCore {...props} data={data} />;
 }
 
-function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onLayout, allSections, onTreeChanged, onServerEdited, onBookSearch, locate, data }: Props & { data: Loaded }) {
+function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBase = 0, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onLayout, onServerEdited, onBookSearch, locate, data }: Props & { data: Loaded }) {
   const cpp = project.charsPerPage || 700;
   const [sketch, setSketch] = useState(data.sketch);
   const [sketchOpen, setSketchOpen] = useState(!data.content || isDocEmpty(parseDoc(data.content)));
@@ -136,9 +139,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   });
   const [targetPages, setTargetPages] = useState<number>(section.targetPages || 3);
   const [modeAsk, setModeAsk] = useState(false);
-  const [batchOpen, setBatchOpen] = useState(false);
   const [autoOpen, setAutoOpen] = useState(false);
-  // 전체 자동 집필의 팩트체크·검수가 이 절을 고치는 중이면 잠근다
+  // 자동 집필의 사실 확인·교정이 이 절을 고치는 중이면 잠근다
   const autoChecking = useAutoChecking(section.id);
   const autoDriving = useAutoWrite().driving;
   const [reviseOpen, setReviseOpen] = useState(false);
@@ -149,10 +151,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const proofIds = useProofRunningIds();
   const chapterProofing = useMemo(() => proofIds.split(",").some((id) => chapterIds.includes(id)), [proofIds, chapterIds]);
   const [candidate, setCandidate] = useState<string | null>(null);
-  const [candCompare, setCandCompare] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [lengthHint, setLengthHint] = useState<null | { chars: number; target: number }>(null);
-  const [tab, setTab] = useState<"ai" | "versions" | "proof" | "notes">("ai");
+  const [tab, setTab] = useState<"ai" | "refs" | "versions" | "proof" | "notes">("ai");
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const me = useMe();
   // 추가 지시: [다른 절에서도 계속 쓰기]를 켜 두면 절을 옮겨도 남고, 집필에 쓴 지시는 최근 목록에서 다시 고를 수 있다
   const [extraMem, setExtraMem] = useState<ExtraMemory>({ keep: false, text: "", recent: [] });
   const [extra, setExtraText] = useState("");
@@ -190,9 +193,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const [notice, setNotice] = useState<string | null>(data.recovered ? "브라우저에 보관돼 있던 최신 입력을 복원했습니다." : null);
   // 이 절의 AI 집필 작업 (편집기 밖에서 돈다 — 절을 옮겨도 계속된다). 이 절 작업만 구독한다
   const job = useAiJob(section.id);
-  // 다중 집필 창에서 고를 수 없는 절 (AI 집필·교정 중)
-  const runningIds = useRunningIds();
-  const busyIds = useMemo(() => new Set([...runningIds.split(","), ...proofIds.split(",")].filter(Boolean)), [runningIds, proofIds]);
   const lastTiming = useLastWriteTiming(section.id);
   const jobRef = useRef(job);
   jobRef.current = job;
@@ -223,7 +223,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const secLabel = `${section.label} ${section.title}`.trim();
   const { state: saveState, markDirty, flush: flushQueue } = useAutosave(section.id, secLabel, (r) => {
     onMeta({ charCount: r.charCount, status: r.status, updatedAt: r.updatedAt });
-    onSaved(section.id, r.charCount);
+    const ed = editorRef.current;
+    let figures = 0;
+    if (ed && !ed.isDestroyed) ed.state.doc.forEach((n) => void (n.type.name === "figure" && figures++));
+    onSaved(section.id, r.charCount, figures);
   });
   const conflict = saveState.kind === "conflict" ? conflictOf(section.id) : null;
   /**
@@ -328,7 +331,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     to: number;
     selection: string;
     text: string;
-    req: { selection: string; before: string; after: string; toneTarget: string };
+    req: RewriteReq;
     x: number;
     y: number;
   }>(null);
@@ -391,11 +394,26 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
 
   // 마지막 쪽 계산 뒤 처음 바뀐 문서 위치 (null = 처음부터 다시 — 글자 크기·확대·쪽 번호가 바뀐 경우)
   const dirtyFrom = useRef<number | null>(null);
+  /**
+   * 실제 조판 결과(Paginator가 저장된 원고로 잰 Paged.js 쪽)가 지금 원고와 같으면 블록별 쪽을 돌려준다 — 그림을 미리보기와 같은 쪽에 두게.
+   * 원고가 그 뒤에 바뀌었으면(저장 전·다시 재기 전) null → 화면 계산(인쇄와 같은 크기의 상자를 잰다)만 쓴다.
+   */
+  const printLayoutRef = useRef(printLayout);
+  printLayoutRef.current = printLayout;
+  const hintsFor = (ed: Editor) => {
+    const l = printLayoutRef.current;
+    if (!l) return null;
+    return matchPrintLayout(editorBlocks(ed.state.doc.toJSON() as JNode), l);
+  };
   const runPaginate = useCallback(() => {
     if (!editor || editor.isDestroyed || !sheetRef.current || !scrollRef.current || !contentRef.current) return false;
     if (editor.view.composing) return false; // 한글 조합 중에는 건드리지 않는다
     const sc = scrollRef.current;
     const keep = sc.scrollTop;
+    const hints = hintsFor(editor);
+    // 조판 결과를 쓰기 시작하거나 그만둘 때는 앞 쪽부터 다시 끊는다
+    if (Boolean(hints) !== syncedRef.current) dirtyFrom.current = null;
+    syncedRef.current = Boolean(hints);
     const r = paginate(editor.view, {
       sheet: sheetRef.current,
       measureHost: contentRef.current,
@@ -404,17 +422,19 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       leadMm,
       label: pageLabel,
       dirtyFrom: dirtyFrom.current,
+      hints,
     });
     dirtyFrom.current = null;
     sc.scrollTop = keep;
     // 값이 같으면 다시 그리지 않는다 (입력마다 도는 계산이라)
-    setPg((p) => (p && p.pages === r.pages && Math.abs(p.lastFill - r.lastFill) < 0.05 && JSON.stringify(p.lastNotes) === JSON.stringify(r.lastNotes) ? p : r));
+    setPg((p) => (p && p.pages === r.pages && p.synced === r.synced && Math.abs(p.lastFill - r.lastFill) < 0.05 && JSON.stringify(p.lastNotes) === JSON.stringify(r.lastNotes) ? p : r));
     cachePageBoxes();
     updateCaretPage();
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, geom, leadMm, pageLabel]);
 
+  const syncedRef = useRef(false);
   const pgTimer = useRef<number | undefined>(undefined);
   const pgSince = useRef(0);
   const schedulePaginate = useCallback(
@@ -460,6 +480,20 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   }, [editor, schedulePaginate]);
   const { bodySizePt, lineHeight, paraSpacingMm } = project.layout;
   useEffect(() => schedulePaginate(0), [zoom, schedulePaginate, bodySizePt, lineHeight, paraSpacingMm]);
+  // 새 조판 결과가 오면 처음부터 다시 끊는다
+  useEffect(() => schedulePaginate(0), [printLayout, schedulePaginate]);
+  // 그림 번호(장 번호 · 앞 절 그림 수)를 그림 노드가 읽는 곳에 두고, 번호를 다시 그리게 빈 트랜잭션을 보낸다 (캡션 줄 수가 달라질 수 있어 쪽 나눔도 다시)
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const st = (editor.storage as unknown as { figure?: { chapterNo: number; base: number } }).figure;
+    if (!st || (st.chapterNo === (chapter.no ?? 0) && st.base === figureBase)) return;
+    st.chapterNo = chapter.no ?? 0;
+    st.base = figureBase;
+    try {
+      editor.view.dispatch(editor.state.tr.setMeta("figureLabel", true).setMeta("addToHistory", false));
+    } catch {} // 편집기가 아직 화면에 붙기 전 — 그림 노드가 처음 그릴 때 위 값을 읽는다
+    schedulePaginate(0);
+  }, [editor, chapter.no, figureBase, schedulePaginate]);
 
   // 확인 표시·문체 점검·책 전체 검색에서 고른 자리로 바로 가기 — 그 문장 전체를 골라 화면 가운데에 보이고 잠깐 강조한다.
   // 쪽 나눔 계산이 스크롤 위치를 되돌려 놓을 수 있으므로 계산이 끝난 뒤에 한 번 더 맞춘다.
@@ -654,9 +688,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       if (editor.isDestroyed) return null;
       appliedRef.current = true;
       if (job.mode === "newVersion") {
-        setCandidate(job.md);
-        setTab("ai");
-        setPanelOpen(true);
+        setCandidate(job.md); // 편집기 위 띠에 알리고, [크게 비교]에서 고른다
         return null;
       }
       if (job.mode === "continue") {
@@ -678,57 +710,18 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, section.id, setDoc, commitDoc, targetChars]);
 
-  /** 여러 절(최대 3개) 한 번에 집필 — 책 순서대로 하나씩 쓰고 저장한다(앞 절 요약이 다음 절에 이어진다). 그동안 다른 절은 편집할 수 있다 */
-  async function startBatch(items: BatchItem[], batchExtra: string) {
-    if (!editor || !items.length) return;
-    setBatchOpen(false);
-    if (!(await flush())) return toast.error("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 집필해주세요.");
-    try {
-      for (const it of items) {
-        if (it.id === section.id) {
-          setSketch(it.sketch);
-          setTargetPages(it.targetPages);
-          markDirty({ sketch: it.sketch });
-        } else await api(`/api/sections/${it.id}`, { method: "PUT", json: { sketch: it.sketch } });
-        await api(`/api/projects/${project.id}/toc`, { method: "PATCH", json: { op: "updateSection", sectionId: it.id, targetPages: it.targetPages } }).catch(() => {});
-      }
-      await flush();
-    } catch (e) {
-      return toastError(e, "스케치 저장 실패: ");
-    }
-    const tree = onTreeChanged; // 편집기가 닫혀도 목차를 새로 고친다
-    noteExtraUsed(batchExtra);
-    runBatch(
-      items.map((it) => ({
-        sectionId: it.id,
-        label: `${it.label} ${it.title}`.trim(),
-        mode: "overwrite" as const,
-        url: `/api/sections/${it.id}/write`,
-        body: { targetPages: it.targetPages, mode: "overwrite", extraInstruction: batchExtra },
-        target: Math.round(it.targetPages * cpp),
-      })),
-    )
-      .then((done) => done.length && toast.success(`${done.length}개 절을 집필했습니다: ${done.join(", ")}`))
-      .catch((e) => toastError(e, "AI 오류: "))
-      .finally(tree);
-  }
-
-  /** 전체 자동 집필 — 진행은 autoWrite(편집기 밖)가 맡고, 진행 창은 편집 화면 오른쪽 아래에 뜬다 */
+  /** 자동 집필(범위: 고른 절 · 한 장 · 책 전체) — 진행은 autoWrite(편집기 밖)가 맡고, 진행 창은 편집 화면 오른쪽 아래에 뜬다 */
   async function startAuto(items: AutoItem[], options: AutoOptions) {
     setAutoOpen(false);
     if (!(await flush())) return toast.error("원고 저장에 실패했습니다. 저장을 완료한 뒤 다시 시작해주세요.");
     noteExtraUsed(options.extraInstruction);
-    startAutoRun(project.id, items, options).catch((e) => toastError(e, "전체 자동 집필: "));
+    startAutoRun(project.id, items, options).catch((e) => toastError(e, "자동 집필: "));
   }
 
   const startWrite = (mode: "overwrite" | "continue" | "newVersion") => {
     setModeAsk(false);
     onTargetPages(targetPages);
-    if (mode === "newVersion") {
-      setCandidate(null);
-      setTab("ai");
-      setPanelOpen(true);
-    }
+    if (mode === "newVersion") setCandidate(null);
     noteExtraUsed();
     startJob(`/api/sections/${section.id}/write`, { targetPages, mode, extraInstruction: extra }, mode);
   };
@@ -753,7 +746,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     setDoc(markdownToDoc(candidateText), true);
     dropCandidate();
     await commitDoc("ai_draft");
-    api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "ai_output" } }).catch(() => {});
+    api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "ai_output" } }).catch((e) => toastError(e, "고른 후보를 버전 기록에 남기지 못했습니다: "));
     setVersionKey((k) => k + 1);
     checkLength(charCount(editor.getJSON() as JNode));
     scheduleSummaryPreparation(section.id, undefined, 0);
@@ -770,7 +763,11 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
       return false;
     }
-    await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()) } }).catch(() => {});
+    try {
+      await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()) } });
+    } catch (e) {
+      toastError(e, "붙이기 전 원고를 버전 기록에 남기지 못했습니다(붙이기는 계속합니다): ");
+    }
     if (editor.isDestroyed) return false;
     appendAtEnd(editor, markdownToDoc(text));
     await commitDoc("ai_draft");
@@ -782,8 +779,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   /** 중단된 AI 집필을 새 버전 후보로 — 고르거나 버리면 보관본을 치운다(dropCandidate) */
   function comparePartial(text: string) {
     setCandidate(text);
-    setTab("ai");
-    setPanelOpen(true);
     setCompareOpen(true);
   }
 
@@ -891,14 +886,14 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   };
 
   /* ---------- 선택 영역 AI (결과 미리보기 상태 rewritePreview는 위 잠금과 함께 둔다) ---------- */
-  async function requestRewrite(action: RewriteAction, from: number, to: number, req: { selection: string; before: string; after: string; toneTarget: string }) {
+  async function requestRewrite(action: RewriteAction, from: number, to: number, req: RewriteReq) {
     if (!editor) return;
     setRewriteBusy(action); // 결과를 적용하거나 취소할 때까지 편집을 잠근다 (useEditLock)
     try {
       if (!(await flush())) throw new Error("원고 저장을 완료한 뒤 다시 수정해주세요.");
       const r = await api<{ text: string }>(`/api/sections/${section.id}/rewrite`, {
         method: "POST",
-        json: { action, ...req, content: JSON.stringify(editor.getJSON()) },
+        json: { action, ...(action === "custom" ? { mode: "custom" } : {}), ...req, content: JSON.stringify(editor.getJSON()) },
       });
       if (editor.isDestroyed) return;
       const c = editor.view.coordsAtPos(Math.min(to, editor.state.doc.content.size));
@@ -910,14 +905,23 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     }
   }
 
+  /** 직접 지시 — 지난번 지시를 다음 입력 칸에 채워 둔다 */
+  const lastInstruction = useRef("");
   async function rewrite(action: RewriteAction) {
     if (!editor || !canEditRef.current) return;
     const { from, to } = editor.state.selection;
     if (from === to) return toast("먼저 본문에서 고칠 부분을 드래그해 선택하세요.");
     let toneTarget = "";
+    let instruction = "";
     if (action === "tone") {
       toneTarget = (await promptDialog("어떤 톤으로 바꿀까요?", { choices: ["더 친근하게", "더 단호하게", "강연하듯", "더 담백하게", "더 따뜻하게"], placeholder: "직접 입력해도 됩니다", okLabel: "바꾸기" })) ?? "";
       if (!toneTarget) return;
+    }
+    if (action === "custom") {
+      instruction = ((await promptDialog("선택한 부분을 어떻게 고칠까요?", { placeholder: `예: 문장을 짧게 끊고 비유 하나 넣기 (${CUSTOM_MAX}자 이하)`, okLabel: "고치기", initial: lastInstruction.current })) ?? "").trim();
+      if (!instruction) return;
+      if (instruction.length > CUSTOM_MAX) return toast.error(`지시는 ${CUSTOM_MAX}자 이하로 적어 주세요 (지금 ${instruction.length}자).`);
+      lastInstruction.current = instruction;
     }
     const doc = editor.state.doc;
     await requestRewrite(action, from, to, {
@@ -925,6 +929,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       before: doc.textBetween(0, from, NL),
       after: doc.textBetween(to, doc.content.size, NL),
       toneTarget,
+      ...(instruction ? { instruction } : {}),
     });
   }
 
@@ -933,8 +938,12 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     if (!editor || !p) return;
     // 미리보기 말고 다른 이유(AI 집필·교정 등)로 잠겼으면 넣지 않는다
     if (locked || proofBusy || autoChecking || conflict) return toast.error(`${locked ? "AI 집필" : proofBusy ? "교정·교열" : autoChecking ? "자동 집필 점검" : "저장 충돌"} 중이라 적용하지 않았습니다.`);
-    // 적용 전 원고를 버전으로 남긴다 (되돌리기 대비)
-    await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "rewrite" } }).catch(() => {});
+    // 적용 전 원고를 버전으로 남긴다 (되돌리기 대비) — 남기지 못해도 적용은 하되 알린다 (Ctrl+Z로 되돌릴 수 있다)
+    try {
+      await api(`/api/sections/${section.id}/versions`, { method: "POST", json: { content: JSON.stringify(editor.getJSON()), reason: "rewrite" } });
+    } catch (e) {
+      toastError(e, "적용 전 원고를 버전 기록에 남기지 못했습니다(Ctrl+Z로 되돌릴 수 있습니다): ");
+    }
     if (editor.isDestroyed) return;
     const parts = markdownToDoc(p.text).content ?? [];
     const single = parts.length === 1 && parts[0].type === "paragraph";
@@ -1128,8 +1137,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
   const onRewrite = useStableFn(rewrite);
   const onPickImage = useStableFn(() => fileRef.current?.click());
   const onRegenFootnote = useStableFn(regenFootnote);
-  // 새 버전 후보 비교 — 입력마다 다시 읽지 않고, 비교를 켰을 때만 입력이 멈춘 뒤 읽는다(문단 LCS를 매번 다시 계산하지 않게)
-  const comparing = candidateActive && (candCompare || compareOpen);
+  // 새 버전 후보 비교 — 입력마다 다시 읽지 않고, 비교 창을 열었을 때만 입력이 멈춘 뒤 읽는다(문단 LCS를 매번 다시 계산하지 않게)
+  const comparing = candidateActive && compareOpen;
   const currentParas = useDocValue(editor, (d: PMNode) => docParagraphs(d.toJSON() as JNode), { key: (ps) => ps.join("\n"), initial: [] as string[], enabled: comparing, delay: 400 });
   const candidateParas = useMemo(() => (candidateText ? docParagraphs(markdownToDoc(candidateText)) : []), [candidateText]);
 
@@ -1216,26 +1225,15 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                   ✎ AI 집필하기
                 </button>
                 <button
-                  className="btn border-amber-600 text-amber-800 hover:bg-amber-50"
-                  disabled={!canEdit}
-                  onClick={() => {
-                    setModeAsk(false);
-                    setBatchOpen(true);
-                  }}
-                  title={`여러 절(최대 ${BATCH_MAX}개)을 골라 한 번에 집필`}
-                >
-                  ⧉ 다중 집필
-                </button>
-                <button
                   className="btn border-violet-600 text-violet-800 hover:bg-violet-50"
                   disabled={autoDriving || !canEdit}
                   onClick={() => {
                     setModeAsk(false);
                     setAutoOpen(true);
                   }}
-                  title={autoDriving ? "전체 자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : "첫 장부터 마지막 장까지 절마다 집필 → 팩트체크 → 검수를 AI가 자동으로 진행"}
+                  title={autoDriving ? "자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : "고른 절 · 한 장 · 책 전체를 골라 절마다 집필 → 사실 확인 → 교정을 AI가 자동으로 진행"}
                 >
-                  ⚡ 전체 자동 집필
+                  ⚡ 자동 집필
                 </button>
               </div>
               {modeAsk && (
@@ -1248,16 +1246,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                     뒤에 이어쓰기 <span className="block text-xs text-stone-400">지정 분량만큼 이어서</span>
                   </button>
                   <button className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100" onClick={() => startWrite("newVersion")}>
-                    새 버전으로 생성(비교) <span className="block text-xs text-stone-400">지금 본문은 그대로 두고 후보를 만듭니다 — 편집기 위 띠나 오른쪽 패널 [AI 옵션]에서 비교 후 선택</span>
-                  </button>
-                  <button
-                    className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100"
-                    onClick={() => {
-                      setModeAsk(false);
-                      setBatchOpen(true);
-                    }}
-                  >
-                    다중 집필 (최대 {BATCH_MAX}개 절) <span className="block text-xs text-stone-400">다음 절까지 이어서 집필</span>
+                    새 버전으로 생성(비교) <span className="block text-xs text-stone-400">지금 본문은 그대로 두고 후보를 만듭니다 — 편집기 위 띠의 [크게 비교]에서 비교 후 선택</span>
                   </button>
                   <button className="mt-1 w-full rounded px-2 py-1 text-xs text-stone-400 hover:bg-stone-50" onClick={() => setModeAsk(false)}>
                     취소
@@ -1339,9 +1328,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                 <button className="ml-auto rounded bg-violet-700 px-2 py-0.5 text-xs font-semibold text-white hover:bg-violet-600" onClick={() => setCompareOpen(true)}>
                   크게 비교
                 </button>
-                <button className="rounded border border-violet-300 bg-white px-2 py-0.5 text-xs hover:bg-violet-100" onClick={acceptCandidate}>
-                  이 버전 사용
-                </button>
                 <button className="text-xs text-violet-700 hover:underline" onClick={dropCandidate}>
                   버리기
                 </button>
@@ -1352,7 +1338,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         {autoChecking && (
           <div className="flex items-center gap-2 border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-violet-700 border-t-transparent" />
-            전체 자동 집필이 이 절을 팩트체크·검수하는 중 — 끝나면 고친 원고를 다시 불러옵니다. 그동안 이 절은 잠겨 있습니다.
+            자동 집필이 이 절을 사실 확인·교정하는 중 — 끝나면 고친 원고를 다시 불러옵니다. 그동안 이 절은 잠겨 있습니다.
           </div>
         )}
         {(notice || lengthHint) && (
@@ -1419,6 +1405,17 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                     placeholder={"개략적인 스케치를 적으세요. 예)\n- 도입: 지난주 딸이 AI에게 숙제를 물어본 장면\n- 핵심 주장: 기술보다 사람의 준비가 먼저\n- 꼭 넣을 문장: \"그때는 맞고 지금은 틀리다\"\n- 사례: 디지털 교과서 도입 논쟁"}
                     value={sketch}
                     onChange={(e) => onSketch(e.target.value)}
+                  />
+                  {/* 집필 전에 개요를 보고 고친다 — 저장한 개요가 있으면 [AI 집필하기]가 그대로 쓴다 */}
+                  <OutlinePanel
+                    sectionId={section.id}
+                    sketch={sketch}
+                    targetPages={targetPages}
+                    open={outlineOpen}
+                    onOpenChange={setOutlineOpen}
+                    beforeRequest={flush}
+                    disabled={!canEdit || !!writing}
+                    disabledReason={writing ? "AI가 쓰는 중에는 개요를 바꿀 수 없습니다" : busyReason}
                   />
                 </div>
               )}
@@ -1496,7 +1493,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               </div>
             )}
             <p className="mt-2 text-center font-sans text-[10px] text-stone-400">
-              이 절 {pg?.pages ?? 1}쪽 · 쪽 나눔은 화면 계산값이며 최종 쪽수는 펼침면 미리보기(실제 조판)가 기준입니다
+              이 절 {pg?.pages ?? 1}쪽 ·{" "}
+              {pg?.synced
+                ? "쪽 나눔을 실제 조판(펼침면 미리보기)에 맞췄습니다"
+                : "쪽 나눔은 화면 계산값입니다 — 저장 후 실제 조판을 다시 재면 미리보기와 같은 쪽으로 맞춥니다"}
             </p>
           </div>
         </div>
@@ -1536,6 +1536,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           {(
             [
               ["ai", "AI 옵션"],
+              ["refs", "자료"],
               ["versions", "버전 기록"],
               ["proof", "교정 내역"],
               ["notes", null],
@@ -1549,59 +1550,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         <div className="min-h-0 flex-1 overflow-hidden">
           {tab === "ai" && (
             <div className="h-full space-y-4 overflow-auto p-3 text-sm">
-              <p className="text-[11px] leading-4 text-stone-400">저장 후 입력이 20초간 멈추면 요약을 미리 갱신합니다. 스케치가 있는 5쪽 초과 절은 개요도 준비합니다.</p>
-              {lastTiming && <details className="rounded border border-stone-200 p-2 text-xs text-stone-500">
-                <summary className="cursor-pointer">최근 집필 {(lastTiming.totalMs / 1000).toFixed(1)}초 · 첫 본문 {lastTiming.firstTextMs === null ? "없음" : `${(lastTiming.firstTextMs / 1000).toFixed(1)}초`}</summary>
-                <dl className="mt-2 grid grid-cols-2 gap-1">
-                  <dt>원고 불러오기</dt><dd>{(lastTiming.loadMs / 1000).toFixed(1)}초</dd>
-                  <dt>앞 내용 정리</dt><dd>{(lastTiming.summaryMs / 1000).toFixed(1)}초</dd>
-                  <dt>집필 개요{lastTiming.outlineCached ? " (재사용)" : ""}</dt><dd>{(lastTiming.outlineMs / 1000).toFixed(1)}초</dd>
-                  <dt>본문 생성</dt><dd>{(lastTiming.generationMs / 1000).toFixed(1)}초</dd>
-                </dl>
-                <p className="mt-1">첫 본문 시간은 서버 집필 시작부터, 본문 생성 시간은 모델 응답 대기를 포함합니다. 현재 탭에서 측정한 결과입니다.</p>
-              </details>}
-              {candidateActive && candidateText === null && (
-                <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-xs text-violet-800">
-                  <div className="flex items-center gap-1.5 font-semibold">
-                    <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
-                    새 버전 후보 — {candidateStatus}
-                  </div>
-                  <p className="mt-1 text-[11px] text-violet-700">첫 문장이 나오면 여기에 보입니다. 지금 본문은 그대로입니다.</p>
-                </div>
-              )}
-              {candidateText !== null && (
-                <div className="rounded-lg border border-violet-200 bg-violet-50 p-2">
-                  <div className="mb-1 flex items-center justify-between text-xs font-semibold text-violet-800">
-                    새 버전 후보 {candidateWriting && "(작성 중…)"}
-                    <span className="flex items-center gap-2 font-normal">
-                      {candidateText.length.toLocaleString()}자
-                      <button className="rounded bg-violet-700 px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-violet-600" onClick={() => setCompareOpen(true)}>
-                        크게 비교
-                      </button>
-                    </span>
-                  </div>
-                  <label className="mb-1 flex items-center gap-1 text-[11px] text-violet-800">
-                    <input type="checkbox" checked={candCompare} onChange={(e) => setCandCompare(e.target.checked)} /> 지금 본문과 비교 (바뀐 말만 표시)
-                  </label>
-                  {candCompare && editor ? (
-                    <div className="max-h-96 overflow-auto rounded bg-white p-2 font-book text-[12px] leading-5">
-                      <ParagraphDiff before={currentParas} after={candidateParas} />
-                    </div>
-                  ) : (
-                    <div className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-book text-[12px] leading-5">{candidateText}</div>
-                  )}
-                  {!candidateWriting && (
-                    <div className="mt-2 flex gap-2">
-                      <button className="btn-primary px-2 py-1 text-xs" onClick={acceptCandidate}>
-                        이 버전 사용
-                      </button>
-                      <button className="btn px-2 py-1 text-xs" onClick={dropCandidate}>
-                        버리기
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
               <div>
                 <label className="label" htmlFor="extra-instruction">
                   집필 추가 지시
@@ -1662,14 +1610,45 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
                   <li>작가 문체 프로필 {project.styleProfile ? "✓" : "(없음 — 설정에서 학습)"}</li>
                   <li>앞 절 요약과 직전 절 마지막 문단</li>
                   <li>용어집 {project.glossary.length ? `(${project.glossary.length}개)` : "(없음)"}</li>
+                  <li>
+                    이 절의 자료 —{" "}
+                    <button className="underline" onClick={() => setTab("refs")}>
+                      [자료] 탭
+                    </button>
+                    에 올린 글을 근거로 쓰고 출처를 표시
+                  </li>
                 </ul>
               </div>
               {section.hook && <p className="text-xs text-amber-800">✦ 흥미 포인트: {section.hook}</p>}
               <div className="text-xs text-stone-400">
-                상태: {status} · 단축키: Ctrl+S 저장, Esc 집필 중지, Ctrl+↑/↓ 이전/다음 절
+                상태: {status} · 단축키: {SHORTCUT_HINT}
               </div>
+              {/* 개발자 정보 — 관리자에게만 */}
+              {me?.role === "superadmin" && (
+                <details className="rounded border border-stone-200 p-2 text-xs text-stone-500">
+                  <summary className="cursor-pointer font-semibold text-stone-600">고급</summary>
+                  <p className="mt-2 text-[11px] leading-4 text-stone-400">저장 후 입력이 20초간 멈추면 요약을 미리 갱신합니다. 스케치가 있는 5쪽 초과 절은 개요도 준비합니다.</p>
+                  {lastTiming ? (
+                    <div className="mt-2">
+                      <div>
+                        최근 집필 {(lastTiming.totalMs / 1000).toFixed(1)}초 · 첫 본문 {lastTiming.firstTextMs === null ? "없음" : `${(lastTiming.firstTextMs / 1000).toFixed(1)}초`}
+                      </div>
+                      <dl className="mt-1 grid grid-cols-2 gap-1">
+                        <dt>원고 불러오기</dt><dd>{(lastTiming.loadMs / 1000).toFixed(1)}초</dd>
+                        <dt>앞 내용 정리</dt><dd>{(lastTiming.summaryMs / 1000).toFixed(1)}초</dd>
+                        <dt>집필 개요{lastTiming.outlineCached ? " (재사용)" : ""}</dt><dd>{(lastTiming.outlineMs / 1000).toFixed(1)}초</dd>
+                        <dt>본문 생성</dt><dd>{(lastTiming.generationMs / 1000).toFixed(1)}초</dd>
+                      </dl>
+                      <p className="mt-1">첫 본문 시간은 서버 집필 시작부터, 본문 생성 시간은 모델 응답 대기를 포함합니다. 현재 탭에서 측정한 결과입니다.</p>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-[11px] text-stone-400">이 탭에서 이 절을 집필하면 단계별 시간이 여기에 보입니다.</p>
+                  )}
+                </details>
+              )}
             </div>
           )}
+          {tab === "refs" && <ReferencesPanel sectionId={section.id} />}
           {tab === "versions" && editor && (
             <VersionsPanel
               beforeRestore={flush}
@@ -1752,6 +1731,8 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
       {autoOpen && (
         <AutoWriteDialog
           projectId={project.id}
+          currentSectionId={section.id}
+          currentChapterId={chapter.id}
           initialExtra={extra.trim() || (extraMem.keep ? extraMem.text : "") || extraMem.recent[0] || ""}
           recentExtra={extraMem.recent}
           onClose={() => setAutoOpen(false)}
@@ -1759,22 +1740,7 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
         />
       )}
 
-      {batchOpen && (
-        <BatchWriteDialog
-          sections={allSections}
-          currentId={section.id}
-          busyIds={busyIds}
-          currentSketch={sketch}
-          currentPages={targetPages}
-          cpp={cpp}
-          initialExtra={extra.trim() || (extraMem.keep ? extraMem.text : "") || extraMem.recent[0] || ""}
-          recentExtra={extraMem.recent}
-          onClose={() => setBatchOpen(false)}
-          onStart={startBatch}
-        />
-      )}
-
-      {/* 드래그 선택 → 각주 말풍선 */}
+      {/* 드래그 선택 → 선택 AI 말풍선 (각주는 도구줄 [각주]와 오른쪽 [각주] 탭에서) */}
       {bubble && !fnEdit && !streaming && !rewritePreview && (
         <div
           data-fn-ui
@@ -1787,13 +1753,6 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
               {rewriteBusy === a ? "…" : REWRITE_LABEL[a]}
             </button>
           ))}
-          <span className="mx-0.5 h-4 w-px bg-stone-200" />
-          <button className="rounded-md px-2 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-50 disabled:opacity-50" disabled={!canEdit || !!fnBusy} onClick={() => addFootnote(true)}>
-            {fnBusy === "one" ? "각주 쓰는 중…" : "✦ AI 각주"}
-          </button>
-          <button className="rounded-md px-2 py-1 text-xs text-stone-600 hover:bg-stone-100 disabled:opacity-50" disabled={!canEdit || !!fnBusy} onClick={() => addFootnote(false)}>
-            직접 각주
-          </button>
         </div>
       )}
 
@@ -1815,8 +1774,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
           }}
         >
           <div className="mb-2 flex items-center gap-2 text-xs">
-            <b className="text-violet-800">✦ {REWRITE_LABEL[rewritePreview.action]}</b>
-            <span className="text-stone-400">
+            <b className="min-w-0 truncate text-violet-800" title={rewritePreview.req.instruction}>
+              ✦ {rewritePreview.action === "custom" ? `직접 지시: ${rewritePreview.req.instruction ?? ""}` : REWRITE_LABEL[rewritePreview.action]}
+            </b>
+            <span className="shrink-0 text-stone-400">
               {rewritePreview.selection.length.toLocaleString()}자 → {rewritePreview.text.length.toLocaleString()}자
             </span>
             <button className="ml-auto text-stone-400 hover:text-stone-700" aria-label="닫기" onClick={cancelRewrite}>
@@ -1894,6 +1855,10 @@ function EditorCore({ project, chapter, section, pageInfo, onMeta, onSaved, onRe
     </div>
   );
 }
+
+/** 직접 지시 최대 길이 (서버와 같은 값) */
+const CUSTOM_MAX = 500;
+type RewriteReq = { selection: string; before: string; after: string; toneTarget: string; instruction?: string };
 
 /** 선택 영역 글자를 문단 사이 줄바꿈으로 이어 읽는다 */
 const NL = "\n";

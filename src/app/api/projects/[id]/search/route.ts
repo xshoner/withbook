@@ -10,7 +10,7 @@ export const GET = handle(async (req: Request, ctx: RouteContext<"/api/projects/
   if (!q.trim()) return ok({ total: 0, sections: [] });
   if (q.length > 200) return fail("검색어는 200자 이하로 입력하세요.");
   const book = await loadBook(id);
-  if (!book) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!book) return fail("책을 찾을 수 없습니다.", 404);
   const sections = flatSections(book)
     .map(({ chapter, section }) => ({
       sectionId: section.id,

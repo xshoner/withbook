@@ -1,6 +1,6 @@
 /**
- * 전체 자동 집필 — 진행 상태(서버 AppSetting `autowrite:{책 id}`에 보관)와 순수 계산.
- * 브라우저가 절마다 집필 → 팩트체크 → 검수를 차례로 부르고, 단계가 바뀔 때마다 이 상태를 서버에 남긴다.
+ * 자동 집필(범위: 고른 절 · 한 장 · 책 전체) — 진행 상태(서버 AppSetting `autowrite:{책 id}`에 보관)와 순수 계산.
+ * 브라우저가 절마다 집필 → 사실 확인 → 교정을 차례로 부르고, 단계가 바뀔 때마다 이 상태를 서버에 남긴다.
  * 창을 닫거나 연결이 끊겨도 다시 열면 남은 단계부터 이어 간다.
  */
 
@@ -27,7 +27,7 @@ export type AutoOptions = {
   factcheck: boolean;
   review: boolean;
   reviewLevel: "proof" | "light";
-  /** true: 본문이 있는 절도 새로 쓴다(지금 본문은 버전 기록에 보관) · false: 본문이 있는 절은 집필을 건너뛰고 팩트체크·검수만 */
+  /** true: 본문이 있는 절도 새로 쓴다(지금 본문은 버전 기록에 보관) · false: 본문이 있는 절은 집필을 건너뛰고 사실 확인·교정만 */
   rewrite: boolean;
   /** 진행 표시용 1쪽당 글자 수 */
   charsPerPage?: number;
@@ -54,10 +54,14 @@ export const HEARTBEAT_MS = 20_000;
 
 export type PlanSection = { id: string; label: string; title: string; chapterTitle: string; chapterKind: string; targetPages: number; charCount: number };
 
-/** 책 순서대로 할 일 목록 — 앞붙이·뒷붙이는 includeMatter일 때만 */
-export function buildPlan(sections: PlanSection[], opts: AutoOptions, includeMatter: boolean): AutoItem[] {
+/**
+ * 책 순서대로 할 일 목록 — 앞붙이·뒷붙이는 includeMatter일 때만.
+ * only를 주면 그 절들만 (한 장·고른 절 범위 — 앞붙이·뒷붙이도 고른 대로)
+ */
+export function buildPlan(sections: PlanSection[], opts: AutoOptions, includeMatter: boolean, only?: readonly string[]): AutoItem[] {
+  const pick = only ? new Set(only) : null;
   return sections
-    .filter((s) => includeMatter || s.chapterKind === "body")
+    .filter((s) => (pick ? pick.has(s.id) : includeMatter || s.chapterKind === "body"))
     .map((s) => {
       const skipWrite = !opts.rewrite && s.charCount > 0;
       return {
@@ -127,7 +131,7 @@ export function isAutoRun(v: unknown): v is AutoRun {
   return !!r && r.version === 1 && typeof r.runId === "string" && Array.isArray(r.items) && r.items.length <= 2000 && typeof r.options === "object" && !!r.options;
 }
 
-/** 문단 글들을 약 size자씩 묶은 문단 번호 범위(1부터, 양끝 포함) — 검수를 요청 여러 개로 나눌 때. 빈 문단만 있는 범위는 만들지 않는다 */
+/** 문단 글들을 약 size자씩 묶은 문단 번호 범위(1부터, 양끝 포함) — 교정을 요청 여러 개로 나눌 때. 빈 문단만 있는 범위는 만들지 않는다 */
 export function paragraphRanges(texts: string[], size: number): { from: number; to: number }[] {
   const out: { from: number; to: number }[] = [];
   let from = 0;

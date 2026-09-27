@@ -76,7 +76,7 @@ function deadlineOf(opts: ChatOptions) {
 async function config(opts: ChatOptions) {
   const s = await loadAiSettings(opts.connectionScope ?? scopeForPurpose(opts.purpose));
   const key = resolvedKey(s);
-  if (!s.baseUrl || !key) throw new AiError(`AI 연결 설정이 없습니다. [책 설정 → AI 설정]에서 주소와 키(${s.keyName})를 확인하세요.`, 0);
+  if (!s.baseUrl || !key) throw new AiError(`AI 연결 설정이 없습니다. [설정 → AI 연결]에서 주소와 키(${s.keyName})를 확인하세요.`, 0);
   const bad = baseUrlProblem(s.baseUrl);
   if (bad) throw new AiError(`AI 설정의 기본 주소를 쓸 수 없습니다: ${bad}`, 0);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -108,8 +108,8 @@ export function retryAfterMs(h: string | null): number | null {
 
 /** 상태 코드별 안내 문구 (AI 서버 응답 본문은 넣지 않는다) */
 export function upstreamMessage(status: number) {
-  if (status === 401 || status === 403) return `AI 서버 인증에 실패했습니다 (${status}). [AI 설정]의 키를 확인하세요.`;
-  if (status === 404) return `AI 서버 주소나 모델을 찾을 수 없습니다 (${status}). [AI 설정]을 확인하세요.`;
+  if (status === 401 || status === 403) return `AI 서버 인증에 실패했습니다 (${status}). [설정 → AI 연결]의 키를 확인하세요.`;
+  if (status === 404) return `AI 서버 주소나 모델을 찾을 수 없습니다 (${status}). [설정 → AI 연결]을 확인하세요.`;
   if (status === 413) return `AI 요청이 너무 깁니다 (${status}). 내용을 나눠서 시도하세요.`;
   if (status === 429) return `AI 서버 요청 한도를 넘었습니다 (${status}). 잠시 후 다시 시도하세요.`;
   if (status >= 500) return `AI 서버에 일시적인 문제가 있습니다 (${status}). 잠시 후 다시 시도하세요.`;

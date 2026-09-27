@@ -23,7 +23,7 @@ export const POST = handle(async (req: Request) => {
   const zip = await JSZip.loadAsync(file.buffer);
   if (Object.keys(zip.files).length > 5000) return fail("백업 파일 수가 너무 많습니다.", 413);
   const metadata = zip.file("project.json");
-  if (!metadata) return fail("프로젝트 정보가 없습니다.");
+  if (!metadata) return fail("책 정보(project.json)가 없습니다.");
   const meta = JSON.parse((await readZipEntry(metadata, 20 * 1024 * 1024)).toString("utf8"));
   if (meta.format !== "bookk-writer-backup") return fail("BookK Writer 백업 파일이 아닙니다.");
   const p = meta.project;

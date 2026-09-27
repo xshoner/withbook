@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { api, download } from "@/lib/client";
 
 type Issue = { level: "error" | "warn" | "info"; message: string; where?: string };
+type SubmitItem = { id: string; label: string; status: "pass" | "warn" | "fail"; detail: string; fix?: { label: string; href?: string; action?: "pdf" | "checks" | "cover" | "settings" } };
+type Layout = { margins: { inner: number; outer: number; top: number; bottom: number; header: number; footer: number }; bodySizePt: number; lineHeight: number; paraSpacingMm: number };
+const STATUS = { pass: ["✓", "text-emerald-700", "통과"], warn: ["⚠", "text-amber-700", "주의"], fail: ["⛔", "text-red-700", "문제"] } as const;
 
 export default function ExportDialog({
   projectId,
@@ -11,14 +14,20 @@ export default function ExportDialog({
   chapterId,
   sectionId,
   onClose,
+  onOpenChecks,
 }: {
   projectId: string;
   title: string;
   chapterId?: string;
   sectionId?: string;
   onClose: () => void;
+  /** 제출 전 점검의 [확인할 것 열기] — 편집 화면의 확인할 것(ChecksDialog)을 연다. 없으면 안내 문구만 */
+  onOpenChecks?: () => void;
 }) {
-  const [tab, setTab] = useState<"pdf" | "hwpx" | "backup">("pdf");
+  const [tab, setTab] = useState<"submit" | "pdf" | "hwpx" | "backup">("pdf");
+  const [submit, setSubmit] = useState<{ items: SubmitItem[]; counts: Record<SubmitItem["status"], number> } | null>(null);
+  const [submitErr, setSubmitErr] = useState("");
+  const [layout, setLayout] = useState<Layout | null>(null);
   const [size, setSize] = useState<"bleed" | "trim">("bleed");
   const [scope, setScope] = useState<"all" | "chapter" | "section">("all");
   const [padEven, setPadEven] = useState(true);
@@ -35,6 +44,26 @@ export default function ExportDialog({
 
   const errors = issues?.filter((i) => i.level === "error") ?? [];
 
+  const loadSubmit = () => {
+    setSubmitErr("");
+    setSubmit(null);
+    api<{ items: SubmitItem[]; counts: Record<SubmitItem["status"], number> }>(`/api/projects/${projectId}/submission-check`).then(setSubmit, (e) => setSubmitErr(e.message));
+  };
+  useEffect(() => {
+    if (tab === "submit" && !submit && !submitErr) loadSubmit();
+    if (tab === "hwpx" && !layout) api<{ layout: Layout }>(`/api/projects/${projectId}`).then((p) => setLayout(p.layout), () => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const fix = (f: NonNullable<SubmitItem["fix"]>) => {
+    if (f.action === "pdf") return setTab("pdf");
+    if (f.action === "checks" && onOpenChecks) {
+      onClose();
+      return onOpenChecks();
+    }
+    if (f.href) window.open(f.href, "_blank", "noopener");
+  };
+
   const makePdf = async () => {
     setBusy("PDF 조판·인쇄 중… (책 분량에 따라 수십 초)");
     setErr("");
@@ -47,6 +76,7 @@ export default function ExportDialog({
       );
       const c = h.get("x-pdf-check");
       if (c) setResult(JSON.parse(decodeURIComponent(c)));
+      if (scope === "all") setSubmit(null); // 제출 전 점검을 다시 열면 새 PDF 결과로 본다
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -77,6 +107,7 @@ export default function ExportDialog({
         <div className="flex border-b border-stone-200 px-5 text-sm">
           {(
             [
+              ["submit", "제출 전 점검"],
               ["pdf", "PDF (부크크 제출용)"],
               ["hwpx", "HWPX (한글)"],
               ["backup", "백업"],
@@ -88,6 +119,47 @@ export default function ExportDialog({
           ))}
         </div>
         <div className="space-y-4 p-5 text-sm">
+          {tab === "submit" && (
+            <>
+              <p className="text-xs text-stone-500">
+                부크크에 올리기 전에 본문 PDF와 표지를 한 화면에서 확인합니다. 본문 판형·글꼴·쪽수는 마지막으로 만든 <b>책 전체 PDF</b> 기준입니다.
+              </p>
+              {submitErr && <p className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{submitErr}</p>}
+              {!submit && !submitErr && <p className="text-xs text-stone-400">점검 중…</p>}
+              {submit && (
+                <>
+                  <div className={`rounded px-3 py-2 text-xs font-semibold ${submit.counts.fail ? "bg-red-50 text-red-800" : submit.counts.warn ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-800"}`}>
+                    {submit.counts.fail ? `고쳐야 할 문제 ${submit.counts.fail}건` : submit.counts.warn ? "제출할 수 있지만 확인할 것이 있습니다" : "제출 준비가 끝났습니다"} · 통과 {submit.counts.pass} · 주의 {submit.counts.warn} · 문제 {submit.counts.fail}
+                  </div>
+                  <ul className="max-h-[52vh] divide-y divide-stone-100 overflow-auto rounded border border-stone-200">
+                    {submit.items.map((it) => (
+                      <li key={it.id} className="flex items-start gap-2 px-3 py-2 text-xs leading-5">
+                        <span className={`w-4 shrink-0 text-center ${STATUS[it.status][1]}`} title={STATUS[it.status][2]}>
+                          {STATUS[it.status][0]}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-stone-800">{it.label}</div>
+                          <div className="text-stone-600">{it.detail}</div>
+                        </div>
+                        {it.fix && (it.fix.action !== "checks" || onOpenChecks) && (
+                          <button className="btn-ghost shrink-0 text-xs text-amber-800" onClick={() => fix(it.fix!)}>
+                            {it.fix.label} →
+                          </button>
+                        )}
+                        {it.fix?.action === "checks" && !onOpenChecks && <span className="shrink-0 text-[11px] text-stone-400">편집 화면 [확인할 것]</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex items-center gap-2">
+                    <button className="btn-ghost text-xs" onClick={loadSubmit}>
+                      ↻ 다시 점검
+                    </button>
+                    <span className="text-[11px] text-stone-400">ISBN 바코드는 부크크가 뒷표지에 넣습니다 — 표지 편집기의 [바코드 자리] 안내선을 켜고 글·사진이 겹치지 않게 두세요.</span>
+                  </div>
+                </>
+              )}
+            </>
+          )}
           {tab === "pdf" && (
             <>
               <div>
@@ -156,7 +228,15 @@ export default function ExportDialog({
           {tab === "hwpx" && (
             <>
               <p className="text-stone-600">
-                한글(한컴오피스)에서 열 수 있는 HWPX로 내보냅니다. 용지 154×216mm, 맞쪽, 여백 안쪽 28 · 바깥 23 · 위 18 · 아래 18, 머리말 7 · 꼬리말 13mm, 본문 KoPub바탕체 Light 10pt / 줄 간격 160%로 부크크 기본 서식과 같습니다.
+                한글(한컴오피스)에서 열 수 있는 HWPX로 내보냅니다. 용지 154×216mm, 맞쪽
+                {layout ? (
+                  <>
+                    , 여백 안쪽 {layout.margins.inner} · 바깥 {layout.margins.outer} · 위 {layout.margins.top} · 아래 {layout.margins.bottom}, 머리말 {layout.margins.header} · 꼬리말 {layout.margins.footer}mm, 본문 KoPub바탕체 Light {layout.bodySizePt}pt / 줄 간격 {Math.round(layout.lineHeight * 100)}%
+                    {layout.paraSpacingMm ? ` / 문단 간격 ${layout.paraSpacingMm}mm` : ""} — 이 책의 [책 설정 → 조판] 값 그대로입니다.
+                  </>
+                ) : (
+                  <>, 여백·글자 크기·줄 간격은 이 책의 [책 설정 → 조판] 값을 따릅니다.</>
+                )}
               </p>
               <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">쪽 나눔은 한글이 다시 계산하므로 PDF와 쪽수가 조금 다를 수 있습니다. 부크크 제출은 PDF를 권장합니다.</p>
               <button className="btn-accent w-full" disabled={!!busy} onClick={makeHwpx}>
@@ -166,7 +246,7 @@ export default function ExportDialog({
           )}
           {tab === "backup" && (
             <>
-              <p className="text-stone-600">프로젝트 전체(책 정보·목차·본문·이미지)를 zip 하나로 내려받습니다. 프로젝트 목록의 [백업 불러오기]로 복원할 수 있습니다.</p>
+              <p className="text-stone-600">책 전체(책 정보·목차·본문·이미지)를 zip 하나로 내려받습니다. 책 목록의 [백업 불러오기]로 복원할 수 있습니다.</p>
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={withVersions} onChange={(e) => setWithVersions(e.target.checked)} /> 버전 기록 포함
               </label>

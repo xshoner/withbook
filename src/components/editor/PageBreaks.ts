@@ -11,6 +11,7 @@ import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
  *  - mid: 문단 중간 — 쪽을 넘는 줄의 맨 앞에 전체 폭 인라인 블록
  *  - start: 블록 첫 줄부터 넘칠 때 — 문단 맨 앞(들여쓰기는 빈칸으로 흉내)
  *  - block: 그림·구분선처럼 글자가 없는 블록 앞
+ * 실제 조판(Paginator가 잰 Paged.js 결과)이 지금 원고와 맞으면 그 쪽 번호를 따라 끊는다(hints) — 그림이 미리보기와 같은 쪽에 놓이게.
  */
 
 export type PageGeom = {
@@ -170,19 +171,37 @@ function lineBoxes(dom: HTMLElement, zoom: number): Line[] {
 
 type Crossing = { pos: number; kind: PageBreak["kind"]; top: number; indent: number; mb: number };
 
-/** from 위치 이후에서 본문 영역 끝(bottom)을 처음 넘는 줄·블록을 찾는다 */
-function findCrossing(view: EditorView, from: number, pageTop: number, bottom: number, zoom: number): Crossing | null {
+/**
+ * 실제 조판에서 최상위 블록마다 놓인 쪽(이 절 첫 쪽 = 0) — pageMap.matchPrintLayout 결과. null이면 화면 계산만 쓴다.
+ * 인쇄되지 않는 블록(빈 문단)은 null.
+ */
+export type PrintHints = ({ start: number; end: number } | null)[] | null;
+
+/**
+ * from 위치 이후에서 본문 영역 끝(bottom)을 처음 넘는 줄·블록을 찾는다.
+ * k: 지금 쪽(이 절 첫 쪽 = 0). hints가 있으면 실제 조판과 같은 쪽에 두도록 끊는다:
+ *  - 조판에서 다음 쪽 이후에 시작하는 블록(문단·소제목·그림)은 이 쪽에 들어가도 그 앞에서 끊는다
+ *  - 조판에서 이 쪽에 놓인 그림은 조금 넘쳐도 이 쪽에 두고 그 뒤에서 끊는다
+ * 풀페이지·풀블리드 그림은 인쇄처럼 한 쪽을 혼자 쓴다(앞뒤에서 끊는다).
+ */
+function findCrossing(view: EditorView, from: number, pageTop: number, bottom: number, zoom: number, k = 0, hints: PrintHints = null): Crossing | null {
   let res: Crossing | null = null;
   let heading: { pos: number; top: number } | null = null; // 쪽 끝에 홀로 남을 소제목
   const EPS = 0.5;
   const doc = view.state.doc;
-  doc.nodesBetween(Math.min(from, doc.content.size), doc.content.size, (node, pos) => {
+  doc.nodesBetween(Math.min(from, doc.content.size), doc.content.size, (node, pos, parent, index) => {
     if (res) return false;
     if (pos + node.nodeSize <= from) return false;
+    const hint = parent === doc && hints ? hints[index] : null;
     if (node.isTextblock) {
       const dom = view.nodeDOM(pos) as HTMLElement | null;
       if (!dom?.getBoundingClientRect) return false;
       const r = dom.getBoundingClientRect();
+      if (hint && hint.start > k && r.top > pageTop + 1) {
+        // 조판에서는 다음 쪽에서 시작한다 — 이 블록 앞에서 끊는다
+        res = { pos: pos + 1, kind: "start", top: r.top, indent: parseFloat(getComputedStyle(dom).textIndent) || 0, mb: 0 };
+        return false;
+      }
       if (r.bottom <= bottom + EPS) {
         heading = node.type.name === "heading" && r.top > pageTop + 1 ? { pos, top: r.top } : null;
         return false;
@@ -215,15 +234,34 @@ function findCrossing(view: EditorView, from: number, pageTop: number, bottom: n
       const dom = view.nodeDOM(pos) as HTMLElement | null;
       if (!dom?.getBoundingClientRect) return false;
       const r = dom.getBoundingClientRect();
+      const cs = getComputedStyle(dom);
+      const mt = parseFloat(cs.marginTop) || 0;
+      const mb = parseFloat(cs.marginBottom) || 0;
+      const atTop = r.top - mt * zoom <= pageTop + 1;
+      const whole = node.type.name === "figure" && (node.attrs.layout === "fullpage" || node.attrs.layout === "fullbleed");
+      if (hint && hint.start > k && !atTop) {
+        // 조판에서는 다음 쪽에 놓인다 — 이 쪽에 들어가도 앞에서 끊는다
+        res = { pos, kind: "block", top: r.top - mt * zoom, indent: 0, mb: mt };
+        return false;
+      }
+      if (whole) {
+        // 한 쪽을 혼자 쓰는 그림 — 쪽 맨 위가 아니면 앞에서, 맨 위면 뒤에서 끊는다
+        if (!atTop) res = { pos, kind: "block", top: r.top - mt * zoom, indent: 0, mb: mt };
+        else if (pos + node.nodeSize < doc.content.size) res = { pos: pos + node.nodeSize, kind: "block", top: r.bottom + mb * zoom, indent: 0, mb: 0 };
+        return false;
+      }
       if (r.bottom <= bottom + EPS) {
         heading = null;
         return false;
       }
-      const mt = parseFloat(getComputedStyle(dom).marginTop) || 0;
+      if (hint && hint.start === k && node.type.name === "figure") {
+        // 조판에서는 이 쪽에 들어간다(편집 화면에서 조금 넘치더라도) — 그림 뒤에서 끊는다
+        res = { pos: pos + node.nodeSize, kind: "block", top: r.bottom + mb * zoom, indent: 0, mb: 0 };
+        return false;
+      }
       if (heading) res = { pos: heading.pos + 1, kind: "start", top: heading.top, indent: 0, mb: 0 };
-      else if (r.top - mt * zoom <= pageTop + 1) {
+      else if (atTop) {
         // 한 쪽보다 큰 그림 — 뒤에서 끊는다
-        const mb = parseFloat(getComputedStyle(dom).marginBottom) || 0;
         res = { pos: pos + node.nodeSize, kind: "block", top: r.bottom + mb * zoom, indent: 0, mb: 0 };
       } else res = { pos, kind: "block", top: r.top - mt * zoom, indent: 0, mb: mt };
       return false;
@@ -233,7 +271,7 @@ function findCrossing(view: EditorView, from: number, pageTop: number, bottom: n
   return res;
 }
 
-export type PaginateResult = { pages: number; lastFill: number; lastNotes: PageNote[] };
+export type PaginateResult = { pages: number; lastFill: number; lastNotes: PageNote[]; /** 실제 조판 결과에 맞춰 끊었나 */ synced: boolean };
 
 /**
  * 문서 순서대로 각주 번호·내용·문서 위치 — 계산 한 번에 한 번만 읽는다.
@@ -264,6 +302,8 @@ export function paginate(
     label: (k: number) => { foot: string; head: string };
     /** 이 위치부터 바뀌었다 (없으면 처음부터) */
     dirtyFrom?: number | null;
+    /** 실제 조판의 블록별 쪽 — 지금 원고와 맞을 때만 (pageMap.matchPrintLayout) */
+    hints?: PrintHints;
   },
 ): PaginateResult {
   const { sheet, geom } = opts;
@@ -315,7 +355,7 @@ export function paginate(
       let c: Crossing | null = null;
       let notes: PageNote[] = [];
       for (let it = 0; it < 6; it++) {
-        c = findCrossing(view, from, top0, bottom - fnH, zoom);
+        c = findCrossing(view, from, top0, bottom - fnH, zoom, k, opts.hints ?? null);
         const upto = c ? c.pos : Infinity;
         notes = refs.filter((f) => f.pos < upto).map(({ n, text }) => ({ n, text }));
         const h = notesHeight(notes);
@@ -359,5 +399,5 @@ export function paginate(
   }
   const end = view.dom.getBoundingClientRect().bottom;
   const lastFill = Math.max(0, (bottom - end) / mm);
-  return { pages: breaks.length + 1, lastFill, lastNotes };
+  return { pages: breaks.length + 1, lastFill, lastNotes, synced: !!opts.hints };
 }

@@ -565,6 +565,23 @@ export function buildEditPrompt(d: CoverDesign, region: Region, request: string,
   return lines.join("\n");
 }
 
+/* ---------------- ISBN 바코드 자리 ---------------- */
+
+/**
+ * ISBN 바코드 자리(안내용 추정값) — 부크크가 뒷표지 아래쪽에 바코드를 넣는다.
+ * 여기 값은 편집기 안내선과 겹침 경고에만 쓰며, 정확한 위치·크기는 부크크 표지 가이드(바코드 영역)로 확인한다.
+ *   widthMm × heightMm: 바코드 상자 크기 · fromSpineMm: 책등 쪽 재단선에서 · fromBottomMm: 아래 재단선에서
+ */
+export const BARCODE_GUIDE = { panel: "back" as const, widthMm: 40, heightMm: 25, fromSpineMm: 10, fromBottomMm: 10 };
+export const BARCODE_NOTE = "바코드는 부크크가 넣습니다. 이 상자는 예상 자리이며, 정확한 위치는 부크크 표지 가이드로 확인하세요.";
+
+/** 바코드 자리 — 뒷표지 패널 기준(x: 뒷표지 왼쪽 재단선, y: 위 재단선) mm */
+export function barcodeRect(l: Pick<CoverLayout, "panels">): Box {
+  const p = l.panels.back;
+  const g = BARCODE_GUIDE;
+  return { x: Math.round((p.w - g.fromSpineMm - g.widthMm) * 100) / 100, y: Math.round((p.h - g.fromBottomMm - g.heightMm) * 100) / 100, w: g.widthMm, h: g.heightMm };
+}
+
 /* ---------------- 인쇄 점검 ---------------- */
 
 export type CoverIssue = { level: "error" | "warn"; message: string };
@@ -615,6 +632,12 @@ export function coverIssues(d: CoverDesign, opts: { actualPages?: number | null 
     const ok = e.x >= inset - 0.01 && e.x + w <= p.w - inset + 0.01 && e.y >= (e.panel === "spine" ? SAFE_INSET : SAFE_INSET) - 0.01 && e.y + h <= p.h - SAFE_INSET + 0.01;
     if (!ok) out.push({ level: "warn", message: `${PANEL_LABEL[e.panel]}의 ${label}이 안전 영역(재단선·접는 선에서 ${inset}mm) 밖으로 나갑니다.` });
     if (e.kind === "text" && e.text.trim() && e.sizePt < 6) out.push({ level: "warn", message: `${label} 글자가 너무 작습니다 (${e.sizePt}pt, 6pt 이상 권장).` });
+    if (e.panel === BARCODE_GUIDE.panel && (e.kind === "image" || e.text.trim())) {
+      const b = barcodeRect(l);
+      if (e.x < b.x + b.w && e.x + w > b.x && e.y < b.y + b.h && e.y + h > b.y) {
+        out.push({ level: "warn", message: `뒷표지의 ${label}이 ISBN 바코드 자리(아래쪽 ${BARCODE_GUIDE.widthMm}×${BARCODE_GUIDE.heightMm}mm)와 겹칩니다. 바코드가 가릴 수 있으니 옮기세요(정확한 자리는 부크크 가이드 확인).` });
+      }
+    }
     if (e.kind === "image") {
       const dpi = Math.round(e.widthPx / (e.w / 25.4));
       if (dpi < PRINT_DPI) out.push({ level: dpi < 150 ? "error" : "warn", message: `${PANEL_LABEL[e.panel]} 사진 해상도가 ${dpi} DPI입니다 (권장 ${PRINT_DPI} DPI).` });

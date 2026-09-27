@@ -4,19 +4,19 @@ prd.md가 모호하거나 구현 중 선택이 필요했던 부분의 결정과 
 
 | # | 항목 | 결정 | 이유 |
 |---|---|---|---|
-| 1 | 앱 위치 | `bkk/` 폴더 루트에 Next.js 앱 구성 (`instruction.md`, `style reference/`와 같은 폴더) | instruction.md·style reference를 경로 설정 없이 바로 읽기 위해 |
+| 1 | 앱 위치 | `bkk/` 폴더 루트에 Next.js 앱 구성. **변경:** instruction.md는 DB(`AppSetting`의 `instruction` 키), 문체 자료는 Supabase Storage `style-reference` 버킷에 둔다. 같은 폴더의 `instruction.md`·`style reference/`는 로컬 모드와 최초 이전용(`STYLE_REFERENCE_DIR`로 변경 가능, git 제외) | 처음엔 경로 설정 없이 바로 읽기 위해 → 웹 배포(Vercel)는 파일 시스템이 없어서 |
 | 2 | Next.js 버전 | Next 16 (App Router, Turbopack), React 19, TypeScript 5 | 최신 안정판. TS 7은 Next 타입체커 호환 문제로 5로 고정 |
 | 3 | UI 컴포넌트 | shadcn/ui CLI 대신 Tailwind v4 유틸 + 직접 만든 소수 컴포넌트(`.btn`, `.card` 등) | 대화형 CLI 설치 없이 동일한 효과, 의존성 최소화 |
-| 4 | DB | SQLite + Prisma 6 (`data/app.db`) | Prisma 7은 드라이버 어댑터 필수 등 구성 변경이 커서 6으로 고정 |
-| 5 | AI 게이트웨이 | `https://gw.letsur.ai/v1/chat/completions`, 인증 헤더 `x-api-key` (`LLM_AUTH_SCHEME=bearer`로 전환 가능) | prd.md 11장 답변 반영. 키는 `.env`에만 저장, 모든 호출은 서버 라우트 경유 |
+| 4 | DB | ~~SQLite (`data/app.db`)~~ **변경:** Supabase Postgres(`withbook` 스키마, RLS) + Prisma 6. `DATABASE_URL`=풀러(6543), `DIRECT_URL`=직접 연결(스키마 반영). 옛 SQLite 파일은 이전 후 쓰지 않음 | 웹 배포(Vercel 서버리스)에 파일 DB를 둘 수 없어서. Prisma 7은 드라이버 어댑터 필수 등 구성 변경이 커서 6으로 고정 |
+| 5 | AI 연결 | ~~게이트웨이 고정~~ **변경:** [책 설정 → AI 설정]에서 제공자(Letsur 게이트웨이·Gemini·OpenAI·Anthropic·직접 입력)·기본 주소·모델·인증 방식(`x-api-key`/`bearer`)을 고른다(`src/lib/ai/settings.ts`, DB `AppSetting`의 `ai` 키). 기본값은 게이트웨이 `claude-fable-5-1`, `.env`의 `LLM_*`는 설정이 없을 때의 초기값 | 처음엔 prd.md 11장 답변(게이트웨이 1개) → 모델·제공자 교체 요구. 키는 서버에만 두고 화면엔 가려서 표시, 모든 호출은 서버 라우트 경유 |
 | 6 | 스트리밍 전송 | 서버 → 브라우저는 NDJSON(`{t:"status"|"delta"|"done"|"error"}`) | 진행 상태(개요 작성 중 등)와 본문 조각을 한 스트림으로 보내기 위해 |
 | 7 | 조판 엔진 | Paged.js 폴리필이 도는 `/book/[id]` HTML 한 벌을 미리보기·쪽 번호 측정·PDF가 공유 | 화면과 인쇄 결과가 같은 CSS에서 나오도록 |
 | 8 | 쪽 번호 | Paged.js 여백 상자(counter) 대신 조판 후 JS로 직접 배치(`.pnum`) | 앞붙이 무번호·본문 1쪽 시작·풀블리드/판권면 무번호를 정확히 제어 |
 | 9 | 본문 시작 | 표제지(1) → 판권면 또는 빈 면(2) → 앞붙이 → 차례 → 본문(오른쪽 면, 1쪽) | 한국 단행본 관례, 쪽 번호 홀짝과 좌우 면 일치 |
 | 10 | 판권면 위치 | 기본 "책 맨 뒤 왼쪽 면"(설정에서 표제지 뒷면 선택 가능), 부크크 양식 기본값 | prd.md 11장 샘플. 맨 뒤 왼쪽 면에 두면 총 쪽수가 자연히 짝수 |
-| 11 | PDF 렌더러 | playwright-core + 설치된 Edge/Chrome(`PDF_BROWSER_PATH`로 지정 가능) | 별도 Chromium 다운로드 없이 로컬에서 동작 |
-| 12 | 글꼴 | `C:\Windows\Fonts`의 KoPub 서체를 `public/fonts`로 복사해 `@font-face`로 로드(저장소 커밋 제외) | PDF 서브셋 임베딩 보장, prd 비기능 요구(폰트 파일 커밋 금지) |
-| 13 | 편집기 쪽 경계 | 편집 화면의 쪽 경계선은 측정된 절 시작 위치 + 본문 높이 160mm 간격 근사치. 정확한 쪽은 펼침면 미리보기 | 연속 편집에서 실시간 정밀 조판은 비용이 커서 |
+| 11 | PDF 렌더러 | playwright-core. **변경:** 웹 배포(Vercel)는 `@sparticuz/chromium`(서버용 Chromium), 로컬은 설치된 Edge/Chrome(`PDF_BROWSER_PATH`로 지정 가능) | 로컬은 별도 다운로드 없이, 서버리스에는 설치된 브라우저가 없어서 |
+| 12 | 글꼴 | KoPub 서체를 `@font-face`로 로드(저장소 커밋 제외). **변경:** 로컬은 `public/fonts`, 웹 배포는 Supabase Storage 공개 `fonts` 버킷(WOFF2 우선, 없으면 TTF — `scripts/upload-fonts.mjs`로 올림). PDF에 KoPub이 안 들어가면 출력을 멈춘다 | PDF 서브셋 임베딩 보장, prd 비기능 요구(폰트 파일 커밋 금지) |
+| 13 | 편집기 쪽 경계 | 변경: 숨은 창의 실제 조판(Paged.js) 결과를 절 블록 단위로 읽어, 원고·그림·캡션이 일치하면 그 쪽 경계를 그대로 따른다(그림이 실제로 놓인 쪽에 편집기도 둔다). 결과가 없거나 원고가 바뀌었으면 화면 측정 근사치. 그림·캡션 크기는 인쇄 CSS와 같은 mm 값 | 그림 캡션까지 재서 편집기만 다음 쪽으로 넘기던 불일치 해소 |
 | 14 | 쪽 번호 측정 주기 | 저장 후 입력이 8초 잠잠하면 숨은 iframe에서 전체 조판 → 절별 쪽 범위·1쪽당 글자 수 보정(이동 평균 0.7/0.3) | 타이핑 중 버벅임 방지 |
 | 15 | 스케치 형식 | 일반 텍스트(불릿 자유 입력), 인쇄 제외 | 빠른 메모에 서식이 불필요 |
 | 16 | AI 출력 → 문서 | 제한형 마크다운(`##`, `>`, `-`, `**`)을 한 줄 = 한 문단으로 변환, `##`는 소제목(h3) | 절 제목은 앱이 붙이므로 본문 안 제목은 소제목 하나의 단계만 허용 |
@@ -24,10 +24,10 @@ prd.md가 모호하거나 구현 중 선택이 필요했던 부분의 결정과 
 | 18 | 교정 적용 | 서버가 `before`가 문단에 정확히 1회 나오는지 검증 → 브라우저에서 ProseMirror 트랜잭션으로 치환(서식 유지) | 개별 되돌리기 가능, 굵게 등 서식 보존 |
 | 19 | 집필 되돌리기 | 스트리밍 중 문서 교체는 실행 취소 기록에 넣지 않고, 집필 전 버전을 자동 저장 → "AI 쓰기 전으로 되돌리기" 버튼 | 스트리밍 수백 단계가 실행 취소를 오염시키지 않도록 |
 | 20 | 요약 캐시 | 절·장 요약은 본문 해시로 캐시, 다음 절 집필 때 오래된 요약만 다시 생성 | 앞 내용 연결 컨텍스트를 항상 최신으로, 비용 최소화 |
-| 21 | 문체 학습 | `style reference/` 폴더 전체(txt·pdf·docx·hwpx)를 읽어 출간 도서 비중 3배로 고르게 발췌(최대 4.5만 자) → 기본 문체 프로필(`data/style-profile.json`) → 새 프로젝트에 자동 적용 | prompts.md "style reference 폴더 자료로 학습" 지시. PDF 앞 6쪽·뒤 4쪽(표지·판권·차례) 제외, 강연 녹취의 화자·시간 줄 제거 |
+| 21 | 문체 학습 | 문체 자료 전체(txt·pdf·docx·hwpx)를 읽어 출간 도서 비중 3배로 고르게 발췌(최대 4.5만 자) → 기본 문체 프로필 → 새 프로젝트에 자동 적용. **변경:** 자료는 Storage `style-reference` 버킷(로컬은 `style reference/` 폴더), 프로필은 DB `AppSetting`의 `globalStyle` 키(~~`data/style-profile.json`~~) | 초기 개발 프롬프트의 "style reference 폴더 자료로 학습" 지시. PDF 앞 6쪽·뒤 4쪽(표지·판권·차례) 제외, 강연 녹취의 화자·시간 줄 제거 |
 | 22 | 책 원고 모드 | section-write 프롬프트에 "블로그가 아니라 책의 한 절 — 제목 출력 금지, 댓글·공유 유도 제외, CTA는 절 끝 여운/장 마지막 절에서 성찰로" 지시 추가 | instruction.md 9장(블로그 브랜드 보이스)의 출력 형식(제목 포함)이 7장(본문만 출력)과 충돌 → 이번 요청 지시(최우선)로 조정. `prompts/section-write.user.md`에서 수정 가능 |
 | 23 | 흑백 인쇄 | 미리보기·편집기 이미지를 흑백으로 표시, PDF에는 원본 유지(인쇄소가 흑백 변환) | 저장 원본 손실 방지 |
-| 24 | 휴지통·백업 | 프로젝트 삭제는 30일 휴지통, DB는 하루 한 번 `data/backups`에 복사(최근 7개) | prd 비기능 요구 |
+| 24 | 휴지통·백업 | 프로젝트 삭제는 30일 휴지통. **변경:** ~~DB를 하루 한 번 `data/backups`에 복사~~ → DB 백업은 Supabase(일일 백업/PITR 또는 `pg_dump`), 프로젝트 단위는 [내보내기 → 백업 ZIP]. 하루 한 번 정리(`src/lib/maintenance.ts`)가 휴지통·지운 장·절(30일)·캐시·지난 내보내기 파일을 지운다 | prd 비기능 요구. 웹 배포에는 로컬 디스크가 없어서 |
 | 25 | HWPX | OWPML을 직접 생성(용지 154×216, gutterType=LEFT_RIGHT(맞쪽), 여백 28/23/18/18, 머리말 7, 꼬리말 13, 쪽 번호 바깥쪽 아래). 차례는 넣지 않음 | 쪽 나눔을 한글이 다시 계산하므로 쪽수 고정 차례는 부정확 |
 | 26 | AI 호출 방식 | 모든 호출을 내부적으로 스트리밍으로 받고, "헤더 대기 120초 + 무응답 120초"만 타임아웃으로 봄 | 목차 설계가 3분 넘게 걸려 전체 120초 제한으로는 계속 실패했음 |
 | 27 | 출력 토큰 한도 | 집필 `목표 글자 × 2.5 + 8,000`(최대 32,000), 목차 32,000, 교정 24,000 등 넉넉하게. `finish_reason=length`면 "중간에 끊김" 알림 | `claude-fable-5-1`은 본문 전에 추론 토큰을 쓰므로(첫 글자까지 약 50초) 1.6배 한도에서는 본문이 잘렸음 |

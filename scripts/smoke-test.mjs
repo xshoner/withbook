@@ -80,7 +80,7 @@ try {
   await context.setOffline(false);
   await waitContent(one.id, '오프라인에서도');
   await editor.fill('절 전환 직전 최신 문장입니다.');
-  await page.getByTitle('다음 절 (Ctrl+↓)', { exact: true }).click();
+  await page.getByTitle('다음 절 (Alt+↓)', { exact: true }).click();
   await page.waitForTimeout(500);
   await editor.waitFor();
   await editor.fill('둘째 절의 독립된 원고입니다.');

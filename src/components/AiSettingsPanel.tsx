@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/client";
 import { AI_SCOPES, type AiScope } from "@/lib/ai/routing";
+import { useMe } from "@/lib/me-client";
 
 type Provider = "gateway" | "openai" | "gemini" | "anthropic" | "custom";
 type Pub = {
@@ -30,16 +31,19 @@ const toForm = (p: Pub): Form => ({ provider: p.provider, keyName: p.keyName, mo
 export default function AiSettingsPanel() {
   const [scope, setScope] = useState<AiScope>("default");
   const [locked, setLocked] = useState(false);
+  const me = useMe();
+  const admin = me?.role === "superadmin";
   return <div className="space-y-5">
     <p className="text-sm text-stone-600">용도별로 API 키와 모델을 등록하세요. 별도 설정이 없으면 기본 연결을 사용합니다. 모든 책에 공통으로 적용됩니다.</p>
     <div className="flex flex-wrap gap-2" role="group" aria-label="AI 작업 용도">
       {(Object.keys(AI_SCOPES) as AiScope[]).map((s) => <button key={s} disabled={locked} aria-pressed={scope === s} className={scope === s ? "btn-primary" : "btn"} onClick={() => setScope(s)}>{AI_SCOPES[s].label}</button>)}
     </div>
-    <ConnectionPanel key={scope} scope={scope} onLock={setLocked} />
+    <ConnectionPanel key={scope} scope={scope} onLock={setLocked} admin={admin} />
   </div>;
 }
 
-function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: boolean) => void }) {
+/** admin: 관리자(superadmin)만 연결을 바꾸고, 키 이름·인증 방식·출력 한도·추론 강도 같은 고급 항목을 본다 */
+function ConnectionPanel({ scope, onLock, admin }: { scope: AiScope; onLock: (locked: boolean) => void; admin: boolean }) {
   const [cur, setCur] = useState<Pub | null>(null);
   const [f, setF] = useState<Form | null>(null);
   const [editing, setEditing] = useState(false);
@@ -115,7 +119,7 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
       <div className="rounded-lg border border-stone-200 p-4 space-y-3">
         <div className="font-semibold">{AI_SCOPES[scope].label} <span className="ml-2 text-xs font-normal text-stone-500">{cur.inherited ? "기본 연결 사용 중" : "개별 연결 사용 중"}</span></div>
         <p className="text-sm text-stone-500">{AI_SCOPES[scope].description}</p>
-        {!editing && <div className="flex flex-wrap items-center gap-2">
+        {admin && !editing && <div className="flex flex-wrap items-center gap-2">
           <button className="btn" disabled={saving || check.state === "checking"} onClick={() => {
             setF({ ...f, ...cur.providers.gemini, provider: "gemini", apiKey: "", clearKey: f.provider !== "gemini" || f.baseUrl !== cur.providers.gemini.baseUrl, reasoningEffort: "low", maxOutputTokens: 32000 });
             setEditing(true); setErr(""); setCheck({ state: "idle" });
@@ -130,14 +134,14 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
           }}>gpt-image-2.5-sunburst로 설정 (Letsur)</button>}
           {scope !== "default" && !cur.inherited && <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ useDefault: true })}>개별 연결 해제</button>}
         </div>}
-        {scope !== "default" && !editing && <div className="flex flex-wrap items-center gap-2">
+        {admin && scope !== "default" && !editing && <div className="flex flex-wrap items-center gap-2">
           <select aria-label="복사할 AI 연결" className="input w-auto" disabled={saving || check.state === "checking"} value={copyFrom} onChange={(e) => setCopyFrom(e.target.value as AiScope)}>
             {(Object.keys(AI_SCOPES) as AiScope[]).filter((s) => s !== scope).map((s) => <option key={s} value={s}>{AI_SCOPES[s].label}</option>)}
           </select>
           <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ copyFrom })}>이 연결 복사</button>
           <span className="text-xs text-stone-500">키를 다시 입력하지 않고 복사합니다. 이후 변경은 각각 적용됩니다.</span>
         </div>}
-        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 팩트체크는 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}{scope === "cover" ? " 표지 그림은 POST {기본 주소}/v1/images/generations로 부르며, Letsur 게이트웨이는 Authorization: Bearer 인증을 씁니다. 연결 점검은 그림을 만들지 않고(비용 없음) 키만 확인합니다." : ""}</p>}
+        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 사실 확인은 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}{scope === "cover" ? " 표지 그림은 POST {기본 주소}/v1/images/generations로 부르며, Letsur 게이트웨이는 Authorization: Bearer 인증을 씁니다. 연결 점검은 그림을 만들지 않고(비용 없음) 키만 확인합니다." : ""}</p>}
         {scope === "cover" && cur.inherited && !editing && <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">표지 그림은 글쓰기 모델(기본 연결)로 만들 수 없어 개별 연결이 필요합니다. 위 버튼으로 설정한 뒤 API 키를 입력하세요.</p>}
       </div>
       <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">
@@ -188,11 +192,6 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
           "제공자가 안내하는 모델 이름 그대로",
         )}
         {field(
-          "AI 호출 이름 (키 이름)",
-          <input className={`${inputCls} font-mono`} readOnly={ro} value={f.keyName} onChange={(e) => set({ keyName: e.target.value.toUpperCase() })} placeholder="예: GEMINI_API_KEY" />,
-          "키 값을 비워 두면 서버 환경변수에서 읽습니다 (…_API_KEY로 끝나야 함)",
-        )}
-        {field(
           "API 키 값",
           <input
             className={`${inputCls} font-mono`}
@@ -210,27 +209,41 @@ function ConnectionPanel({ scope, onLock }: { scope: AiScope; onLock: (locked: b
           <input className={`${inputCls} font-mono text-xs`} readOnly={ro} value={f.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} placeholder="https://…" />,
           `호출 주소: ${scope === "cover" ? (cur.baseUrl ? `${cur.baseUrl.replace(/\/+$/, "")}${/\/v\d+$/.test(cur.baseUrl.replace(/\/+$/, "")) ? "" : "/v1"}/images/generations` : "(없음)") : cur.endpoint || "(없음)"}`,
         )}
-        {field(
-          "인증 방식",
-          <select className={inputCls} disabled={ro} value={f.authScheme} onChange={(e) => set({ authScheme: e.target.value as Form["authScheme"] })}>
-            <option value="bearer">Authorization: Bearer (OpenAI·Gemini·Anthropic)</option>
-            <option value="x-api-key">x-api-key 헤더 (게이트웨이)</option>
-          </select>,
-        )}
-        {scope !== "cover" && field(
-          "최대 출력 토큰",
-          <input type="number" className={inputCls} readOnly={ro} min={1000} max={200000} step={1000} value={f.maxOutputTokens} onChange={(e) => set({ maxOutputTokens: Number(e.target.value) || 32000 })} />,
-          "긴 절 집필에 쓰는 한 번 호출의 상한. 모델 한도보다 크면 낮추세요",
-        )}
-        {f.provider === "gemini" && field("추론 강도", <select className={inputCls} disabled={ro} value={f.reasoningEffort} onChange={(e) => set({ reasoningEffort: e.target.value as Form["reasoningEffort"] })}>
-          <option value="default">모델 기본값</option><option value="low">낮음 — 빠른 요약·개요</option><option value="medium">보통</option><option value="high">높음</option>
-        </select>, "낮음은 응답 준비 시간을 줄이는 설정입니다. 지원 여부는 모델에 따라 다릅니다.")}
         {editing && <label className="flex items-center gap-2 text-xs text-stone-600"><input type="checkbox" checked={f.clearKey} onChange={(e) => set({ clearKey: e.target.checked, apiKey: "" })} />저장된 키 지우기 (서버 환경변수 사용)</label>}
       </fieldset>
+      {admin && (
+        <details className="rounded-lg border border-stone-200 px-4 py-2" open={editing && f.provider === "custom"}>
+          <summary className="cursor-pointer text-sm text-stone-600">고급 (관리자) — 키 이름·인증 방식·출력 한도·추론 강도</summary>
+          <fieldset disabled={saving} className="mt-3 grid grid-cols-1 gap-4 pb-2 sm:grid-cols-2">
+            {field(
+              "AI 호출 이름 (키 이름)",
+              <input className={`${inputCls} font-mono`} readOnly={ro} value={f.keyName} onChange={(e) => set({ keyName: e.target.value.toUpperCase() })} placeholder="예: GEMINI_API_KEY" />,
+              "키 값을 비워 두면 서버 환경변수에서 읽습니다 (…_API_KEY로 끝나야 함)",
+            )}
+            {field(
+              "인증 방식",
+              <select className={inputCls} disabled={ro} value={f.authScheme} onChange={(e) => set({ authScheme: e.target.value as Form["authScheme"] })}>
+                <option value="bearer">Authorization: Bearer (OpenAI·Gemini·Anthropic)</option>
+                <option value="x-api-key">x-api-key 헤더 (게이트웨이)</option>
+              </select>,
+            )}
+            {scope !== "cover" && field(
+              "최대 출력 토큰",
+              <input type="number" className={inputCls} readOnly={ro} min={1000} max={200000} step={1000} value={f.maxOutputTokens} onChange={(e) => set({ maxOutputTokens: Number(e.target.value) || 32000 })} />,
+              "긴 절 집필에 쓰는 한 번 호출의 상한. 모델 한도보다 크면 낮추세요",
+            )}
+            {field("추론 강도", <select className={inputCls} disabled={ro} value={f.reasoningEffort} onChange={(e) => set({ reasoningEffort: e.target.value as Form["reasoningEffort"] })}>
+              <option value="default">모델 기본값</option><option value="low">낮음 — 빠른 요약·개요</option><option value="medium">보통</option><option value="high">높음</option>
+            </select>, "낮음은 응답 준비 시간을 줄이는 설정입니다. 본문 집필은 품질 때문에 기본값을 권장합니다. 지원 여부는 모델에 따라 다릅니다.")}
+          </fieldset>
+        </details>
+      )}
 
       {err && <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>}
       <div className="flex items-center gap-2">
-        {!editing ? (
+        {!admin ? (
+          <span className="text-xs text-stone-500">연결을 바꾸려면 관리자에게 요청하세요.</span>
+        ) : !editing ? (
           <button className="btn-primary" disabled={saving || check.state === "checking"} onClick={() => setEditing(true)}>
             {cur.inherited ? "이 용도에 API 추가" : "수정"}
           </button>

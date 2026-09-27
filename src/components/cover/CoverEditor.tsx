@@ -28,6 +28,7 @@ import {
   type Rect,
   buildImagePrompt,
   coverIssues,
+  BARCODE_NOTE,
   coverLayout,
   elAbs,
   googleFontsHref,
@@ -51,7 +52,7 @@ const src = (id: string) => `/api/assets/${id}`;
 type Project = { title: string; subtitle: string; author: string; topic: string; keyMessage: string; audience: string; tone: string; targetPages: number; chapters: { title: string; kind: string }[] };
 type Tab = "ai" | "image" | "text";
 
-/** 커버 디자인 에디터 — 펼침면(뒷날개|뒷표지|책등|앞표지|앞날개)에 그림을 채우고 글·사진을 얹어 인쇄용 PDF로 내보낸다 */
+/** 표지 디자인 에디터 — 펼침면(뒷날개|뒷표지|책등|앞표지|앞날개)에 그림을 채우고 글·사진을 얹어 인쇄용 PDF로 내보낸다 */
 export default function CoverEditor({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [design, setDesign] = useState<CoverDesign | null>(null);
@@ -64,7 +65,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const [sel, setSel] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("ai");
   const [region, setRegion] = useState<Region>("full");
-  const [guides, setGuides] = useState<Guides>({ bleed: true, fold: true, safe: true, labels: true });
+  const [guides, setGuides] = useState<Guides>({ bleed: true, fold: true, safe: true, labels: true, barcode: true });
   const [zoom, setZoom] = useState<number | null>(null); // null = 화면에 맞춤
   const [fitZoom, setFitZoom] = useState(0.5);
   const [busy, setBusy] = useState<"" | "save" | "export" | "ai" | "edit" | "upload">("");
@@ -91,7 +92,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         setDesign(c.design);
         setActualPages(c.actualPages ?? null);
         setSavedJson(c.saved ? JSON.stringify(c.design) : "");
-        document.title = `커버 디자인 — ${p.title}`;
+        document.title = `표지 디자인 — ${p.title}`;
       })
       .catch((e) => setErr(e.message));
   }, [projectId]);
@@ -543,7 +544,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
           ← 편집기
         </Link>
         <h1 className="mr-2 truncate font-semibold">
-          커버 디자인 <span className="font-normal text-stone-500">— {project.title}</span>
+          표지 디자인 <span className="font-normal text-stone-500">— {project.title}</span>
         </h1>
         <label className="flex items-center gap-1">
           판형
@@ -609,10 +610,11 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
               ["fold", "접는 선"],
               ["safe", "안전 영역"],
               ["labels", "이름"],
+              ["barcode", "바코드 자리"],
             ] as [keyof Guides, string][]
           ).map(([k, label]) => (
-            <label key={k} className="flex items-center gap-1">
-              <input type="checkbox" checked={guides[k]} onChange={(e) => setGuides({ ...guides, [k]: e.target.checked })} />
+            <label key={k} className="flex items-center gap-1" title={k === "barcode" ? BARCODE_NOTE : undefined}>
+              <input type="checkbox" checked={!!guides[k]} onChange={(e) => setGuides({ ...guides, [k]: e.target.checked })} />
               {label}
             </label>
           ))}

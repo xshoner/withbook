@@ -26,15 +26,16 @@
    - Project Settings → API Keys: Publishable key(공개), **Secret key(`sb_secret_…`, 서버 전용)**
    - Connect → Connection string: **Transaction pooler(6543)** 와 **Session pooler(5432)** 주소, DB 비밀번호
 2. **로컬 `.env`** 에 `.env.example`의 Supabase·DB 값을 채운다.
-3. **데이터 이전** (원고·이미지·글꼴·문체 자료·학습된 문체 프로필·AI 설정·instruction.md·최초 관리자 계정):
+3. **데이터 이전** (2026-09에 1회 완료 — 기록용. 원고·이미지·글꼴·문체 자료·학습된 문체 프로필·AI 설정·instruction.md·최초 관리자 계정):
    ```sh
-   node --env-file=.env scripts/migrate-to-supabase.mjs
+   node --env-file=.env scripts/archive/migrate-to-supabase.mjs
    ```
    관리자 계정은 실행할 때만 넘긴다(저장하지 않음). PowerShell 예:
    ```powershell
-   $env:ADMIN_EMAIL='관리자 이메일'; $env:ADMIN_PASSWORD='최초 비밀번호'; node --env-file=.env scripts/migrate-to-supabase.mjs
+   $env:ADMIN_EMAIL='관리자 이메일'; $env:ADMIN_PASSWORD='최초 비밀번호'; node --env-file=.env scripts/archive/migrate-to-supabase.mjs
    ```
    여러 번 실행해도 이미 있는 항목은 건너뛴다. 관리자 비밀번호는 로그인 후 바꾸는 것을 권장한다.
+   이 스크립트는 `scripts/archive/`로 옮겼고, 쓰던 `AppUser` 모델이 스키마에서 빠져 지금 그대로는 실행되지 않는다(다시 필요하면 그 시점 커밋에서 실행). 이전 전 로컬 SQLite 원본은 `data/_legacy-sqlite/`(git 제외)에 남아 있다.
 4. **Vercel**: GitHub 저장소를 Import → Environment Variables에 아래 값을 넣고 배포.
    ```dotenv
    APP_ACCESS_MODE=web
@@ -51,6 +52,7 @@
    `NEXT_PUBLIC_*`·`APP_ACCESS_MODE`는 빌드 때 화면에 들어가므로 값을 바꾸면 다시 배포한다.
 5. Supabase → Authentication → URL Configuration의 Site URL을 `https://withbook.vercel.app`으로 둔다.
 6. **스키마 반영**: 표·열·인덱스가 바뀌면(예: `AiLog.userId`, 목차·버전·사용 기록 인덱스) 로컬에서 `npm run db:push`로 Supabase에 반영한다(`DIRECT_URL` 사용). 배포 전에 한 번 실행한다.
+   - 운영 DB의 옛 `withbook."AppUser"` 표는 더 이상 쓰지 않는다(역할은 Supabase Auth `app_metadata.role`). 스키마에서 모델을 뺐으므로 다음 `npm run db:push`는 이 표를 지우려 하고, 표에 행이 있으면 데이터 손실 경고로 멈춘다(대화형이면 확인을 묻는다). 이 표 말고 다른 표가 지워지지 않는지 경고 목록을 확인한 뒤 진행하거나, 먼저 Supabase SQL 편집기에서 `drop table withbook."AppUser";`로 직접 지운다.
 7. **글꼴**: KoPub TTF를 WOFF2로 바꿔(약 1/3 크기) 함께 올린다. 화면·조판은 WOFF2를 먼저 받고 없으면 TTF를 쓴다.
    ```sh
    npx ttf2woff2 < public/fonts/KoPubBatangLight.ttf > public/fonts/KoPubBatangLight.woff2   # 세 글꼴 모두
@@ -82,12 +84,13 @@ npm run dev
 - 지운 장·절도 30일 보관한다(`AppSetting`의 `trash:` 키). 삭제 알림의 [되돌리기] 또는 목차의 [삭제한 장·절]에서 되돌린다. 지우기 전에 밀린 자동 저장을 먼저 보내고, 지운 절로 가는 저장(404)은 되풀이하지 않고 버린다.
 - AI 집필 중 받은 글은 5초마다 `AppSetting`의 `ai-partial:{절 id}`에 보관한다(스트림이 끊기면 남고, 정상으로 끝나면 지운다, 7일). `GET/DELETE /api/sections/[id]/partial`.
 - 하루 한 번 정리(프로젝트 목록 응답을 보낸 뒤 `after()`로, 마지막 실행 날짜는 `AppSetting`의 `maintenance:last`): 휴지통 프로젝트·장·절(30일), 개요 캐시(1일), AI 부분 원고(7일), `exports`·`incoming` 버킷의 하루 지난 파일.
+- 절별 참고 자료는 `ref:{절}:{자료}`, 작가가 고친 개요는 `outline-edit:{절}`에 둔다(절·장을 지우면 휴지통 항목에 함께 담기고, 목차 교체·책 영구 삭제 때 지운다). 책 단위: 마지막 PDF 점검 `pdf-check:{책}`, 실제 쪽수 `pages:{책}`, 일관성 검사·베타 리더 결과 `ai:consistency:*`·`ai:beta:*`(내용 해시가 같으면 다시 부르지 않음), 원고 가져오기 분석 `manuscript-import:*`.
 - 끝난 교정 결과(변경 내역·교정 전 원고)는 `AppSetting`의 `proof-result:{절 id}` 키에 7일 보관한다(새 교정을 시작하거나 [전체 되돌리기]하면 지운다).
 
 ## 백그라운드 작업(AI 집필·교정)
 
 - 작업은 서버가 아니라 **작가의 브라우저 탭**이 요청을 들고 기다린다. 다른 절로 옮겨도 계속되지만, 탭을 닫거나 새로 고치면 끊긴다(작업 중에는 닫기 전에 묻는다). 집필은 끊긴 시점까지 받은 글을 넣지 못할 수 있다.
-- 한 절에서 집필과 교정은 겹치지 않는다. 다중 집필은 이미 작업 중인 절을 건너뛰고 알린다.
+- 한 절에서 집필과 교정은 겹치지 않는다. 자동 집필은 이미 작업 중인 절을 건너뛰고 알린다.
 - 각 요청은 Vercel 실행 시간(300초) 안에서 끝나야 한다 — 위 [Vercel 제약과 대응] 참고.
 
 ## 검증 명령

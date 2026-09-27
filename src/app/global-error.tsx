@@ -24,7 +24,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
               </button>
               {/* 레이아웃이 깨졌을 수 있어 next/link 대신 전체 새로 고침으로 옮긴다 */}
               <a href="/projects" style={btn}>
-                프로젝트 목록
+                책 목록
               </a>
             </div>
           </div>

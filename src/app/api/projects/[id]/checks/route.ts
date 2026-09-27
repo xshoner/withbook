@@ -11,7 +11,7 @@ export const GET = handle(async (req: Request, ctx: RouteContext<"/api/projects/
   const { id } = await ctx.params;
   const only = new URL(req.url).searchParams.get("sectionId");
   const book = await loadBook(id);
-  if (!book) return fail("프로젝트를 찾을 수 없습니다.", 404);
+  if (!book) return fail("책을 찾을 수 없습니다.", 404);
   const sections = flatSections(book)
     .filter(({ section }) => !only || section.id === only)
     .map(({ chapter, section }) => ({

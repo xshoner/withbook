@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
 import type { TocDesign } from "@/lib/ai/tasks";
-import { clearPartials, trashChapter } from "@/lib/trash";
+import { clearExtras, clearPartials, trashChapter } from "@/lib/trash";
 
 /** 본문이나 스케치가 있는 절 — 목차를 바꾸기 전에 확인을 받고, 그 장은 휴지통에 담는다 */
 const hasWork = { OR: [{ charCount: { gt: 0 } }, { sketch: { not: "" } }] };
@@ -33,6 +33,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
     }
     const rest = await tx.section.findMany({ where: { chapter: { projectId: id } }, select: { id: true } });
     await clearPartials(tx, rest.map((s) => s.id));
+    await clearExtras(tx, rest.map((s) => s.id));
     await tx.chapter.deleteMany({ where: { projectId: id } });
     let order = 0;
     for (const t of d.frontMatter ?? []) {

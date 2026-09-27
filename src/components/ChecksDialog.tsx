@@ -5,6 +5,7 @@ import { api } from "@/lib/client";
 import type { StyleReport } from "@/lib/style/check";
 import { confirmDialog, toastError } from "@/components/ui/feedback";
 import InlineDiff from "@/components/InlineDiff";
+import { CONSISTENCY_LABEL, type BetaPoint, type BetaResult, type ConsistencyResult } from "@/lib/ai/review-shape";
 
 type Marker = {
   paragraph: number;
@@ -62,8 +63,14 @@ export default function ChecksDialog({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [kind, setKind] = useState<"all" | "check" | "image">("all");
-  const [tab, setTab] = useState<"marks" | "style">("marks");
+  const [tab, setTab] = useState<"marks" | "style" | "consistency" | "beta">("marks");
   const [styleSeen, setStyleSeen] = useState(false);
+  const [seen, setSeen] = useState<Set<string>>(new Set());
+  const [aiBusy, setAiBusy] = useState(false);
+  const openTab = (t: "consistency" | "beta") => {
+    setTab(t);
+    setSeen((prev) => new Set(prev).add(t));
+  };
   const [judging, setJudging] = useState<{ i: number; total: number } | null>(null);
   const [facts, setFacts] = useState<FactRow[]>([]);
   const stopJudge = useRef(false);
@@ -110,13 +117,13 @@ export default function ChecksDialog({
     }
   };
 
-  /** AI 판정 — 표시 확인의 [확인 필요]를 문서 순서대로 하나씩(요청 하나에 하나) 판정한다 */
+  /** 사실 확인 — 표시 확인의 [확인 필요]를 문서 순서대로 하나씩(요청 하나에 하나) 확인한다 */
   const judge = async () => {
     const targets = (res?.sections ?? []).flatMap((s) => s.markers.filter((m) => m.kind === "check").map((m) => ({ s, m })));
     if (!targets.length) return;
     const ok = await confirmDialog(
-      `[확인 필요] ${targets.length}건을 팩트체크 AI가 최신 자료로 차례로 판정합니다.\n통과: 표시만 지웁니다 · 보완: 수치·사실관계·근거만 고친 문장으로 바꿉니다.\n바꾸기 전 원고는 버전 기록에 남습니다.`,
-      { okLabel: "AI 판정 시작" },
+      `[확인 필요] ${targets.length}건을 사실 확인 AI가 최신 자료로 차례로 확인합니다.\n통과: 표시만 지웁니다 · 보완: 수치·사실관계·근거만 고친 문장으로 바꿉니다.\n바꾸기 전 원고는 버전 기록에 남습니다.`,
+      { okLabel: "사실 확인 시작" },
     );
     if (!ok) return;
     if (!(await beforeEdit())) return toastError(new Error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요."));
@@ -158,7 +165,7 @@ export default function ChecksDialog({
     .filter((s) => s.markers.length);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-6" onMouseDown={(e) => e.target === e.currentTarget && !judging && onClose()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-6" onMouseDown={(e) => e.target === e.currentTarget && !judging && !aiBusy && onClose()}>
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl bg-white shadow-2xl">
         <div className="flex items-center gap-3 border-b border-stone-200 px-4 py-3">
           <div className="flex overflow-hidden rounded-md border border-stone-300 text-sm">
@@ -173,6 +180,20 @@ export default function ChecksDialog({
               }}
             >
               문체 점검
+            </button>
+            <button
+              className={`px-2.5 py-1 font-semibold ${tab === "consistency" ? "bg-stone-800 text-white" : "text-stone-600"}`}
+              title="장 요약과 용어집으로 책 전체에서 어긋나는 사실·되풀이한 사례·지키지 않은 약속·흔들리는 용어를 찾습니다"
+              onClick={() => openTab("consistency")}
+            >
+              책 전체 일관성
+            </button>
+            <button
+              className={`px-2.5 py-1 font-semibold ${tab === "beta" ? "bg-stone-800 text-white" : "text-stone-600"}`}
+              title="대상 독자의 눈으로 장을 읽고 늘어지는 곳·이해 안 되는 곳·독자 질문·뺄 곳을 알려 줍니다"
+              onClick={() => openTab("beta")}
+            >
+              베타 리더
             </button>
           </div>
           {tab === "marks" && (
@@ -193,11 +214,11 @@ export default function ChecksDialog({
           {tab === "marks" && (
             <button
               className="ml-auto rounded-md bg-violet-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-600 disabled:opacity-40"
-              title="[확인 필요] 표시를 팩트체크 AI가 최신 자료로 모두 차례로 판정합니다 (책 설정 → AI 설정 → 팩트체크)"
+              title="[확인 필요] 표시를 사실 확인 AI가 최신 자료로 모두 차례로 확인합니다 (설정 → AI 연결 → 사실 확인)"
               disabled={!!judging || !!busy || !res?.sections.some((s) => s.markers.some((m) => m.kind === "check"))}
               onClick={judge}
             >
-              {judging ? `AI 판정 중… ${judging.i + 1}/${judging.total}` : "AI 판정"}
+              {judging ? `사실 확인 중… ${judging.i + 1}/${judging.total}` : "사실 확인"}
             </button>
           )}
           {tab === "marks" && (
@@ -205,7 +226,7 @@ export default function ChecksDialog({
               ↻ 새로 고침
             </button>
           )}
-          <button className={`btn-ghost ${tab === "style" ? "ml-auto" : ""}`} disabled={!!judging} onClick={onClose}>
+          <button className={`btn-ghost ${tab !== "marks" ? "ml-auto" : ""}`} disabled={!!judging || aiBusy} onClick={onClose}>
             ✕
           </button>
         </div>
@@ -213,6 +234,16 @@ export default function ChecksDialog({
         {styleSeen && (
           <div className={tab === "style" ? "contents" : "hidden"}>
             <StyleTab projectId={projectId} beforeEdit={beforeEdit} onGoto={onGoto} />
+          </div>
+        )}
+        {seen.has("consistency") && (
+          <div className={tab === "consistency" ? "contents" : "hidden"}>
+            <ConsistencyTab projectId={projectId} beforeEdit={beforeEdit} onGoto={onGoto} onBusy={setAiBusy} />
+          </div>
+        )}
+        {seen.has("beta") && (
+          <div className={tab === "beta" ? "contents" : "hidden"}>
+            <BetaTab projectId={projectId} beforeEdit={beforeEdit} onGoto={onGoto} onBusy={setAiBusy} />
           </div>
         )}
         {tab === "marks" && (
@@ -290,7 +321,7 @@ export default function ChecksDialog({
   );
 }
 
-/** AI 판정 진행과 결과 — 보완은 바뀐 부분을 표시하고 근거를 함께 보여 준다 */
+/** 사실 확인 진행과 결과 — 보완은 바뀐 부분을 표시하고 근거를 함께 보여 준다 */
 function FactPanel({
   rows,
   judging,
@@ -311,7 +342,7 @@ function FactPanel({
   return (
     <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50/40">
       <div className="flex items-center gap-2 border-b border-violet-100 px-3 py-2 text-xs">
-        <span className="font-semibold text-violet-900">AI 판정</span>
+        <span className="font-semibold text-violet-900">사실 확인</span>
         <span className="text-stone-600">
           {done}/{rows.length} · <span className="text-green-700">통과 {pass}</span> · <span className="text-amber-700">보완 {revise}</span>
           {failed > 0 && <span className="text-red-600"> · 실패 {failed}</span>}
@@ -336,7 +367,7 @@ function FactPanel({
             ? ["실패", "bg-red-100 text-red-700"]
             : !f
               ? judging?.i === i
-                ? ["판정 중…", "bg-violet-100 text-violet-700"]
+                ? ["확인 중…", "bg-violet-100 text-violet-700"]
                 : ["대기", "bg-stone-100 text-stone-500"]
               : f.verdict === "pass"
                 ? ["통과", "bg-green-100 text-green-800"]
@@ -568,6 +599,268 @@ function StyleTab({ projectId, beforeEdit, onGoto }: { projectId: string; before
             ) : (
               <p className="text-xs text-stone-400">한 문단에서 세 번 이상 되풀이한 단어가 없습니다.</p>
             )}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+type GotoFn = (sectionId: string, paragraph: number, text: string) => void;
+const fmtAt = (at: string | null) => (at ? new Date(at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+
+/** 오래 걸리는 AI 요청의 경과 초 */
+function useElapsed(running: boolean) {
+  const [sec, setSec] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    setSec(0);
+    const t = setInterval(() => setSec((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  return sec;
+}
+
+const SEV = { high: ["중요", "bg-red-100 text-red-800"], medium: ["보통", "bg-amber-100 text-amber-800"], low: ["참고", "bg-stone-100 text-stone-600"] } as const;
+
+/** 책 전체 일관성 — 장 요약·용어집으로 장 사이 문제를 찾는다. 저장된 결과를 먼저 보여 주고, 원고가 바뀌었을 때만 다시 점검을 권한다 */
+function ConsistencyTab({ projectId, beforeEdit, onGoto, onBusy }: { projectId: string; beforeEdit: () => Promise<boolean>; onGoto: GotoFn; onBusy: (b: boolean) => void }) {
+  const [data, setData] = useState<{ result: ConsistencyResult | null; at: string | null; stale: boolean } | null>(null);
+  const [err, setErr] = useState("");
+  const [running, setRunning] = useState(false);
+  const sec = useElapsed(running);
+
+  useEffect(() => {
+    api(`/api/projects/${projectId}/consistency`).then(setData, (e) => setErr(e.message));
+  }, [projectId]);
+
+  const run = async (force: boolean) => {
+    setErr("");
+    setRunning(true);
+    onBusy(true);
+    try {
+      if (!(await beforeEdit())) throw new Error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+      setData(await api(`/api/projects/${projectId}/consistency`, { method: "POST", json: { force } }));
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setRunning(false);
+      onBusy(false);
+    }
+  };
+
+  const r = data?.result;
+  return (
+    <>
+      <div className="flex items-center gap-2 border-b border-stone-100 px-4 py-2 text-[11px] leading-4 text-stone-500">
+        <span className="flex-1">
+          장·절 요약과 용어집으로 책 전체를 훑어 장 사이에서 어긋나는 사실, 되풀이한 사례, 지키지 않은 약속, 흔들리는 용어를 찾습니다. 요약이 없는 절은 먼저 요약합니다(처음엔 몇 분 걸릴 수 있음). 결과는 저장되어 다시 열어도 비용이 들지 않습니다.
+        </span>
+        <button className="btn-accent shrink-0 px-2.5 py-1 text-xs" disabled={running} onClick={() => run(!!r)}>
+          {running ? `점검 중… ${sec}초` : r ? "다시 점검" : "점검 시작"}
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-4 text-sm">
+        {err && <p className="mb-2 whitespace-pre-wrap text-red-600">{err}</p>}
+        {!data && !err && <p className="text-stone-400">불러오는 중…</p>}
+        {data && !r && !running && <p className="py-8 text-center text-stone-500">아직 점검하지 않았습니다. [점검 시작]을 누르세요.</p>}
+        {r && (
+          <>
+            {data?.stale && (
+              <p className="mb-3 rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                점검한 뒤 원고·용어집이 바뀌었습니다. 아래는 {fmtAt(data.at)} 결과입니다 — 최신 원고로 보려면 [다시 점검]을 누르세요.
+              </p>
+            )}
+            <p className="mb-1 text-xs text-stone-400">
+              {fmtAt(data?.at ?? null)} 점검{r.coverage?.skipped ? ` · 시간 한도로 ${r.coverage.skipped}개 장은 이전 요약·목차 요지로만 봄` : ""}
+            </p>
+            {r.overview && <p className="mb-3 rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-700">{r.overview}</p>}
+            {!r.items.length && <p className="py-6 text-center text-stone-500">장 사이에서 눈에 띄는 일관성 문제가 없습니다. 🎉</p>}
+            <ul className="space-y-2">
+              {r.items.map((it, i) => (
+                <li key={i} className="rounded-lg border border-stone-200 px-3 py-2 text-xs leading-5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className={`rounded px-1.5 text-[10px] font-semibold ${SEV[it.severity][1]}`}>{SEV[it.severity][0]}</span>
+                    <span className="rounded bg-violet-50 px-1.5 text-[10px] text-violet-800">{CONSISTENCY_LABEL[it.type]}</span>
+                    <span className="font-semibold text-stone-800">{it.title}</span>
+                  </div>
+                  {it.detail && <p className="mt-1 text-stone-600">{it.detail}</p>}
+                  {it.suggestion && <p className="mt-0.5 text-stone-500">→ {it.suggestion}</p>}
+                  {it.refs.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {it.refs.map((ref) => (
+                        <Go key={ref.sectionId} onGoto={onGoto} sid={ref.sectionId} p={1} t="" where={`${ref.chapterTitle} > ${ref.label} ${ref.title}`}>
+                          {`${ref.label} ${ref.title}`.trim().slice(0, 24)} →
+                        </Go>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-[11px] text-stone-400">요약을 보고 찾은 결과라 세부가 틀릴 수 있습니다. [바로가기]로 원고를 확인한 뒤 고치세요.</p>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+type Tree = { chapters: { id: string; title: string; kind: string; sections: { id: string; title: string; charCount: number }[] }[] };
+
+/** AI 베타 리더 — 장(또는 절)을 골라 대상 독자의 눈으로 읽힌다 */
+function BetaTab({ projectId, beforeEdit, onGoto, onBusy }: { projectId: string; beforeEdit: () => Promise<boolean>; onGoto: GotoFn; onBusy: (b: boolean) => void }) {
+  const [tree, setTree] = useState<Tree | null>(null);
+  const [chapterId, setChapterId] = useState("");
+  const [sectionId, setSectionId] = useState("");
+  const [data, setData] = useState<{ result: BetaResult | null; at: string | null; stale: boolean; audienceMissing?: boolean } | null>(null);
+  const [err, setErr] = useState("");
+  const [running, setRunning] = useState(false);
+  const sec = useElapsed(running);
+
+  useEffect(() => {
+    api<Tree>(`/api/projects/${projectId}`).then(
+      (t) => {
+        setTree(t);
+        const first = t.chapters.find((c) => c.sections.some((s) => s.charCount > 300)) ?? t.chapters[0];
+        if (first) setChapterId(first.id);
+      },
+      (e) => setErr(e.message),
+    );
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!chapterId) return;
+    setData(null);
+    setErr("");
+    const q = sectionId ? `sectionId=${sectionId}` : `chapterId=${chapterId}`;
+    api(`/api/projects/${projectId}/beta-reader?${q}`).then(setData, (e) => setErr(e.message));
+  }, [projectId, chapterId, sectionId]);
+
+  const run = async () => {
+    setErr("");
+    setRunning(true);
+    onBusy(true);
+    try {
+      if (!(await beforeEdit())) throw new Error("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
+      const force = !!data?.result;
+      setData(await api(`/api/projects/${projectId}/beta-reader`, { method: "POST", json: sectionId ? { sectionId, force } : { chapterId, force } }));
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setRunning(false);
+      onBusy(false);
+    }
+  };
+
+  const chapter = tree?.chapters.find((c) => c.id === chapterId);
+  const r = data?.result;
+  const points = (title: string, list: BetaPoint[], tone: string) =>
+    list.length > 0 && (
+      <>
+        <H>{title}</H>
+        <ul className="divide-y divide-stone-100 rounded-lg border border-stone-200">
+          {list.map((x, i) => (
+            <li key={i} className="px-3 py-1.5 text-xs leading-5">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  {x.quote && <div className={`font-book ${tone}`}>“{x.quote}”</div>}
+                  {x.why && <div className="text-stone-600">{x.why}</div>}
+                  {x.suggestion && <div className="text-stone-500">→ {x.suggestion}</div>}
+                </div>
+                {x.place && <Go onGoto={onGoto} sid={x.place.sectionId} p={x.place.paragraph} t={x.place.text} where={`${x.place.label} ${x.place.title} · ${x.place.paragraph}문단`} />}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </>
+    );
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2 border-b border-stone-100 px-4 py-2 text-xs">
+        <select
+          className="input w-auto max-w-[14rem] py-1 text-xs"
+          value={chapterId}
+          disabled={running}
+          onChange={(e) => {
+            setChapterId(e.target.value);
+            setSectionId("");
+          }}
+        >
+          {tree?.chapters.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.title}
+            </option>
+          ))}
+        </select>
+        <select className="input w-auto max-w-[14rem] py-1 text-xs" value={sectionId} disabled={running || !chapter} onChange={(e) => setSectionId(e.target.value)}>
+          <option value="">장 전체</option>
+          {chapter?.sections.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.title}
+            </option>
+          ))}
+        </select>
+        <button className="btn-accent ml-auto px-2.5 py-1 text-xs" disabled={running || !chapterId} onClick={run}>
+          {running ? `읽는 중… ${sec}초` : r ? "다시 읽히기" : "베타 리더에게 읽히기"}
+        </button>
+      </div>
+      <p className="border-b border-stone-100 px-4 py-2 text-[11px] leading-4 text-stone-500">
+        책 정보의 ‘대상 독자’가 되어 읽고, 늘어지는 곳·이해 안 되는 곳·독자가 품을 질문·빼도 될 곳을 알려 줍니다. 교정이 아니라 독자 반응입니다. 같은 원고면 저장된 결과를 보여 주고 다시 청구하지 않습니다.
+      </p>
+      <div className="min-h-0 flex-1 overflow-auto p-4 text-sm">
+        {err && <p className="mb-2 whitespace-pre-wrap text-red-600">{err}</p>}
+        {data?.audienceMissing && (
+          <p className="mb-3 rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            책 정보에 대상 독자가 비어 있어 ‘일반 성인 독자’로 읽습니다.{" "}
+            <a className="underline" href={`/projects/${projectId}/settings`}>
+              책 설정 → 책 정보
+            </a>
+            에서 대상 독자를 적으면 더 정확합니다.
+          </p>
+        )}
+        {!data && !err && <p className="text-stone-400">불러오는 중…</p>}
+        {data && !r && !running && <p className="py-8 text-center text-stone-500">아직 읽히지 않았습니다. 장이나 절을 고르고 [베타 리더에게 읽히기]를 누르세요.</p>}
+        {r && (
+          <>
+            {data?.stale && <p className="mb-3 rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">읽힌 뒤 원고가 바뀌었습니다. 아래는 {fmtAt(data.at)} 결과입니다.</p>}
+            <div className="rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-700">
+              {r.engagement > 0 && (
+                <div className="mb-1 font-semibold text-stone-800">
+                  몰입도 {"★".repeat(r.engagement)}
+                  <span className="text-stone-300">{"★".repeat(5 - r.engagement)}</span>
+                </div>
+              )}
+              {r.overall}
+            </div>
+            {r.strengths.length > 0 && (
+              <>
+                <H>좋았던 점</H>
+                <ul className="list-disc space-y-0.5 pl-5 text-xs leading-5 text-emerald-800">
+                  {r.strengths.map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {points("늘어지는 곳", r.drags, "text-amber-800")}
+            {points("이해가 안 되는 곳", r.unclear, "text-red-800")}
+            {r.questions.length > 0 && (
+              <>
+                <H>독자가 품을 질문</H>
+                <ul className="divide-y divide-stone-100 rounded-lg border border-stone-200">
+                  {r.questions.map((q, i) => (
+                    <li key={i} className="flex items-start gap-2 px-3 py-1.5 text-xs leading-5">
+                      <span className="flex-1 text-stone-700">❓ {q.question}</span>
+                      {q.place && <Go onGoto={onGoto} sid={q.place.sectionId} p={q.place.paragraph} t={q.place.text} where={`${q.place.label} ${q.place.title} · ${q.place.paragraph}문단`} />}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {points("빼도 좋을 곳", r.cut, "text-stone-500 line-through decoration-stone-300")}
+            <p className="mt-3 text-[11px] text-stone-400">{fmtAt(data?.at ?? null)} 읽음 · AI 독자의 반응이라 참고용입니다.</p>
           </>
         )}
       </div>

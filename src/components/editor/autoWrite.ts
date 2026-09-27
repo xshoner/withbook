@@ -19,11 +19,11 @@ const unsavedError = (what: string) => {
 };
 
 /**
- * 전체 자동 집필 — 편집기 밖(모듈)에서 돈다. 절을 옮기거나 책 설정 화면에 다녀와도 계속된다.
+ * 자동 집필 — 편집기 밖(모듈)에서 돈다. 절을 옮기거나 책 설정 화면에 다녀와도 계속된다.
  *
  * 두 줄이 동시에 돈다(파이프라인):
- *  - 집필 줄: 책 순서대로 절을 하나씩 쓴다. 다 쓰면 팩트체크·검수를 기다리지 않고 바로 다음 절로 간다.
- *  - 점검 줄: 집필이 끝난 절을 순서대로 받아 팩트체크 → 검수를 한다. 다음 절 집필이 끝나 있으면 곧바로 그 절로 넘어간다.
+ *  - 집필 줄: 책 순서대로 절을 하나씩 쓴다. 다 쓰면 사실 확인·교정를 기다리지 않고 바로 다음 절로 간다.
+ *  - 점검 줄: 집필이 끝난 절을 순서대로 받아 사실 확인 → 교정를 한다. 다음 절 집필이 끝나 있으면 곧바로 그 절로 넘어간다.
  *
  * 멈춤 대비:
  *  - 단계가 바뀔 때마다 진행 상태를 서버에 남기고, 진행 중에는 20초마다 소식을 남긴다(heartbeat).
@@ -35,7 +35,7 @@ const unsavedError = (what: string) => {
 
 const OWNER = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random()).slice(2);
 const RETRY_DELAYS = [5_000, 20_000, 60_000];
-/** 검수 요청 하나에 보내는 분량(자) — 서버가 2,000자씩 3개를 동시에 교정하므로 AI 호출 한 번 걸리는 시간 안팎 */
+/** 교정 요청 하나에 보내는 분량(자) — 서버가 2,000자씩 3개를 동시에 교정하므로 AI 호출 한 번 걸리는 시간 안팎 */
 const REVIEW_CHUNK = 6000;
 const NO_RETRY = /AI 연결 설정이 없습니다|기본 주소를 쓸 수 없습니다|인증에 실패|\(40[134]\)|로그인이 필요/;
 
@@ -311,9 +311,9 @@ async function factOne(it: AutoItem) {
   const stats = { pass: 0, revise: 0, fail: 0 };
   for (const [k, m] of markers.entries()) {
     if (!alive()) throw new Stopped();
-    setActivity("checker", `팩트체크 중… ${it.label} (${k + 1}/${markers.length})`);
+    setActivity("checker", `사실 확인 중… ${it.label} (${k + 1}/${markers.length})`);
     try {
-      const res = await withRetry(it, "checker", "팩트체크", () =>
+      const res = await withRetry(it, "checker", "사실 확인", () =>
         api<{ verdict: "pass" | "revise"; applied: boolean }>(`/api/projects/${projectId}/factcheck`, {
           method: "POST",
           json: { sectionId: it.sectionId, paragraph: m.paragraph, offset: m.offset, footnote: m.footnote, marker: m.marker, before: m.before },
@@ -332,7 +332,7 @@ async function factOne(it: AutoItem) {
 
 async function reviewOne(it: AutoItem) {
   const level = state.run!.options.reviewLevel;
-  setActivity("checker", `검수 중… ${it.label}`);
+  setActivity("checker", `교정 중… ${it.label}`);
   const sec = await api<{ content: string }>(`/api/sections/${it.sectionId}`);
   const before = parseDoc(sec.content) as JNode;
   type Change = { paragraph: number; before: string; after: string; type: string; reason: string };
@@ -341,8 +341,8 @@ async function reviewOne(it: AutoItem) {
   const r: { changes: Change[]; failed: Change[] } = { changes: [], failed: [] };
   for (const [k, range] of ranges.entries()) {
     if (!alive()) throw new Stopped();
-    setActivity("checker", `검수 중… ${it.label}${ranges.length > 1 ? ` (${k + 1}/${ranges.length})` : ""}`);
-    const part = await withRetry(it, "checker", "검수", () =>
+    setActivity("checker", `교정 중… ${it.label}${ranges.length > 1 ? ` (${k + 1}/${ranges.length})` : ""}`);
+    const part = await withRetry(it, "checker", "교정", () =>
       api<{ changes: Change[]; failed: Change[] }>(`/api/sections/${it.sectionId}/proofread`, {
         method: "POST",
         json: { content: sec.content, level, ...range, snapshot: k === 0 },
@@ -364,13 +364,13 @@ async function reviewOne(it: AutoItem) {
     ...r.failed.map((c) => ({ ...c, state: "failed" as const })),
   ];
   // 그 절을 열면 [교정 내역]에서 고친 곳을 확인·되돌리기할 수 있다
-  if (result.length) await saveProofResult(it.sectionId, { label: `${it.label} (자동 검수)`, before, result });
+  if (result.length) await saveProofResult(it.sectionId, { label: `${it.label} (자동 교정)`, before, result });
   return ok.size;
 }
 
-/** 점검(팩트체크·검수) 하나 — 그 절을 잠그고, 편집 중이던 입력을 먼저 저장한 뒤 서버에서 고친다 */
+/** 점검(사실 확인·교정) 하나 — 그 절을 잠그고, 편집 중이던 입력을 먼저 저장한 뒤 서버에서 고친다 */
 async function checkStep(it: AutoItem, stage: "fact" | "review") {
-  const label = stage === "fact" ? "팩트체크" : "검수";
+  const label = stage === "fact" ? "사실 확인" : "교정";
   // 사용자가 그 절에서 교정 등 다른 작업을 하고 있으면 끝날 때까지 기다린다
   while (sectionBusyWith(it.sectionId, "auto")) {
     if (!alive()) throw new Stopped();
@@ -511,8 +511,8 @@ async function drive() {
       set({ run: { ...run, status: "done" } });
       await persist().catch(() => {});
       const failed = run.items.filter((x) => x.write === "error" || x.fact === "error" || x.review === "error").length;
-      if (failed) toast(`전체 자동 집필을 마쳤습니다. ${failed}개 절은 일부 단계가 실패했습니다 — 진행 창에서 [실패한 단계 다시]를 누르세요.`, { sticky: true });
-      else toast.success("전체 자동 집필을 마쳤습니다.");
+      if (failed) toast(`자동 집필을 마쳤습니다. ${failed}개 절은 일부 단계가 실패했습니다 — 진행 창에서 [실패한 단계 다시]를 누르세요.`, { sticky: true });
+      else toast.success("자동 집필을 마쳤습니다.");
     }
   }
 }
@@ -543,10 +543,10 @@ export async function loadAutoRun(projectId: string): Promise<"none" | "active" 
 }
 
 export async function startAutoRun(projectId: string, items: AutoItem[], options: AutoOptions) {
-  if (state.driving) throw new Error("전체 자동 집필이 이미 진행 중입니다.");
+  if (state.driving) throw new Error("자동 집필이 이미 진행 중입니다.");
   if (!items.length) throw new Error("진행할 절이 없습니다.");
   const cur = await api<{ run: AutoRun | null; now: number }>(`/api/projects/${projectId}/autowrite`);
-  if (cur.run?.status === "running" && cur.run.owner !== OWNER && cur.now - cur.run.updatedAt < STALE_MS) throw new Error("다른 창에서 전체 자동 집필을 진행하고 있습니다.");
+  if (cur.run?.status === "running" && cur.run.owner !== OWNER && cur.now - cur.run.updatedAt < STALE_MS) throw new Error("다른 창에서 자동 집필을 진행하고 있습니다.");
   const now = Date.now();
   const run: AutoRun = { version: 1, runId: `${now.toString(36)}-${OWNER.slice(0, 6)}`, status: "running", startedAt: now, updatedAt: now, owner: OWNER, options, items };
   set({ projectId, run });
@@ -558,7 +558,7 @@ export async function resumeAutoRun(projectId: string, retryFailed = false) {
   if (state.driving) return;
   if (state.projectId !== projectId || !state.run) await loadAutoRun(projectId);
   if (!state.run) throw new Error("이어 갈 자동 집필이 없습니다.");
-  if (state.foreign) throw new Error("다른 창에서 전체 자동 집필을 진행하고 있습니다.");
+  if (state.foreign) throw new Error("다른 창에서 자동 집필을 진행하고 있습니다.");
   if (!(await flushAllPending())) throw unsavedError("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
   set({ run: { ...prepareResume(state.run, retryFailed), owner: OWNER } });
   void drive();

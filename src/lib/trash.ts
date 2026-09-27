@@ -31,7 +31,9 @@ export type SectionSnap = {
 };
 export type ChapterSnap = { id: string; title: string; kind: string; promise: string; summary: string | null; summaryHash: string | null; sections: SectionSnap[] };
 
-export type TrashMeta = { id: string; kind: "section" | "chapter"; title: string; label: string; deletedAt: string; charCount: number; versionsDropped?: boolean };
+export type TrashMeta = { id: string; kind: "section" | "chapter"; title: string; label: string; deletedAt: string; charCount: number; versionsDropped?: boolean; extrasDropped?: boolean };
+/** 절에 딸린 AppSetting 행(참고 자료 ref:·작가가 고친 개요 outline-edit:) — 휴지통에 함께 옮겼다가 되돌릴 때 다시 넣는다 */
+export type ExtraRow = { key: string; value: string };
 export type TrashEntry = {
   meta: TrashMeta;
   projectId: string;
@@ -42,6 +44,7 @@ export type TrashEntry = {
   chapterKind?: Kind;
   section?: SectionSnap;
   chapter?: ChapterSnap;
+  extras?: ExtraRow[];
 };
 
 export const trashKey = (projectId: string, trashId: string) => `${TRASH_PREFIX}${projectId}:${trashId}`;
@@ -80,7 +83,42 @@ export function serializeEntry(e: TrashEntry, max = TRASH_MAX_BYTES): string {
     chapter: e.chapter && { ...e.chapter, sections: e.chapter.sections.map(strip) },
   };
   json = JSON.stringify(lean);
-  return json;
+  if (Buffer.byteLength(json, "utf8") <= max || !lean.extras?.length) return json;
+  // 그래도 크면 참고 자료·고친 개요도 뺀다 (원고 본문은 끝까지 지킨다)
+  return JSON.stringify({ ...lean, meta: { ...lean.meta, extrasDropped: true }, extras: [] });
+}
+
+/** 절에 딸린 AppSetting 키 — ai/section-refs.ts·ai/outline-text.ts와 같다(테스트가 DB 없이 이 파일만 읽도록 따로 둔다) */
+export const extraKeyFilters = (sectionIds: string[]) => [
+  ...sectionIds.map((id) => ({ key: { startsWith: `ref:${id}:` } })),
+  { key: { in: sectionIds.map((id) => `outline-edit:${id}`) } },
+];
+/** 되살릴 필요 없는(다시 만들 수 있는) 절 캐시 */
+const cacheKeys = (sectionIds: string[]) => sectionIds.map((id) => `ai:outline-cache:${id}`);
+
+/** 지우는 절들의 참고 자료·고친 개요를 꺼내고(휴지통에 담을 것) DB에서는 지운다. 개요 캐시도 지운다 */
+async function takeExtras(tx: Prisma.TransactionClient, sectionIds: string[]): Promise<ExtraRow[]> {
+  if (!sectionIds.length) return [];
+  const where = { OR: extraKeyFilters(sectionIds) };
+  const rows = await tx.appSetting.findMany({ where, select: { key: true, value: true } });
+  await tx.appSetting.deleteMany({ where });
+  await tx.appSetting.deleteMany({ where: { key: { in: cacheKeys(sectionIds) } } });
+  return rows;
+}
+
+/** 휴지통에 담지 않고 지우는 절들의 딸린 행 정리 (목차 교체로 사라지는 빈 절 등) */
+export async function clearExtras(tx: Prisma.TransactionClient, sectionIds: string[]) {
+  for (let i = 0; i < sectionIds.length; i += 200) {
+    const ids = sectionIds.slice(i, i + 200);
+    await tx.appSetting.deleteMany({ where: { OR: [...extraKeyFilters(ids), { key: { in: cacheKeys(ids) } }] } });
+  }
+}
+
+async function putExtras(tx: Prisma.TransactionClient, rows: ExtraRow[] | undefined) {
+  for (const r of rows ?? []) {
+    if (typeof r?.key !== "string" || typeof r.value !== "string" || !/^(ref:|outline-edit:)/.test(r.key)) continue;
+    await tx.appSetting.upsert({ where: { key: r.key }, create: { key: r.key, value: r.value }, update: { value: r.value } });
+  }
 }
 
 /** ids 목록에서 새 항목을 끼울 자리(0부터) — 원래 위치를 넘으면 끝 */
@@ -130,6 +168,7 @@ export async function trashSection(tx: Prisma.TransactionClient, sectionId: stri
     chapterId: s.chapterId,
     index: Math.max(0, siblings.findIndex((x) => x.id === s.id)),
     section: snapSection(s),
+    extras: await takeExtras(tx, [s.id]),
   };
   const key = trashKey(s.chapter.projectId, s.id);
   const value = serializeEntry(entry);
@@ -150,6 +189,7 @@ export async function trashChapter(tx: Prisma.TransactionClient, chapterId: stri
     chapterKind: kind,
     index: Math.max(0, all.filter((x) => x.kind === c.kind).findIndex((x) => x.id === c.id)),
     chapter: { id: c.id, title: c.title, kind, promise: c.promise, summary: c.summary, summaryHash: c.summaryHash, sections: c.sections.map(snapSection) },
+    extras: await takeExtras(tx, c.sections.map((x) => x.id)),
   };
   const key = trashKey(c.projectId, c.id);
   const value = serializeEntry(entry);
@@ -227,6 +267,7 @@ export async function restoreTrash(projectId: string, trashId: string) {
         ids.splice(at, 0, c.id);
         for (const [i, cid] of ids.entries()) if (cid !== c.id) await tx.chapter.update({ where: { id: cid }, data: { order: i + 1 } });
       } else throw err("휴지통 항목이 손상되었습니다.");
+      await putExtras(tx, e.extras);
       await tx.appSetting.delete({ where: { key } });
       return { id: e.meta.id, kind: e.meta.kind, versionsDropped: !!e.meta.versionsDropped };
     },

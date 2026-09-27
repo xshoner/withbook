@@ -5,7 +5,7 @@ import { docParagraphs, parseDoc } from "@/lib/doc/doc";
 import { ParagraphDiff } from "../InlineDiff";
 
 /**
- * 저장 충돌 — 이 절을 연 뒤 다른 창이나 서버 작업(책 전체 바꾸기·장 퇴고·팩트체크 등)이 먼저 고쳤다.
+ * 저장 충돌 — 이 절을 연 뒤 다른 창이나 서버 작업(책 전체 바꾸기·장 퇴고·사실 확인 등)이 먼저 고쳤다.
  * 조용히 덮어쓰지 않고 고르게 한다. 어느 쪽을 골라도 다른 쪽 원고는 버전 기록(저장 충돌)에 남는다.
  */
 export default function SaveConflictDialog(props: {
@@ -43,7 +43,7 @@ export default function SaveConflictDialog(props: {
         <div className="border-b border-stone-200 px-5 py-3">
           <h2 className="font-semibold text-red-800">저장 충돌 — {props.label}</h2>
           <p className="mt-1 text-sm leading-6 text-stone-700">
-            이 절을 연 뒤 다른 창이나 서버 작업(책 전체 바꾸기·장 퇴고·팩트체크 등)이 이 절을 먼저 고쳤습니다. 그대로 저장하면 그 수정이 사라지므로 저장을 멈췄습니다.
+            이 절을 연 뒤 다른 창이나 서버 작업(책 전체 바꾸기·장 퇴고·사실 확인 등)이 이 절을 먼저 고쳤습니다. 그대로 저장하면 그 수정이 사라지므로 저장을 멈췄습니다.
             <br />
             어느 쪽을 골라도 <b>고르지 않은 원고는 버전 기록(저장 충돌)에 남습니다</b>.
           </p>

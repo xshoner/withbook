@@ -28,6 +28,7 @@ export type AiJob = {
   md: string;
   chars: number;
   target: number;
+  /** 자동 집필의 진행 순서 (몇 번째 절 / 모두 몇 절) — 진행 창·상단 표시용 */
   batch?: { i: number; n: number };
   /** 분량 조정: 원고의 그림을 ⟦그림N⟧ 자리에 되돌려 넣는다 */
   figures: JNode[];
@@ -35,7 +36,7 @@ export type AiJob = {
   error?: string;
   /** 시작 시각 — 첫 문장이 나오기 전 경과 시간 표시용 */
   startedAt: number;
-  /** 전체 자동 집필이 시작한 작업 — 상단 [■]은 자동 집필을 멈춘다 */
+  /** 자동 집필이 시작한 작업 — 상단 [■]은 자동 집필을 멈춘다 */
   auto?: boolean;
   /** 끝났을 때 중지된 상태였나 (사용자 중지 포함) */
   stopped?: boolean;
@@ -177,7 +178,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   const other = sectionBusyWith(o.sectionId, "ai");
   if (other) throw new Error(`${o.label}: ${other} 중이라 AI 집필을 시작할 수 없습니다.`);
   const ctrl = new AbortController();
-  // 다중·자동 집필이 같은 신호를 절마다 넘긴다 — 작업이 끝나면 떼어 내야 듣는 함수가 쌓이지 않는다
+  // 자동 집필이 같은 신호를 절마다 넘긴다 — 작업이 끝나면 떼어 내야 듣는 함수가 쌓이지 않는다
   const onOuterAbort = () => ctrl.abort();
   if (o.signal?.aborted) ctrl.abort();
   else o.signal?.addEventListener("abort", onOuterAbort, { once: true });
@@ -288,34 +289,4 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   } else if (!job.error) job.error = "AI가 쓴 원고를 저장하지 못했습니다.";
   if (job.notice && !o.quiet) toast(`${job.label}: ${job.notice}`, { sticky: true });
   return job;
-}
-
-let batchCtrl: AbortController | null = null;
-export const batchRunning = () => !!batchCtrl;
-export function stopBatch() {
-  batchCtrl?.abort();
-}
-
-/** 여러 절을 책 순서대로 하나씩 (앞 절 요약이 다음 절에 이어진다). 이미 작업 중인 절은 건너뛰고 계속한다 */
-export async function runBatch(items: Omit<StartOptions, "batch" | "signal">[]) {
-  if (batchCtrl) throw new Error("다중 집필이 이미 진행 중입니다.");
-  batchCtrl = new AbortController();
-  const done: string[] = [];
-  const skipped: string[] = [];
-  try {
-    for (const [i, it] of items.entries()) {
-      if (batchCtrl.signal.aborted) break;
-      if (running(it.sectionId) || sectionBusyWith(it.sectionId, "ai")) {
-        skipped.push(it.label);
-        continue;
-      }
-      const j = await runJob({ ...it, batch: { i: i + 1, n: items.length }, signal: batchCtrl.signal }).catch(() => null);
-      if (!j) skipped.push(it.label);
-      else if (j.state !== "error" && !batchCtrl.signal.aborted) done.push(it.label);
-    }
-  } finally {
-    batchCtrl = null;
-  }
-  if (skipped.length) toast(`다른 작업 중이라 건너뛴 절: ${skipped.join(", ")}`, { sticky: true });
-  return done;
 }

@@ -6,7 +6,7 @@ import { readGlobalStyle } from "@/lib/style/global";
 import { DEFAULT_LAYOUT } from "@/lib/layout";
 
 /**
- * 프로젝트 목록 — 절 행을 다 읽지 않고 DB에서 장별로 모아(groupBy) 책별 글자 수·절 수·마지막 수정을 계산한다.
+ * 책 목록 — 절 행을 다 읽지 않고 DB에서 장별로 모아(groupBy) 책별 글자 수·절 수·마지막 수정을 계산한다.
  * 하루 한 번 정리(dailyMaintenance)는 응답을 보낸 뒤(after) 돈다.
  */
 export const GET = handle(async () => {

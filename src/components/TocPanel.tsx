@@ -419,7 +419,7 @@ function TocPanel(props: Props) {
           okLabel: "멈추고 삭제",
         });
         if (!ok) return;
-        writing.forEach(stopJob); // 다중 집필이면 이 절만 멈추고 다음 절로 넘어간다
+        writing.forEach(stopJob); // 자동 집필이면 이 절만 멈추고 다음 절로 넘어간다
         proofing.forEach(stopProof);
         await Promise.all([...writing.map(waitJobIdle), ...proofing.map(waitProofIdle)]);
       }

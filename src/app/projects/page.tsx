@@ -27,9 +27,13 @@ export default function ProjectList() {
   const [style, setStyle] = useState<any>(null);
   const [showTrash, setShowTrash] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const load = () => api<P[]>("/api/projects").then(setList);
+  const [loadErr, setLoadErr] = useState("");
+  const load = () => api<P[]>("/api/projects").then((r) => {
+    setList(r);
+    setLoadErr("");
+  });
   useEffect(() => {
-    load();
+    load().catch((e) => setLoadErr(e?.message ?? String(e)));
     api("/api/style/global").then(setStyle).catch(() => {});
   }, []);
 
@@ -39,11 +43,16 @@ export default function ProjectList() {
   const act = async (p: P, kind: "dup" | "del" | "restore" | "purge") => {
     if (kind === "del" && !(await confirmDialog(`「${p.title}」을(를) 휴지통으로 옮길까요? 30일 뒤 자동 삭제됩니다.`, { okLabel: "휴지통으로" }))) return;
     if (kind === "purge" && !(await confirmDialog(`「${p.title}」을(를) 영구 삭제할까요? 되돌릴 수 없습니다.`, { danger: true, okLabel: "영구 삭제" }))) return;
-    if (kind === "dup") await api(`/api/projects/${p.id}/duplicate`, { method: "POST" });
-    if (kind === "del") await api(`/api/projects/${p.id}`, { method: "DELETE" });
-    if (kind === "restore") await api(`/api/projects/${p.id}`, { method: "PATCH", json: { restore: true } });
-    if (kind === "purge") await api(`/api/projects/${p.id}?permanent=1`, { method: "DELETE" });
-    load();
+    try {
+      if (kind === "dup") await api(`/api/projects/${p.id}/duplicate`, { method: "POST" });
+      if (kind === "del") await api(`/api/projects/${p.id}`, { method: "DELETE" });
+      if (kind === "restore") await api(`/api/projects/${p.id}`, { method: "PATCH", json: { restore: true } });
+      if (kind === "purge") await api(`/api/projects/${p.id}?permanent=1`, { method: "DELETE" });
+      toast.success({ dup: `「${p.title}」을(를) 복제했습니다.`, del: `「${p.title}」을(를) 휴지통으로 옮겼습니다.`, restore: `「${p.title}」을(를) 복원했습니다.`, purge: `「${p.title}」을(를) 영구 삭제했습니다.` }[kind]);
+    } catch (e) {
+      toastError(e, { dup: "복제하지 못했습니다: ", del: "삭제하지 못했습니다: ", restore: "복원하지 못했습니다: ", purge: "영구 삭제하지 못했습니다: " }[kind]);
+    }
+    load().catch((e) => toastError(e, "목록을 새로 고치지 못했습니다: "));
   };
 
   const importBackup = async (f: File) => {
@@ -64,7 +73,7 @@ export default function ProjectList() {
           <h1 className="font-bookhead text-3xl text-stone-900">
             with<span className="text-amber-700">book</span>
           </h1>
-          <p className="mt-1 text-sm text-stone-500">프로젝트 선택 · 스케치를 작가의 문체로, 부크크 A5 규격 그대로</p>
+          <p className="mt-1 text-sm text-stone-500">책 선택 · 스케치를 작가의 문체로, 부크크 A5 규격 그대로</p>
         </div>
         <div className="flex gap-2">
           <Link href="/settings" className="btn">
@@ -74,8 +83,11 @@ export default function ProjectList() {
             백업 불러오기
           </button>
           <input ref={fileRef} type="file" accept=".zip" hidden onChange={(e) => e.target.files?.[0] && importBackup(e.target.files[0])} />
+          <Link href="/projects/new/import" className="btn" title="써 둔 원고(docx·hwpx·pdf·txt·md)를 장·절로 나눠 새 책으로 만듭니다">
+            원고 가져오기
+          </Link>
           <Link href="/projects/new" className="btn-primary">
-            + 새 프로젝트
+            + 새 책
           </Link>
           <LogoutButton />
         </div>
@@ -85,14 +97,14 @@ export default function ProjectList() {
         <div className={`mb-6 rounded-lg border px-4 py-3 text-sm ${style.global ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
           {style.global ? (
             <>
-              <b>문체 학습 완료</b> — style reference 폴더의 글 {style.global.files.length}편으로 학습한 문체가 새 프로젝트에 자동 적용됩니다.{" "}
+              <b>문체 학습 완료</b> — 설정에 올린 학습 자료 {style.global.files.length}편으로 학습한 기본 문체가 새 책에 자동 적용됩니다.{" "}
               <Link className="underline" href="/settings#style">
                 자세히
               </Link>
             </>
           ) : (
             <>
-              <b>문체 학습 전</b> — style reference 폴더({style.files.length}개 파일)로 작가 문체를 먼저 학습하세요.{" "}
+              <b>문체 학습 전</b> — {style.files.length ? `설정에 올린 학습 자료 ${style.files.length}개로` : "설정에서 작가의 글을 올려"} 기본 문체를 먼저 학습하세요.{" "}
               <Link className="underline" href="/settings#style">
                 학습하러 가기
               </Link>
@@ -102,14 +114,28 @@ export default function ProjectList() {
       )}
 
       {list === null ? (
-        <p className="text-stone-400">불러오는 중…</p>
+        loadErr ? (
+          <p className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+            책 목록을 불러오지 못했습니다: {loadErr}{" "}
+            <button className="underline" onClick={() => load().catch((e) => setLoadErr(e?.message ?? String(e)))}>
+              다시 시도
+            </button>
+          </p>
+        ) : (
+          <p className="text-stone-400">불러오는 중…</p>
+        )
       ) : active.length === 0 ? (
         <div className="card flex flex-col items-center gap-3 px-6 py-16 text-center">
           <p className="font-bookhead text-xl">첫 책을 시작해 볼까요?</p>
-          <p className="text-sm text-stone-500">책 정보를 입력하면 AI가 목차를 설계해 보고합니다.</p>
-          <Link href="/projects/new" className="btn-primary mt-2">
-            + 새 프로젝트
-          </Link>
+          <p className="text-sm text-stone-500">책 정보를 입력하면 AI가 목차를 설계해 보고합니다. 써 둔 원고가 있으면 가져와서 시작할 수도 있습니다.</p>
+          <div className="mt-2 flex gap-2">
+            <Link href="/projects/new" className="btn-primary">
+              + 새 책
+            </Link>
+            <Link href="/projects/new/import" className="btn">
+              원고 가져오기
+            </Link>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
