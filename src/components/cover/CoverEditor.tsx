@@ -370,6 +370,8 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         const old = d.images[region];
         return { ...d, images: { ...d.images, [region]: { ...(old ?? cur), assetId: r.assetId, widthPx: r.widthPx, heightPx: r.heightPx } }, ai: { ...d.ai, history: r.history } };
       });
+      // 고친 뒤에는 지정한 부분(보라 테두리)을 치운다 — 실패하면 그대로 두어 다시 요청할 수 있게
+      setMaskRect(null);
       toast.success(`${r.masked ? "지정한 부분을" : "그림을"} 고쳤습니다. 마음에 들지 않으면 되돌리기(Ctrl+Z)나 [만든 그림]에서 이전 그림을 고르세요.`);
     } catch (e: any) {
       if (!ctrl.signal.aborted) toastError(e, "그림 수정 실패: ");
