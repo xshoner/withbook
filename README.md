@@ -27,6 +27,7 @@ KoPub 글꼴은 로컬 `public/fonts/`(KoPubBatangLight/Bold, KoPubDotumMedium .
 1. 로그인 → **프로젝트 선택** → 새 프로젝트: 책 정보 → AI 목차 설계 → [이 목차로 시작]
 2. 목차에서 절 선택 → 스케치 → 분량 → **[AI 집필하기]** (여러 절은 [⚡ 자동 집필]에서 범위를 골라)
 3. 직접 고치기(자동 저장) · 선택영역 AI · 각주 · 교정·교열
+   - **[✦ 이미지 추천]** (도구줄 · 오른쪽 [이미지] 탭): AI가 절의 문단마다 그림이 필요한 곳을 골라 Wikimedia Commons에서 논문 도표·그래프·도식을 찾아 추천 → [승인]하면 그 문단 끝에 캡션·출처(저작자·라이선스)와 함께 들어간다. AI 연결은 [AI 설정 → 이미지 추천]에서 따로 지정할 수 있다.
 4. **[펼침면 미리보기]** → **[내보내기]** PDF(부크크 제출용) / HWPX / 백업
 5. **[커버 디자인]** (새 창): 날개·책등 펼침면에 AI 표지 그림·글·사진 배치 → 인쇄용 표지 PDF(책등 폭은 실제 조판 쪽수 기준)
 
@@ -40,6 +41,7 @@ prompts/            런타임 AI 프롬프트 (*.system.md / *.user.md, {{변수
 src/lib/print/      인쇄 규격 상수(spec.ts), 조판 HTML(bookHtml.ts)
 src/lib/ai/         AI 클라이언트·설정, 프롬프트 조립, 작업(목차·집필·교정·요약·문체·각주)
 src/lib/export/     PDF(Playwright+Chromium), HWPX(OWPML), 사전 점검
+src/lib/images/     추천 이미지 검색·가져오기 (Wikimedia Commons, 허용 주소만 내려받기)
 src/lib/cover/      표지 규격(책등 계산)·디자인 저장·AI 표지 그림
 src/lib/storage.ts  파일 저장소 (Supabase Storage / 로컬 data/storage)
 src/proxy.ts        로그인 확인(Supabase 세션) · 요청 출처 검사

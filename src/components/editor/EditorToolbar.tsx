@@ -26,13 +26,16 @@ type Props = {
   onRewrite: (a: RewriteAction) => void;
   onPickImage: () => void;
   onBookSearch: (query: string) => void;
+  /** 이미지 추천 — 오른쪽 [이미지] 탭을 열고 AI가 문단마다 맞는 도표·그래프·도식을 찾는다 */
+  onImageSuggest: () => void;
+  imageBusy: boolean;
 };
 
 /**
- * 서식 도구줄 — 본문 서식 · 각주 · 선택 AI · 책 서식 · 찾기.
+ * 서식 도구줄 — 본문 서식 · 각주 · 이미지 추천 · 선택 AI · 폰트 서식 · 찾기.
  * 굵게·소제목 같은 켜짐 표시는 커서가 움직일 때마다 바뀌어야 하므로 useEditorState로 이 도구줄만 다시 그린다(편집기 전체가 아니라).
  */
-function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, lineHeight, paraSpacingMm, onLayout, onAddFootnote, onAutoFootnote, onRewrite, onPickImage, onBookSearch }: Props) {
+function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, lineHeight, paraSpacingMm, onLayout, onAddFootnote, onAutoFootnote, onRewrite, onPickImage, onBookSearch, onImageSuggest, imageBusy }: Props) {
   const active = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -101,6 +104,17 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
         {tb("직접", () => onAddFootnote(false), false, "선택한 단어(또는 커서 위치)에 각주를 달고 내용을 직접 입력합니다")}
         {tb(fnBusy === "auto" ? "찾는 중…" : "자동", onAutoFootnote, false, "AI가 이 절의 중요 키워드를 골라 각주를 답니다")}
       </ToolGroup>
+      <ToolGroup label="이미지" tone="bg-indigo-700">
+        <button
+          title={busyReason || "AI가 이 절의 문단마다 맞는 논문 도표·그래프·도식을 찾아 추천합니다 — 승인하면 그 문단 끝에 캡션과 함께 들어갑니다"}
+          disabled={!!busyReason || imageBusy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onImageSuggest}
+          className="bg-indigo-50 px-1.5 py-1 text-xs font-semibold text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
+        >
+          {imageBusy ? "찾는 중…" : "✦ 이미지 추천"}
+        </button>
+      </ToolGroup>
       <Menu
         label={rewriteBusy ? `✦ ${REWRITE_LABEL[rewriteBusy as RewriteAction] ?? ""} 중…` : "✦ 선택 AI ▾"}
         tone="text-violet-800"
@@ -113,7 +127,7 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
           </button>
         ))}
       </Menu>
-      <Menu label="서식 ▾" tone="text-sky-800" title="글자 크기·줄 간격·문단 간격 — 책 전체 본문에 적용됩니다 (미리보기·PDF·HWPX 포함)">
+      <Menu label="폰트 서식 ▾" tone="text-sky-800" title="글자 크기·줄 간격·문단 간격 — 책 전체 본문에 적용됩니다 (미리보기·PDF·HWPX 포함)">
         <div className="space-y-2 p-3 text-xs text-stone-600">
           <p className="text-[11px] text-stone-500">책 전체 본문에 적용됩니다</p>
           <label className="flex items-center justify-between gap-3">

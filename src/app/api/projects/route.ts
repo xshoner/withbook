@@ -4,14 +4,16 @@ import { fail, handle, ok } from "@/lib/api";
 import { dailyMaintenance } from "@/lib/maintenance";
 import { readGlobalStyle } from "@/lib/style/global";
 import { DEFAULT_LAYOUT } from "@/lib/layout";
+import { listPages, parsePageCount } from "@/lib/print/page-count";
 
 /**
  * 책 목록 — 절 행을 다 읽지 않고 DB에서 장별로 모아(groupBy) 책별 글자 수·절 수·마지막 수정을 계산한다.
+ * 쪽수는 집필 화면이 잰 실제 조판 쪽수(AppSetting pages:{id})를 쓴다 — 잰 뒤 바뀐 글자만큼만 어림해 더한다.
  * 하루 한 번 정리(dailyMaintenance)는 응답을 보낸 뒤(after) 돈다.
  */
 export const GET = handle(async () => {
   after(() => dailyMaintenance().catch((e) => console.warn("[maintenance]", e?.message)));
-  const [projects, chapters, all, written] = await Promise.all([
+  const [projects, chapters, all, written, measured] = await Promise.all([
     prisma.project.findMany({
       orderBy: { updatedAt: "desc" },
       select: { id: true, title: true, subtitle: true, author: true, targetPages: true, charsPerPage: true, updatedAt: true, deletedAt: true },
@@ -19,7 +21,9 @@ export const GET = handle(async () => {
     prisma.chapter.findMany({ select: { id: true, projectId: true } }),
     prisma.section.groupBy({ by: ["chapterId"], _sum: { charCount: true }, _count: { _all: true }, _max: { updatedAt: true } }),
     prisma.section.groupBy({ by: ["chapterId"], where: { charCount: { gt: 0 } }, _count: { _all: true } }),
+    prisma.appSetting.findMany({ where: { key: { startsWith: "pages:" } }, select: { key: true, value: true } }),
   ]);
+  const measuredOf = new Map(measured.map((m) => [m.key.slice("pages:".length), parsePageCount(m.value)]));
   const projectOf = new Map(chapters.map((c) => [c.id, c.projectId]));
   const stats = new Map<string, { chars: number; sections: number; written: number; last: Date | null }>();
   const statOf = (chapterId: string) => {
@@ -44,13 +48,15 @@ export const GET = handle(async () => {
   return ok(
     projects.map((p) => {
       const st = stats.get(p.id) ?? { chars: 0, sections: 0, written: 0, last: null };
+      const pages = listPages(st.chars, p.charsPerPage, measuredOf.get(p.id) ?? null);
       return {
         id: p.id,
         title: p.title,
         subtitle: p.subtitle,
         author: p.author,
         targetPages: p.targetPages,
-        estPages: Math.round(st.chars / (p.charsPerPage || 700)),
+        estPages: pages.pages,
+        pagesExact: pages.exact,
         sections: st.sections,
         written: st.written,
         updatedAt: st.last && st.last > p.updatedAt ? st.last : p.updatedAt,

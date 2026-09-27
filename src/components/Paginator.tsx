@@ -107,7 +107,6 @@ export default function Paginator({
   jobRef.current = job;
   const pendingFull = useRef(false);
   const cancelQuiet = useRef<(() => void) | null>(null);
-  const postedTotal = useRef<number | null>(null);
 
   const startFull = useCallback(() => {
     if (jobRef.current && !jobRef.current.sid) {
@@ -174,11 +173,6 @@ export default function Paginator({
         if (s) cb.current.onSection(j.sid, s);
       } else {
         cb.current.onInfo(info);
-        // 책등 폭 계산용 전체 쪽수 — 바뀐 때만, 기다리지 않고 (없는 기능·실패는 무시)
-        if (Number.isFinite(info.total) && info.total > 0 && info.total !== postedTotal.current) {
-          postedTotal.current = info.total;
-          fetch(`/api/projects/${projectId}/page-count`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ total: info.total }) }).catch(() => {});
-        }
       }
       setJob(null); // 측정 끝나면 iframe 해제
     };

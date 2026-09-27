@@ -47,6 +47,10 @@ body {
 .btn-accent {
   @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-amber-700 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50;
 }
+/* 이미지 추천(오른쪽 [이미지] 탭) */
+.btn-image {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-indigo-700 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50;
+}
 .btn-ghost {
   @apply inline-flex items-center justify-center gap-1 rounded-md px-2 py-1 text-sm text-stone-600 transition hover:bg-stone-200/70 disabled:opacity-40;
 }

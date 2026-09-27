@@ -33,6 +33,8 @@ const PURPOSE: Record<string, string> = {
   beta_reader: "베타 리더",
   style_analyze: "문체 분석",
   style_learn: "작가 수정에서 문체 배우기",
+  image_suggest: "이미지 추천 — 필요한 그림 고르기",
+  image_pick: "이미지 추천 — 후보 고르기·캡션",
   cover_image: "표지 그림 만들기",
   cover_image_edit: "표지 그림 고치기",
   ping: "연결 점검",

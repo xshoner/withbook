@@ -15,6 +15,8 @@ type P = {
   author: string;
   targetPages: number;
   estPages: number;
+  /** 집필 화면이 잰 실제 조판 쪽수 그대로 (false면 글자 수로 어림) */
+  pagesExact?: boolean;
   sections: number;
   written: number;
   updatedAt: string;
@@ -154,8 +156,9 @@ export default function ProjectList() {
                     <span>
                       절 {p.written}/{p.sections} 작성
                     </span>
-                    <span>
-                      약 {p.estPages}/{p.targetPages}쪽
+                    <span title={p.pagesExact ? "집필 화면의 실제 조판 쪽수" : "마지막으로 잰 조판 쪽수에 그 뒤 바뀐 글자 수를 더해 어림한 값 — 책을 열면 다시 잽니다"}>
+                      {p.pagesExact ? "" : "약 "}
+                      {p.estPages}/{p.targetPages}쪽
                     </span>
                   </div>
                 </Link>

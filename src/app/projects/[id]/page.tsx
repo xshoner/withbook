@@ -242,6 +242,21 @@ export default function Workspace() {
     setMeasureKey((k) => k + 1);
   }, [current]);
 
+  /**
+   * 책의 실제 조판 쪽수 기록 — 목차에 보이는 쪽수(전체 조판·절 하나만 다시 잰 값 모두)가 바뀔 때마다 보낸다.
+   * 책 선택 화면·표지 책등이 이 값을 쓴다. 절을 고치는 동안 잇달아 바뀌므로 잠시 멈춘 뒤 한 번만.
+   */
+  const postedTotal = useRef<number | null>(null);
+  const total = info?.total;
+  useEffect(() => {
+    if (!total || !Number.isFinite(total) || total === postedTotal.current) return;
+    const t = setTimeout(() => {
+      postedTotal.current = total;
+      api(`/api/projects/${id}/page-count`, { method: "POST", json: { total } }).catch(() => (postedTotal.current = null));
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [id, total]);
+
   useEffect(() => {
     api<{ total: number }>(`/api/projects/${id}/checks`).then((r) => setCheckCount(r.total)).catch(() => {});
   }, [id]);

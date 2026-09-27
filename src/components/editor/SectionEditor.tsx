@@ -31,7 +31,9 @@ import { Footnote, type FootnoteAttrs } from "./Footnote";
 import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./PageBreaks";
 import { editorBlocks, matchPrintLayout, type SectionPrintLayout } from "./pageMap";
 import type { AppliedChange } from "./ProofPanel";
-import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround } from "./pmOps";
+import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround, textblockAt } from "./pmOps";
+import ImagesPanel, { runImageSuggest, useImageSuggestBusy, type ImageCandidate, type ImageSuggestion } from "./ImagesPanel";
+import PanelTabs, { type PanelTab } from "./PanelTabs";
 import { conflictOf, noteServerContent, primeBase, recoverPending, registerCommit, resolveConflict, settleSection, useAutosave } from "./useAutosave";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
 import { pauseAutoRun, startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
@@ -153,7 +155,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   const [candidate, setCandidate] = useState<string | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [lengthHint, setLengthHint] = useState<null | { chars: number; target: number }>(null);
-  const [tab, setTab] = useState<"ai" | "refs" | "versions" | "proof" | "notes">("ai");
+  const [tab, setTab] = useState<PanelTab>("ai");
   const [outlineOpen, setOutlineOpen] = useState(false);
   const me = useMe();
   // 추가 지시: [다른 절에서도 계속 쓰기]를 켜 두면 절을 옮겨도 남고, 집필에 쓴 지시는 최근 목록에서 다시 고를 수 있다
@@ -367,6 +369,76 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
       track.stop();
     }
   }
+
+  /* ---------- 이미지 추천 (오른쪽 [이미지] 탭) ---------- */
+
+  /** 추천이 가리킨 문단 — 그사이 문단이 옮겨졌으면 앞부분(anchor)이 같은 문단을 찾는다 */
+  function suggestionBlock(ed: Editor, s: ImageSuggestion) {
+    const b = textblockAt(ed.state.doc, s.paragraph);
+    if (b && b.node.textContent.trim().startsWith(s.anchor)) return b;
+    let found: { node: PMNode; pos: number } | null = null;
+    ed.state.doc.descendants((node, pos) => {
+      if (found) return false;
+      if (node.type.name === "paragraph" || node.type.name === "heading") {
+        if (node.textContent.trim().startsWith(s.anchor)) found = { node, pos };
+        return false;
+      }
+      return true;
+    });
+    return found as { node: PMNode; pos: number } | null;
+  }
+
+  function locateSuggestion(s: ImageSuggestion) {
+    const ed = editorRef.current;
+    const b = ed && suggestionBlock(ed, s);
+    if (!ed || !b) return toast.error("그 문단을 찾지 못했습니다(내용이 바뀌었을 수 있습니다).");
+    ed.chain().focus().setTextSelection({ from: b.pos + 1, to: b.pos + b.node.nodeSize - 1 }).scrollIntoView().run();
+  }
+
+  /** 승인 — 서버가 이미지를 가져와 원고 이미지로 저장하면, 그 문단(목록·인용 안이면 그 묶음) 끝에 캡션·출처와 함께 넣는다 */
+  async function insertSuggestedImage(s: ImageSuggestion, c: ImageCandidate, caption: string) {
+    const ed = editorRef.current;
+    if (!ed || !canEditRef.current) {
+      toast.error(busyReason || "지금은 이 절을 고칠 수 없습니다.");
+      return false;
+    }
+    if (!suggestionBlock(ed, s)) {
+      toast.error("추천한 문단을 찾지 못했습니다(내용이 바뀌었을 수 있습니다). [다시 추천 받기]를 눌러 주세요.");
+      return false;
+    }
+    const r = await api<{ id: string; src: string; widthPx: number; heightPx: number }>("/api/assets/import", {
+      method: "POST",
+      json: { projectId: project.id, url: c.src, title: c.title },
+      timeoutMs: 90_000,
+    });
+    if (ed.isDestroyed) return false;
+    if (!canEditRef.current) {
+      toast.error("그사이 이 절이 잠겨 그림을 넣지 못했습니다. 잠금이 풀린 뒤 다시 승인해 주세요.");
+      return false;
+    }
+    // 내려받는 동안 본문이 바뀌었을 수 있다 — 넣기 직전에 다시 찾는다
+    const b = suggestionBlock(ed, s);
+    if (!b) {
+      toast.error("그사이 추천한 문단이 바뀌어 그림을 넣지 못했습니다.");
+      return false;
+    }
+    const $p = ed.state.doc.resolve(b.pos + 1);
+    const at = $p.depth > 1 ? $p.after(1) : b.pos + b.node.nodeSize;
+    const text = [caption.trim(), c.credit && `(${c.credit})`].filter(Boolean).join(" ");
+    const node = ed.schema.nodes.figure.create({ assetId: r.id, src: r.src, widthPx: r.widthPx, heightPx: r.heightPx, layout: "fit", caption: text });
+    const tr = ed.state.tr.insert(at, node);
+    ed.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc, at)).scrollIntoView());
+    return true;
+  }
+
+  const imageBusy = useImageSuggestBusy(section.id);
+  const onImageSuggest = useStableFn(() => {
+    if (!editor) return;
+    setTab("images");
+    setPanelOpen(true);
+    if (isDocEmpty(editor.getJSON() as JNode)) return toast("이미지를 추천할 본문이 없습니다. 먼저 본문을 쓰세요.");
+    void runImageSuggest(section.id, JSON.stringify(editor.getJSON()));
+  });
 
   /* ---------- 쪽 나눔 (실제 조판처럼 쪽마다 끊고 사이를 띄운다) ---------- */
   const margins = project.layout.margins;
@@ -1182,33 +1254,8 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
             />
             페이지 <span className="text-stone-400">(약 {targetChars.toLocaleString()}자)</span>
           </label>
-          <button className="btn-ghost text-xs" onClick={() => setPanelOpen(!panelOpen)} title="오른쪽 패널(AI 옵션·버전·교정 내역) 열기/닫기">
+          <button className="btn-ghost text-xs" onClick={() => setPanelOpen(!panelOpen)} title="오른쪽 패널(AI 옵션·자료·이미지·버전 기록·교정 내역·각주) 열기/닫기">
             {panelOpen ? "패널 닫기 ▸" : "◂ 패널"}
-          </button>
-          <button
-            className="btn"
-            disabled={!!writing || !canEdit}
-            onClick={runProofread}
-            title={writing ? "AI 집필이 끝난 뒤에 교정할 수 있습니다" : busyReason || undefined}
-          >
-            {proofBusy ? "교정 중…" : "교정·교열"}
-          </button>
-          <button
-            className="btn"
-            disabled={!canEdit || chapterWriting || chapterProofing}
-            onClick={async () => {
-              if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
-              setReviseOpen(true);
-            }}
-            title={
-              chapterWriting
-                ? "이 장에서 AI가 쓰는 절(이어쓰기 포함)이 있습니다 — 끝난 뒤에 퇴고하세요"
-                : chapterProofing
-                  ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 퇴고하세요"
-                  : busyReason || "이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
-            }
-          >
-            장 퇴고
           </button>
           {writing ? (
             <button
@@ -1255,6 +1302,31 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
               )}
             </div>
           )}
+          <button
+            className="btn"
+            disabled={!!writing || !canEdit}
+            onClick={runProofread}
+            title={writing ? "AI 집필이 끝난 뒤에 교정할 수 있습니다" : busyReason || undefined}
+          >
+            {proofBusy ? "교정 중…" : "교정·교열"}
+          </button>
+          <button
+            className="btn"
+            disabled={!canEdit || chapterWriting || chapterProofing}
+            onClick={async () => {
+              if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
+              setReviseOpen(true);
+            }}
+            title={
+              chapterWriting
+                ? "이 장에서 AI가 쓰는 절(이어쓰기 포함)이 있습니다 — 끝난 뒤에 퇴고하세요"
+                : chapterProofing
+                  ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 퇴고하세요"
+                  : busyReason || "이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
+            }
+          >
+            장 퇴고
+          </button>
         </div>
 
         {/* 서식 도구 — 기능 묶음마다 이름표를 붙여 구분한다 */}
@@ -1276,6 +1348,8 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
                 onRewrite={onRewrite}
                 onPickImage={onPickImage}
                 onBookSearch={onBookSearch}
+                onImageSuggest={onImageSuggest}
+                imageBusy={imageBusy}
               />
             </>
           )}
@@ -1532,21 +1606,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
       <aside
         className={`${panelOpen ? "flex" : "hidden"} w-80 shrink-0 flex-col border-l border-stone-300 bg-stone-50 max-xl:absolute max-xl:inset-y-0 max-xl:right-0 max-xl:z-30 max-xl:shadow-2xl`}
       >
-        <div className="flex border-b border-stone-200 text-sm">
-          {(
-            [
-              ["ai", "AI 옵션"],
-              ["refs", "자료"],
-              ["versions", "버전 기록"],
-              ["proof", "교정 내역"],
-              ["notes", null],
-            ] as const
-          ).map(([k, l]) => (
-            <button key={k} onClick={() => setTab(k)} className={`flex-1 border-b-2 py-2 ${tab === k ? "border-amber-700 font-semibold" : "border-transparent text-stone-500"}`}>
-              {l ?? <FootnoteTabLabel editor={editor} />}
-            </button>
-          ))}
-        </div>
+        <PanelTabs tab={tab} onTab={setTab} labels={{ notes: <FootnoteTabLabel editor={editor} /> }} />
         <div className="min-h-0 flex-1 overflow-hidden">
           {tab === "ai" && (
             <div className="h-full space-y-4 overflow-auto p-3 text-sm">
@@ -1649,6 +1709,15 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
             </div>
           )}
           {tab === "refs" && <ReferencesPanel sectionId={section.id} />}
+          {tab === "images" && editor && (
+            <ImagesPanel
+              sectionId={section.id}
+              lockReason={busyReason}
+              getContent={() => JSON.stringify(editor.getJSON())}
+              onInsert={insertSuggestedImage}
+              onLocate={locateSuggestion}
+            />
+          )}
           {tab === "versions" && editor && (
             <VersionsPanel
               beforeRestore={flush}

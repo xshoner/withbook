@@ -8,6 +8,7 @@ export const AI_SCOPES = {
   style: { label: "문체 분석", description: "문체 분석과 작가의 수정에서 학습" },
   footnote: { label: "각주", description: "각주 작성과 자동 제안" },
   factcheck: { label: "사실 확인", description: "‘확인할 것’의 [확인 필요] 문장을 최신 자료로 확인·보완 — GPT-5.6 Terra 추천" },
+  image: { label: "이미지 추천", description: "절의 문단마다 맞는 도표·그래프·도식을 찾을 검색어 만들기와 후보 고르기·캡션" },
   cover: { label: "표지 디자인", description: "표지 디자인 편집기의 [AI 제작] 표지 그림 생성 (Images API) — gpt-image-2.5-sunburst 추천" },
 } as const;
 
@@ -27,6 +28,7 @@ export function scopeForPurpose(purpose: string): AiScope {
   if (["style_analyze", "style_learn"].includes(purpose)) return "style";
   if (["footnote", "footnote_auto"].includes(purpose)) return "footnote";
   if (purpose === "factcheck") return "factcheck";
+  if (purpose === "image_suggest" || purpose === "image_pick") return "image";
   if (purpose === "cover_image" || purpose === "cover_image_edit") return "cover";
   return "default";
 }
