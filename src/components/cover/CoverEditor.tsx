@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, download } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
@@ -152,6 +152,112 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     return () => ro.disconnect();
   }, [l?.sheetW, l?.sheetH]);
   const z = zoom ?? fitZoom;
+
+  /* ---------- 확대한 펼침면 둘러보기: 스크롤 · 끌어 옮기기 · Ctrl+휠 확대 ---------- */
+
+  // 확대·축소해도 보던 곳이 그대로 있게 — 기준점(화면 가운데 또는 휠을 굴린 자리)이 가리키던 비율을 기억했다가 다시 맞춘다
+  const zoomAnchor = useRef<{ rx: number; ry: number; ax: number; ay: number } | null>(null);
+  const zoomTo = useCallback((next: number | null, at?: { x: number; y: number }) => {
+    const el = canvasRef.current;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      const ax = at ? at.x - r.left : el.clientWidth / 2;
+      const ay = at ? at.y - r.top : el.clientHeight / 2;
+      zoomAnchor.current = { rx: (el.scrollLeft + ax) / Math.max(1, el.scrollWidth), ry: (el.scrollTop + ay) / Math.max(1, el.scrollHeight), ax, ay };
+    }
+    setZoom(next === null ? null : Math.max(0.1, Math.min(4, next)));
+  }, []);
+  useLayoutEffect(() => {
+    const el = canvasRef.current;
+    const a = zoomAnchor.current;
+    if (!el || !a) return;
+    zoomAnchor.current = null;
+    el.scrollLeft = a.rx * el.scrollWidth - a.ax;
+    el.scrollTop = a.ry * el.scrollHeight - a.ay;
+  }, [z]);
+
+  // Ctrl(⌘)+휠: 마우스가 있는 곳을 기준으로 확대·축소 (그냥 휠은 위아래, Shift+휠은 좌우 스크롤)
+  const zNow = useRef(z);
+  zNow.current = z;
+  // 펼침면(캔버스)은 불러온 뒤에 생긴다 — 그려질 때마다 보고, 처음 생긴 캔버스에 한 번만 붙인다
+  const wheelEl = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || wheelEl.current === el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      zoomTo(zNow.current * Math.exp(-e.deltaY * 0.0015), { x: e.clientX, y: e.clientY });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    wheelEl.current = el;
+  });
+
+  // 끌어서 둘러보기 — 빈 곳(요소가 아닌 곳)을 끌거나, 스페이스바를 누른 채 끌거나, 가운데 버튼으로 끌면 화면이 따라 움직인다
+  const [spaceDown, setSpaceDown] = useState(false);
+  const [panning, setPanning] = useState(false);
+  useEffect(() => {
+    const typing = () => {
+      const t = document.activeElement as HTMLElement | null;
+      return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+    };
+    const down = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !typing()) {
+        e.preventDefault(); // 화면이 아래로 내려가지 않게
+        setSpaceDown(true);
+      }
+    };
+    const up = (e: KeyboardEvent) => e.code === "Space" && setSpaceDown(false);
+    const blur = () => setSpaceDown(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+  const startPan = (e: ReactPointerEvent) => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const left = el.scrollLeft;
+    const top = el.scrollTop;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      if (!moved && Math.hypot(dx, dy) < 4) return; // 그냥 누른 것(선택 해제)은 그대로
+      if (!moved) {
+        moved = true;
+        setPanning(true);
+      }
+      el.scrollLeft = left - dx;
+      el.scrollTop = top - dy;
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      setPanning(false);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+  const onCanvasPointerDownCapture = (e: ReactPointerEvent) => {
+    if (maskMode && e.button === 0 && !spaceDown) return; // 고칠 부분을 그리는 중
+    const onEl = !!(e.target as HTMLElement).closest("[data-el]");
+    const force = spaceDown || e.button === 1;
+    if (force) {
+      // 스페이스바·가운데 버튼: 요소 위에서도 끌어 옮기지 않고 화면만 움직인다
+      e.preventDefault();
+      e.stopPropagation();
+      startPan(e);
+    } else if (e.button === 0 && !onEl && !(e.target as HTMLElement).closest("button,input,textarea,select,a")) startPan(e);
+  };
 
   const patchEl = (id: string, patch: Partial<TextEl> | Partial<ImageEl>, key?: string) =>
     update((d) => ({ ...d, elements: d.elements.map((e) => (e.id === id ? ({ ...e, ...patch } as CoverEl) : e)) }), key ?? `el:${id}:${Object.keys(patch).join(",")}`);
@@ -627,13 +733,13 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
           <button className="btn-ghost" onClick={doRedo} disabled={!redo.current.length} title="다시 하기 (Ctrl+Shift+Z)">
             ↷
           </button>
-          <button className="btn-ghost" onClick={() => setZoom(Math.max(0.1, z / 1.25))} title="축소">
+          <button className="btn-ghost" onClick={() => zoomTo(z / 1.25)} title="축소 (Ctrl+휠)">
             −
           </button>
-          <button className="btn-ghost w-14" onClick={() => setZoom(null)} title="화면에 맞춤">
+          <button className="btn-ghost w-14" onClick={() => zoomTo(null)} title="화면에 맞춤 — 확대한 뒤에는 빈 곳을 끌거나(스페이스바+끌기: 어디서나) 스크롤해서 둘러봅니다">
             {Math.round(z * 100)}%
           </button>
-          <button className="btn-ghost" onClick={() => setZoom(Math.min(4, z * 1.25))} title="확대">
+          <button className="btn-ghost" onClick={() => zoomTo(z * 1.25)} title="확대 (Ctrl+휠)">
             +
           </button>
         </div>
@@ -891,9 +997,17 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         </aside>
 
         {/* ---------- 가운데: 펼침면 ---------- */}
-        <main ref={canvasRef} className="relative min-w-0 flex-1 overflow-auto" onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}>
-          <div className="flex min-h-full min-w-full items-center justify-center p-6" onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}>
-            <div className="relative shadow-xl" style={{ width: l.sheetW * PX_PER_MM * z, height: l.sheetH * PX_PER_MM * z, flex: "none" }}>
+        {/* 확대해 화면보다 커지면 사방으로 스크롤된다 — 가운데 맞춤을 justify-center가 아니라 margin:auto로 해야 왼쪽·위로 넘친 부분도 스크롤로 닿는다 */}
+        <main
+          ref={canvasRef}
+          className="relative min-w-0 flex-1 overflow-auto"
+          style={{ cursor: panning ? "grabbing" : spaceDown ? "grab" : undefined }}
+          onPointerDownCapture={onCanvasPointerDownCapture}
+          onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}
+          onAuxClick={(e) => e.button === 1 && e.preventDefault()}
+        >
+          <div className="flex min-h-full w-max min-w-full p-6" onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}>
+            <div className="relative shadow-xl" style={{ width: l.sheetW * PX_PER_MM * z, height: l.sheetH * PX_PER_MM * z, flex: "none", margin: "auto" }}>
               <div style={{ position: "relative", width: `${l.sheetW}mm`, height: `${l.sheetH}mm`, transform: `scale(${z})`, transformOrigin: "0 0", ["--z" as string]: z } as React.CSSProperties}>
                 <CoverSheet
                   design={design}
