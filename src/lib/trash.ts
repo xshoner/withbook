@@ -204,7 +204,7 @@ export async function listTrash(projectId: string): Promise<TrashMeta[]> {
   const prefix = trashKey(projectId, "");
   // 본문까지 내려받지 않도록 meta만 DB에서 꺼낸다
   const rows = await prisma.$queryRaw<{ key: string; meta: TrashMeta | null }[]>`
-    SELECT key, (value::jsonb -> 'meta') AS meta FROM "AppSetting" WHERE left(key, ${prefix.length}) = ${prefix}`;
+    SELECT key, (value::jsonb -> 'meta') AS meta FROM "AppSetting" WHERE starts_with(key, ${prefix})`;
   return rows
     .map((r) => r.meta)
     .filter((m): m is TrashMeta => !!m && typeof m.id === "string")

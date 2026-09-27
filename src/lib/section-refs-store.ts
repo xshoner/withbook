@@ -13,7 +13,7 @@ type Db = Prisma.TransactionClient | typeof prisma;
 export async function listRefs(sectionId: string): Promise<RefItem[]> {
   const prefix = refPrefix(sectionId);
   const rows = await prisma.$queryRaw<{ meta: RefItem | null }[]>`
-    SELECT (value::jsonb - 'text') AS meta FROM "AppSetting" WHERE left(key, ${prefix.length}) = ${prefix}`;
+    SELECT (value::jsonb - 'text') AS meta FROM "AppSetting" WHERE starts_with(key, ${prefix})`;
   return rows
     .map((r) => r.meta)
     .filter((m): m is RefItem => !!m && typeof m.id === "string")

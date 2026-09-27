@@ -69,3 +69,11 @@ test('made figures: prompt follows the paragraph and text choice, sizes are sane
   assert.equal(f.figureRequestSize('square', '99999x1'), '1024x1024');
   assert.equal(f.figureFallbackSize('square'), '1024x1024');
 });
+
+test('raw SQL prefix filters do not pass a JS number to left() (Postgres has no left(text, bigint))', async () => {
+  for (const f of ['../src/lib/section-refs-store.ts', '../src/lib/trash.ts']) {
+    const src = await readFile(new URL(f, import.meta.url), 'utf8');
+    assert.equal(/left\(key,\s*\$\{/.test(src), false, f);
+    assert.ok(src.includes('starts_with(key, ${prefix})'), f);
+  }
+});
