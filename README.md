@@ -10,7 +10,7 @@
 - Next.js(App Router) · Tiptap 편집기 · Paged.js 조판
 - Supabase: Postgres(원고, `withbook` 스키마) · Storage(이미지·문체 자료·내보내기·글꼴) · Auth(로그인)
 - Vercel 배포. PDF는 서버용 Chromium(@sparticuz/chromium), 로컬은 설치된 Edge/Chrome
-- AI: OpenAI 호환 Chat Completions (게이트웨이·Gemini·OpenAI·Anthropic) — [책 설정 → AI 설정]
+- AI: OpenAI 호환 Chat Completions (게이트웨이·Gemini·OpenAI·Anthropic) — [책 설정 → AI 설정] (모든 책 공통)
 
 ## 로컬 실행
 
@@ -27,7 +27,9 @@ KoPub 글꼴은 로컬 `public/fonts/`(KoPubBatangLight/Bold, KoPubDotumMedium .
 1. 로그인 → **프로젝트 선택** → 새 프로젝트: 책 정보 → AI 목차 설계 → [이 목차로 시작]
 2. 목차에서 절 선택 → 스케치 → 분량 → **[AI 집필하기]** (여러 절은 [⚡ 자동 집필]에서 범위를 골라)
 3. 직접 고치기(자동 저장) · 선택영역 AI · 각주 · 교정·교열
-   - **[✦ 이미지 추천]** (도구줄 · 오른쪽 [이미지] 탭): AI가 절의 문단마다 그림이 필요한 곳을 골라 Wikimedia Commons에서 논문 도표·그래프·도식을 찾아 추천 → [승인]하면 그 문단 끝에 캡션·출처(저작자·라이선스)와 함께 들어간다. AI 연결은 [AI 설정 → 이미지 추천]에서 따로 지정할 수 있다.
+   - **[✦ 이미지 추천 ▾]** (도구줄 → 오른쪽 [이미지] 탭), 두 가지 중 고른다. 어느 쪽이든 [승인]하면 그 문단 끝에 캡션과 함께 들어간다.
+     - **외부 자료에서 찾아 제안**: AI가 그림이 필요한 문단을 골라 Wikimedia Commons에서 논문 도표·그래프·도식을 찾아 추천(캡션에 저작자·라이선스 출처). AI 연결: [AI 설정 → 이미지 추천]
+     - **직접 만들기**: 커서가 있는 문단을 표지 디자인 AI와 같은 그림 연결로 그린다 — 그림 종류·비율·요청 크기·추가 지시·글자 넣기, 프롬프트 안, 만든 그림 수정·삭제. AI 연결: [AI 설정 → 표지·그림 만들기]
 4. **[펼침면 미리보기]** → **[내보내기]** PDF(부크크 제출용) / HWPX / 백업
 5. **[커버 디자인]** (새 창): 날개·책등 펼침면에 AI 표지 그림·글·사진 배치 → 인쇄용 표지 PDF(책등 폭은 실제 조판 쪽수 기준)
 

@@ -26,7 +26,7 @@ export default function Menu({ label, tone = "", title, disabled, children }: { 
   return (
     <div ref={box} className="relative">
       <button
-        className={`rounded-md border border-stone-300 bg-white px-2 py-1 text-xs font-semibold shadow-sm hover:bg-stone-50 disabled:opacity-40 ${tone}`}
+        className={`rounded-md border border-stone-300 bg-white px-1.5 py-1 text-xs font-semibold shadow-sm hover:bg-stone-50 disabled:opacity-40 ${tone}`}
         title={title}
         aria-haspopup="menu"
         aria-expanded={open}

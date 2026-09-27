@@ -15,6 +15,12 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
   useEffect(() => {
     setMessage("");
   }, [query]);
+  // 결과 수는 칸 위에 겹쳐 잠깐 보인다
+  useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(() => setMessage(""), 3000);
+    return () => clearTimeout(t);
+  }, [message]);
   const findRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
   const focusReplace = useRef(false);
@@ -96,21 +102,25 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
     setMessage(`${ms.length}곳을 바꿨습니다.`);
   }
 
-  // 도구줄 안에 들어가는 묶음 모양 (이름표 + 칸막이 버튼)
+  // 도구줄 안에 들어가는 묶음 모양 (이름표 + 칸막이 버튼) — 도구줄이 한 줄에 들어가도록 짧게: 이전/다음은 화살표, 결과 수는 칸 위에 겹쳐 보인다
   const btn = "px-1.5 py-1 text-xs text-stone-700 hover:bg-stone-100 disabled:opacity-40";
   return (
-    <div className="flex items-stretch overflow-hidden rounded-md border border-stone-300 bg-white text-xs shadow-sm">
-      <label htmlFor="manuscript-find" className="flex items-center bg-teal-700 px-1.5 text-[11px] font-semibold text-white">
-        찾기
+    <div className="relative flex items-stretch rounded-md border border-stone-300 bg-white text-xs shadow-sm">
+      <label htmlFor="manuscript-find" className="flex items-center rounded-l-md bg-teal-700 px-1.5 text-[11px] font-semibold text-white" title={`찾기 (${KEYS.find})`}>
+        <svg aria-hidden viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <circle cx="8.5" cy="8.5" r="5" />
+          <path d="M12.5 12.5L17 17" />
+        </svg>
+        <span className="sr-only">찾기</span>
       </label>
       <div className="flex items-center divide-x divide-stone-200">
         <input
           id="manuscript-find"
           ref={findRef}
           title={`이 절에서 찾기 (${KEYS.find})`}
-          className="w-24 border-0 px-1.5 py-1 text-xs outline-none"
+          className="w-14 border-0 px-1.5 py-1 text-xs outline-none"
           value={query}
-          placeholder="검색어"
+          placeholder="찾기"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) {
@@ -119,21 +129,21 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
             }
           }}
         />
-        <button className={btn} disabled={!query} onClick={() => find(true)}>
-          이전
+        <button className={btn} disabled={!query} onClick={() => find(true)} title="이전 (Shift+Enter)" aria-label="이전 찾기">
+          ▲
         </button>
-        <button className={btn} disabled={!query} onClick={() => find()}>
-          다음
+        <button className={btn} disabled={!query} onClick={() => find()} title="다음 (Enter)" aria-label="다음 찾기">
+          ▼
         </button>
-        <button className={btn} onClick={() => setReplaceOpen(!replaceOpen)} title={`이 절에서 바꾸기 (${KEYS.replace})`}>
-          바꾸기{replaceOpen ? " ▴" : " ▾"}
+        <button className={btn} onClick={() => setReplaceOpen(!replaceOpen)} title={`이 절에서 바꾸기 (${KEYS.replace})`} aria-expanded={replaceOpen} aria-label="바꾸기">
+          ⇄
         </button>
         {replaceOpen && (
           <>
             <input
               ref={replaceRef}
               aria-label="바꿀 말"
-              className="w-24 border-0 px-1.5 py-1 text-xs outline-none"
+              className="w-20 border-0 px-1.5 py-1 text-xs outline-none"
               value={replacement}
               placeholder="바꿀 말"
               onChange={(e) => setReplacement(e.target.value)}
@@ -148,7 +158,7 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
               하나
             </button>
             <button className={btn} disabled={!query || disabled} onClick={replaceAll} title="이 절의 모든 검색어를 바꿉니다 (Ctrl+Z로 되돌리기)">
-              이 절 모두
+              모두
             </button>
           </>
         )}
@@ -156,12 +166,12 @@ export default function FindPanel({ editor, onBookSearch, disabled }: { editor: 
           책 전체
         </button>
         <button className={btn} onClick={() => setQuery("[확인 필요]")} title="[확인 필요] 표시 찾기">
-          [확인 필요]
+          [확인]
         </button>
-        <span role="status" aria-live="polite" className={message ? "px-2 text-stone-500" : "hidden"}>
-          {message}
-        </span>
       </div>
+      <span role="status" aria-live="polite" className={message ? "pointer-events-none absolute left-12 top-full z-30 mt-1 whitespace-nowrap rounded bg-stone-800 px-2 py-0.5 text-[11px] text-white shadow" : "sr-only"}>
+        {message}
+      </span>
     </div>
   );
 }

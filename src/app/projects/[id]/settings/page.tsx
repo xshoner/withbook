@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import AiSettingsPanel from "@/components/AiSettingsPanel";
 import BookInfoForm, { type BookInfo } from "@/components/BookInfoForm";
 import StyleProfileView from "@/components/StyleProfileView";
 import { api } from "@/lib/client";
@@ -12,12 +13,15 @@ import { BLEED, SAFE_MIN_FROM_TRIM } from "@/lib/print/spec";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 import { useMe } from "@/lib/me-client";
 
-type Tab = "info" | "style" | "layout" | "glossary";
+type Tab = "info" | "style" | "layout" | "glossary" | "ai";
+const TABS: Tab[] = ["info", "style", "layout", "glossary", "ai"];
 
 export default function ProjectSettings() {
   const { id } = useParams<{ id: string }>();
   const [p, setP] = useState<any>(null);
-  const [tab, setTab] = useState<Tab>("info");
+  // ?tab=ai 처럼 바로 열 탭 (자동 집필·이미지 만들기의 [AI 설정] 링크)
+  const want = useSearchParams().get("tab") as Tab | null;
+  const [tab, setTab] = useState<Tab>(want && TABS.includes(want) ? want : "info");
   const [msg, setMsg] = useState("");
   const [loadErr, setLoadErr] = useState("");
   const load = () =>
@@ -65,14 +69,15 @@ export default function ProjectSettings() {
             ["style", "문체"],
             ["layout", "조판 · 판권면"],
             ["glossary", "용어집"],
+            ["ai", "AI 설정"],
           ] as const
         ).map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} className={`-mb-px border-b-2 px-4 py-2 text-sm ${tab === k ? "border-amber-700 font-semibold" : "border-transparent text-stone-500"}`}>
             {l}
           </button>
         ))}
-        <Link href="/settings" className="ml-auto self-center px-2 text-xs text-stone-500 hover:underline" title="AI 연결·기본 문체·서술 규칙은 모든 책에 공통이라 설정 화면에 있습니다">
-          AI 연결·기본 문체는 설정 →
+        <Link href="/settings" className="ml-auto self-center px-2 text-xs text-stone-500 hover:underline" title="작가 기본 문체·서술 규칙·AI 사용량은 모든 책에 공통이라 설정 화면에 있습니다">
+          기본 문체·사용량은 설정 →
         </Link>
         {msg && <span className="self-center text-xs text-emerald-700">{msg}</span>}
       </div>
@@ -97,6 +102,15 @@ export default function ProjectSettings() {
       {tab === "style" && <StyleTab p={p} reload={load} flash={flash} />}
       {tab === "layout" && <LayoutTab p={p} reload={load} flash={flash} />}
       {tab === "glossary" && <GlossaryTab id={id} />}
+      {tab === "ai" && (
+        <section className="card p-6">
+          <h2 className="mb-1 font-semibold">AI 설정</h2>
+          <p className="mb-3 text-sm text-stone-500">
+            작업마다 쓸 AI 연결 — 본문 집필·교정·각주·이미지 추천(외부 자료에서 찾아 제안)·표지·그림 만들기(표지 디자인과 본문 [직접 만들기]). 연결은 모든 책에 공통으로 적용됩니다.
+          </p>
+          <AiSettingsPanel />
+        </section>
+      )}
     </main>
   );
 }

@@ -37,6 +37,8 @@ const PURPOSE: Record<string, string> = {
   image_pick: "이미지 추천 — 후보 고르기·캡션",
   cover_image: "표지 그림 만들기",
   cover_image_edit: "표지 그림 고치기",
+  figure_image: "본문 그림 직접 만들기",
+  figure_image_edit: "본문 그림 고치기",
   ping: "연결 점검",
 };
 const purposeName = (p: string) => PURPOSE[p] ?? (p.startsWith("rewrite_") ? "부분 수정" : p);

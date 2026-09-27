@@ -27,7 +27,7 @@ type Props = {
   onPickImage: () => void;
   onBookSearch: (query: string) => void;
   /** 이미지 추천 — 오른쪽 [이미지] 탭을 열고 AI가 문단마다 맞는 도표·그래프·도식을 찾는다 */
-  onImageSuggest: () => void;
+  onImageSuggest: (mode: "search" | "make") => void;
   imageBusy: boolean;
 };
 
@@ -64,12 +64,12 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
     </button>
   );
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1">
       <ToolGroup label="본문" tone="bg-stone-700">
         {tb("소제목", () => editor.chain().focus().toggleHeading({ level: 3 }).run(), active.heading)}
-        {tb("굵게", () => editor.chain().focus().toggleBold().run(), active.bold)}
-        {tb("기울임", () => editor.chain().focus().toggleItalic().run(), active.italic)}
-        {tb("인용", () => editor.chain().focus().toggleBlockquote().run(), active.blockquote)}
+        {tb("B", () => editor.chain().focus().toggleBold().run(), active.bold, "굵게 (Ctrl+B)")}
+        {tb("I", () => editor.chain().focus().toggleItalic().run(), active.italic, "기울임 (Ctrl+I)")}
+        {tb("❝", () => editor.chain().focus().toggleBlockquote().run(), active.blockquote, "인용")}
         {tb("•", () => editor.chain().focus().toggleBulletList().run(), active.bulletList, "글머리 목록")}
         {tb("1.", () => editor.chain().focus().toggleOrderedList().run(), active.orderedList, "번호 목록")}
         {tb("―", () => editor.chain().focus().setHorizontalRule().run(), false, "구분선")}
@@ -86,7 +86,6 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
             <circle cx="7" cy="8" r="1.5" />
             <path d="M3 15l4.5-4.5 3 3 2.5-2.5L17 15" />
           </svg>
-          그림
         </button>
         {tb("↶", () => editor.chain().focus().undo().run(), false, "실행 취소 (Ctrl+Z)")}
         {tb("↷", () => editor.chain().focus().redo().run(), false, "다시 실행 (Ctrl+Y)")}
@@ -99,22 +98,26 @@ function EditorToolbar({ editor, busyReason, fnBusy, rewriteBusy, bodySizePt, li
           onClick={() => onAddFootnote(true)}
           className={`px-1.5 py-1 text-xs ${selEmpty ? "text-stone-400" : "bg-amber-100 font-semibold text-amber-900 hover:bg-amber-200"} disabled:opacity-50`}
         >
-          {fnBusy === "one" ? "각주 쓰는 중…" : "✦ AI 각주"}
+          {fnBusy === "one" ? "쓰는 중…" : "✦ AI"}
         </button>
         {tb("직접", () => onAddFootnote(false), false, "선택한 단어(또는 커서 위치)에 각주를 달고 내용을 직접 입력합니다")}
         {tb(fnBusy === "auto" ? "찾는 중…" : "자동", onAutoFootnote, false, "AI가 이 절의 중요 키워드를 골라 각주를 답니다")}
       </ToolGroup>
-      <ToolGroup label="이미지" tone="bg-indigo-700">
-        <button
-          title={busyReason || "AI가 이 절의 문단마다 맞는 논문 도표·그래프·도식을 찾아 추천합니다 — 승인하면 그 문단 끝에 캡션과 함께 들어갑니다"}
-          disabled={!!busyReason || imageBusy}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={onImageSuggest}
-          className="bg-indigo-50 px-1.5 py-1 text-xs font-semibold text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
-        >
-          {imageBusy ? "찾는 중…" : "✦ 이미지 추천"}
+      <Menu
+        label={imageBusy ? "✦ 이미지 찾는 중…" : "✦ 이미지 추천 ▾"}
+        tone="border-indigo-300 bg-indigo-50 text-indigo-900"
+        disabled={!!busyReason}
+        title={busyReason || "외부 자료에서 찾아 제안하거나, AI로 직접 만듭니다 — 승인하면 그 문단 끝에 캡션과 함께 들어갑니다"}
+      >
+        <button className="block w-72 px-3 py-2 text-left text-xs hover:bg-indigo-50" onMouseDown={(e) => e.preventDefault()} onClick={() => onImageSuggest("search")} disabled={imageBusy}>
+          🔍 외부 자료에서 찾아 제안
+          <span className="block text-[11px] text-stone-500">문단마다 맞는 논문 도표·그래프·도식을 찾아 추천</span>
         </button>
-      </ToolGroup>
+        <button className="block w-72 px-3 py-2 text-left text-xs hover:bg-indigo-50" onMouseDown={(e) => e.preventDefault()} onClick={() => onImageSuggest("make")}>
+          ✨ 직접 만들기
+          <span className="block text-[11px] text-stone-500">커서가 있는 문단을 AI 그림으로 (표지 디자인 AI와 같은 연결)</span>
+        </button>
+      </Menu>
       <Menu
         label={rewriteBusy ? `✦ ${REWRITE_LABEL[rewriteBusy as RewriteAction] ?? ""} 중…` : "✦ 선택 AI ▾"}
         tone="text-violet-800"

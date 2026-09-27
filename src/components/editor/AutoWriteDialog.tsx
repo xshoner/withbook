@@ -102,7 +102,7 @@ export default function AutoWriteDialog(props: {
           ok: !!conn.writing?.hasKey,
           label: "집필 AI",
           detail: conn.writing ? `${conn.writing.model}${conn.writing.inherited ? " (기본 연결)" : ""}${conn.writing.hasKey ? "" : " — API 키 없음"}` : "확인 중…",
-          fix: <Link className="underline" href={`/projects/${props.projectId}/settings`}>AI 설정</Link>,
+          fix: <Link className="underline" href={`/projects/${props.projectId}/settings?tab=ai`}>AI 설정</Link>,
         },
         ...(factcheck
           ? [{ ok: !!conn.factcheck?.hasKey, warn: !!conn.factcheck?.inherited, label: "사실 확인 AI", detail: conn.factcheck ? `${conn.factcheck.model}${conn.factcheck.inherited ? " (기본 연결 — 사실 확인 전용 연결을 권장)" : ""}${conn.factcheck.hasKey ? "" : " — API 키 없음"}` : "확인 중…" }]

@@ -32,7 +32,8 @@ import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./Page
 import { editorBlocks, matchPrintLayout, type SectionPrintLayout } from "./pageMap";
 import type { AppliedChange } from "./ProofPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround, textblockAt } from "./pmOps";
-import ImagesPanel, { runImageSuggest, useImageSuggestBusy, type ImageCandidate, type ImageSuggestion } from "./ImagesPanel";
+import ImagesPanel, { runImageSuggest, setImageMode, useImageSuggestBusy, type ImageCandidate, type ImageMode, type ImageSuggestion } from "./ImagesPanel";
+import type { FigureTarget, MadeFigure } from "./MakeFigurePane";
 import PanelTabs, { type PanelTab } from "./PanelTabs";
 import { conflictOf, noteServerContent, primeBase, recoverPending, registerCommit, resolveConflict, settleSection, useAutosave } from "./useAutosave";
 import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMemory";
@@ -373,8 +374,8 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   /* ---------- 이미지 추천 (오른쪽 [이미지] 탭) ---------- */
 
   /** 추천이 가리킨 문단 — 그사이 문단이 옮겨졌으면 앞부분(anchor)이 같은 문단을 찾는다 */
-  function suggestionBlock(ed: Editor, s: ImageSuggestion) {
-    const b = textblockAt(ed.state.doc, s.paragraph);
+  function suggestionBlock(ed: Editor, s: FigureTarget) {
+    const b = s.paragraph > 0 ? textblockAt(ed.state.doc, s.paragraph) : null;
     if (b && b.node.textContent.trim().startsWith(s.anchor)) return b;
     let found: { node: PMNode; pos: number } | null = null;
     ed.state.doc.descendants((node, pos) => {
@@ -388,7 +389,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
     return found as { node: PMNode; pos: number } | null;
   }
 
-  function locateSuggestion(s: ImageSuggestion) {
+  function locateSuggestion(s: FigureTarget) {
     const ed = editorRef.current;
     const b = ed && suggestionBlock(ed, s);
     if (!ed || !b) return toast.error("그 문단을 찾지 못했습니다(내용이 바뀌었을 수 있습니다).");
@@ -417,25 +418,42 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
       return false;
     }
     // 내려받는 동안 본문이 바뀌었을 수 있다 — 넣기 직전에 다시 찾는다
-    const b = suggestionBlock(ed, s);
+    const text = [caption.trim(), c.credit && `(${c.credit})`].filter(Boolean).join(" ");
+    return placeFigure(ed, s, { assetId: r.id, src: r.src, widthPx: r.widthPx, heightPx: r.heightPx }, text);
+  }
+
+  /** 그림을 그 문단(목록·인용 안이면 그 묶음) 끝에 넣고 선택한다 */
+  function placeFigure(ed: Editor, t: FigureTarget, img: { assetId: string; src: string; widthPx: number; heightPx: number }, caption: string) {
+    const b = suggestionBlock(ed, t);
     if (!b) {
-      toast.error("그사이 추천한 문단이 바뀌어 그림을 넣지 못했습니다.");
+      toast.error("그림을 넣을 문단을 찾지 못했습니다(그사이 내용이 바뀌었을 수 있습니다).");
       return false;
     }
     const $p = ed.state.doc.resolve(b.pos + 1);
     const at = $p.depth > 1 ? $p.after(1) : b.pos + b.node.nodeSize;
-    const text = [caption.trim(), c.credit && `(${c.credit})`].filter(Boolean).join(" ");
-    const node = ed.schema.nodes.figure.create({ assetId: r.id, src: r.src, widthPx: r.widthPx, heightPx: r.heightPx, layout: "fit", caption: text });
+    const node = ed.schema.nodes.figure.create({ ...img, layout: "fit", caption });
     const tr = ed.state.tr.insert(at, node);
     ed.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc, at)).scrollIntoView());
     return true;
   }
 
+  /** [직접 만들기] 승인 — 이미 원고 이미지로 저장된 그림을 만든 문단 끝에 넣는다 */
+  function insertMadeFigure(t: FigureTarget, f: MadeFigure, caption: string) {
+    const ed = editorRef.current;
+    if (!ed || !canEditRef.current) {
+      toast.error(busyReason || "지금은 이 절을 고칠 수 없습니다.");
+      return false;
+    }
+    return placeFigure(ed, t, { assetId: f.assetId, src: f.src, widthPx: f.widthPx, heightPx: f.heightPx }, caption);
+  }
+
   const imageBusy = useImageSuggestBusy(section.id);
-  const onImageSuggest = useStableFn(() => {
+  const onImageSuggest = useStableFn((m: ImageMode) => {
     if (!editor) return;
+    setImageMode(m);
     setTab("images");
     setPanelOpen(true);
+    if (m === "make") return; // 직접 만들기는 문단·설정을 고른 뒤 [AI 제작]
     if (isDocEmpty(editor.getJSON() as JNode)) return toast("이미지를 추천할 본문이 없습니다. 먼저 본문을 쓰세요.");
     void runImageSuggest(section.id, JSON.stringify(editor.getJSON()));
   });
@@ -1714,7 +1732,11 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
               sectionId={section.id}
               lockReason={busyReason}
               getContent={() => JSON.stringify(editor.getJSON())}
+              editor={editor}
+              bookTitle={project.title}
+              sectionTitle={section.title}
               onInsert={insertSuggestedImage}
+              onInsertMade={insertMadeFigure}
               onLocate={locateSuggestion}
             />
           )}

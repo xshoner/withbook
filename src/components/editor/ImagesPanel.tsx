@@ -3,6 +3,8 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "@/lib/client";
 import { toast, toastError } from "../ui/feedback";
+import type { Editor } from "@tiptap/react";
+import MakeFigurePane, { type FigureTarget, type MadeFigure } from "./MakeFigurePane";
 
 /** 서버 lib/ai/image-suggest.ts 의 결과 모양 */
 export type ImageCandidate = {
@@ -74,20 +76,78 @@ export function useImageSuggestBusy(sectionId: string) {
   return useEntry(sectionId).status === "running";
 }
 
-type Props = {
+/** [이미지] 탭의 방식 — 외부 자료에서 찾아 제안 / 직접 만들기 (도구줄 메뉴에서 고른 값, 이 탭 밖에 둔다) */
+export type ImageMode = "search" | "make";
+let mode: ImageMode = "search";
+const modeListeners = new Set<() => void>();
+export function setImageMode(m: ImageMode) {
+  mode = m;
+  modeListeners.forEach((l) => l());
+}
+function useImageMode() {
+  return useSyncExternalStore(
+    (l) => (modeListeners.add(l), () => modeListeners.delete(l)),
+    () => mode,
+    () => "search" as ImageMode,
+  );
+}
+
+type SearchProps = {
   sectionId: string;
   lockReason: string;
   getContent: () => string;
   /** 승인 — 해당 문단 끝에 캡션과 함께 넣는다. 넣었으면 true */
   onInsert: (s: ImageSuggestion, c: ImageCandidate, caption: string) => Promise<boolean>;
-  onLocate: (s: ImageSuggestion) => void;
+  onLocate: (s: FigureTarget) => void;
+};
+
+type Props = SearchProps & {
+  editor: Editor;
+  bookTitle: string;
+  sectionTitle: string;
+  /** [직접 만들기] 승인 — 만든 그림을 그 문단 끝에 넣는다 */
+  onInsertMade: (target: FigureTarget, f: MadeFigure, caption: string) => boolean;
 };
 
 /**
- * 오른쪽 패널 [이미지] 탭 — AI가 절의 문단마다 맞는 전문 이미지(논문 도표·그래프·도식 등)를 찾아 보여 주고,
- * 작가가 [승인]하면 그 문단 끝에 캡션(+출처)과 함께 넣는다.
+ * 오른쪽 패널 [이미지] 탭 — 두 가지 방식:
+ *  외부 자료에서 찾아 제안: AI가 문단마다 맞는 논문 도표·그래프·도식을 찾아 보여 주고 [승인]하면 캡션(+출처)과 함께 넣는다.
+ *  직접 만들기: 표지 디자인 AI와 같은 그림 연결로 고른 문단의 그림을 그린다.
  */
-export default function ImagesPanel({ sectionId, lockReason, getContent, onInsert, onLocate }: Props) {
+export default function ImagesPanel(props: Props) {
+  const m = useImageMode();
+  return (
+    <div className="flex h-full flex-col">
+      <div role="radiogroup" aria-label="이미지 방식" className="grid grid-cols-2 gap-1 border-b border-stone-200 bg-indigo-50/60 p-1.5 text-xs">
+        {(
+          [
+            ["search", "🔍 외부 자료에서 찾아 제안"],
+            ["make", "✨ 직접 만들기"],
+          ] as const
+        ).map(([k, l]) => (
+          <button
+            key={k}
+            role="radio"
+            aria-checked={m === k}
+            onClick={() => setImageMode(k)}
+            className={`rounded-md px-2 py-1.5 ${m === k ? "bg-white font-semibold text-indigo-900 shadow-sm ring-1 ring-indigo-300" : "text-stone-600 hover:bg-white/70"}`}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1">
+        {m === "search" ? (
+          <SearchPane sectionId={props.sectionId} lockReason={props.lockReason} getContent={props.getContent} onInsert={props.onInsert} onLocate={props.onLocate} />
+        ) : (
+          <MakeFigurePane sectionId={props.sectionId} editor={props.editor} bookTitle={props.bookTitle} sectionTitle={props.sectionTitle} lockReason={props.lockReason} onInsert={props.onInsertMade} onLocate={props.onLocate} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SearchPane({ sectionId, lockReason, getContent, onInsert, onLocate }: SearchProps) {
   const entry = useEntry(sectionId);
   const [bulk, setBulk] = useState(false);
   const running = entry.status === "running";
@@ -130,7 +190,7 @@ export default function ImagesPanel({ sectionId, lockReason, getContent, onInser
         <p className="text-xs leading-5 text-stone-600">
           AI가 이 절의 문단을 읽고 그림이 필요한 곳마다 <b>논문 도표·그래프·도식</b> 같은 전문 이미지를 찾아 추천합니다. [승인]하면 그 문단 끝에 캡션·출처와 함께 들어갑니다.
         </p>
-        <button className="btn-image w-full" disabled={running || !!lockReason} title={lockReason || undefined} onClick={() => void runImageSuggest(sectionId, getContent())}>
+        <button className="btn-image w-full px-3.5 py-1.5 text-sm" disabled={running || !!lockReason} title={lockReason || undefined} onClick={() => void runImageSuggest(sectionId, getContent())}>
           {running ? "문단을 읽고 이미지를 찾는 중…" : entry.status === "done" ? "↻ 다시 추천 받기" : "✦ 이 절 이미지 추천 받기"}
         </button>
         {running && (
@@ -226,7 +286,7 @@ export default function ImagesPanel({ sectionId, lockReason, getContent, onInser
                       </div>
                       <div className="flex gap-1.5 pt-1">
                         <button
-                          className="btn-image flex-1 py-1 text-xs"
+                          className="btn-image flex-1 px-2 py-1 text-xs"
                           disabled={u.state === "inserting" || !!lockReason}
                           title={lockReason || "이 문단 끝에 캡션과 함께 넣습니다"}
                           onClick={() => void approve(i)}

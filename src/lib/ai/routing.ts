@@ -9,7 +9,7 @@ export const AI_SCOPES = {
   footnote: { label: "각주", description: "각주 작성과 자동 제안" },
   factcheck: { label: "사실 확인", description: "‘확인할 것’의 [확인 필요] 문장을 최신 자료로 확인·보완 — GPT-5.6 Terra 추천" },
   image: { label: "이미지 추천", description: "절의 문단마다 맞는 도표·그래프·도식을 찾을 검색어 만들기와 후보 고르기·캡션" },
-  cover: { label: "표지 디자인", description: "표지 디자인 편집기의 [AI 제작] 표지 그림 생성 (Images API) — gpt-image-2.5-sunburst 추천" },
+  cover: { label: "표지·그림 만들기", description: "표지 디자인 편집기의 [AI 제작] 표지 그림과 본문 [이미지 추천 → 직접 만들기] 그림 생성 (Images API) — gpt-image-2.5-sunburst 추천" },
 } as const;
 
 export type AiScope = keyof typeof AI_SCOPES;
@@ -29,7 +29,8 @@ export function scopeForPurpose(purpose: string): AiScope {
   if (["footnote", "footnote_auto"].includes(purpose)) return "footnote";
   if (purpose === "factcheck") return "factcheck";
   if (purpose === "image_suggest" || purpose === "image_pick") return "image";
-  if (purpose === "cover_image" || purpose === "cover_image_edit") return "cover";
+  // 본문 그림 [직접 만들기]도 표지 디자인과 같은 그림 연결을 쓴다
+  if (["cover_image", "cover_image_edit", "figure_image", "figure_image_edit"].includes(purpose)) return "cover";
   return "default";
 }
 

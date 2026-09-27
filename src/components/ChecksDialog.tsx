@@ -214,7 +214,7 @@ export default function ChecksDialog({
           {tab === "marks" && (
             <button
               className="ml-auto rounded-md bg-violet-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-600 disabled:opacity-40"
-              title="[확인 필요] 표시를 사실 확인 AI가 최신 자료로 모두 차례로 확인합니다 (설정 → AI 연결 → 사실 확인)"
+              title="[확인 필요] 표시를 사실 확인 AI가 최신 자료로 모두 차례로 확인합니다 (책 설정 → AI 설정 → 사실 확인)"
               disabled={!!judging || !!busy || !res?.sections.some((s) => s.markers.some((m) => m.kind === "check"))}
               onClick={judge}
             >

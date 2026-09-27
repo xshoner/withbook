@@ -21,9 +21,9 @@ export function imageEndpointOf(baseUrl: string, path: "images/generations" | "i
 /** 표지 연결 — 기본 연결(글쓰기 모델)을 그대로 쓰면 그림 모델이 아니므로 개별 연결을 요구한다 */
 async function coverConnection() {
   const s = await loadAiSettings("cover");
-  if (s.inherited) throw new AiError("표지 그림 연결이 없습니다. [설정 → AI 연결 → 표지 디자인]에서 연결과 API 키를 등록하세요(관리자).", 0);
+  if (s.inherited) throw new AiError("표지 그림 연결이 없습니다. [책 설정 → AI 설정 → 표지·그림 만들기]에서 연결과 API 키를 등록하세요(관리자).", 0);
   const key = resolvedKey(s);
-  if (!s.baseUrl || !key) throw new AiError(`표지 디자인 AI 키가 없습니다. [설정 → AI 연결 → 표지 디자인]에서 키(${s.keyName})를 입력하세요.`, 0);
+  if (!s.baseUrl || !key) throw new AiError(`표지 디자인 AI 키가 없습니다. [책 설정 → AI 설정 → 표지·그림 만들기]에서 키(${s.keyName})를 입력하세요.`, 0);
   const bad = baseUrlProblem(s.baseUrl);
   if (bad) throw new AiError(`표지 디자인 연결의 기본 주소를 쓸 수 없습니다: ${bad}`, 0);
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -57,6 +57,8 @@ type ImageCall = {
    * mask: 바꿀 곳만 투명한 PNG (입력과 같은 크기)
    */
   edit?: { prepare: (size: string) => Promise<{ image: Buffer; mask?: Buffer }> };
+  /** 사용 기록 이름 — 기본은 표지(cover_image / cover_image_edit). 본문 그림 [직접 만들기]는 figure_image(_edit) */
+  purpose?: "figure";
 };
 
 /**
@@ -66,7 +68,7 @@ type ImageCall = {
 async function callImages(opts: ImageCall) {
   const { s, headers } = await coverConnection();
   const url = imageEndpointOf(s.baseUrl, opts.edit ? "images/edits" : "images/generations");
-  const purpose = opts.edit ? "cover_image_edit" : "cover_image";
+  const purpose = `${opts.purpose ?? "cover"}_image${opts.edit ? "_edit" : ""}`;
   const verb = opts.edit ? "그림 수정" : "그림 생성";
   const started = Date.now();
   const ctx = getRequestContext();

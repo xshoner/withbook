@@ -54,3 +54,18 @@ test('project list pages follow the measured typeset count', async () => {
   assert.equal(p.parsePageCount('{"total":0}'), null);
   assert.equal(p.parsePageCount('bad'), null);
 });
+
+test('made figures: prompt follows the paragraph and text choice, sizes are sane', async () => {
+  const f = await load('../src/lib/images/figure-prompt.ts');
+  const base = { bookTitle: '기억의 과학', sectionTitle: '망각 곡선', paragraph: '에빙하우스는 망각 곡선을 측정했다.', style: 'diagram', instruction: '', withText: false };
+  const p = f.buildFigurePrompt(base);
+  assert.ok(p.includes('에빙하우스는 망각 곡선을 측정했다.'));
+  assert.ok(p.includes('No text'));
+  assert.ok(!p.includes("Author's additional direction"));
+  const q = f.buildFigurePrompt({ ...base, style: 'photo', withText: true, instruction: '파란색 계열' });
+  assert.ok(q.includes('photograph') && q.includes('Hangul') && q.includes('파란색 계열'));
+  assert.equal(f.figureRequestSize('portrait'), '1024x1536');
+  assert.equal(f.figureRequestSize('landscape', '2000x1000'), '2000x1008');
+  assert.equal(f.figureRequestSize('square', '99999x1'), '1024x1024');
+  assert.equal(f.figureFallbackSize('square'), '1024x1024');
+});
