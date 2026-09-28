@@ -226,7 +226,8 @@ class Writer {
   }
 }
 
-export async function buildHwpx(book: Book): Promise<Buffer> {
+/** biblio: 켠 참고문헌은 판권면 앞에 넣는다. 찾아보기는 쪽 번호가 조판(PDF)에서만 정해져 HWPX에는 넣지 않는다 */
+export async function buildHwpx(book: Book, back: { biblio?: { enabled: boolean; entries: { text: string }[] } | null } = {}): Promise<Buffer> {
   const { project, layout } = book;
   const docs = new Map(book.chapters.flatMap((c) => c.sections.map((s) => [s, parseDoc(s.content)] as const)));
   const w = new Writer(book, await loadAssets([...docs.values()]));
@@ -246,6 +247,11 @@ export async function buildHwpx(book: Book): Promise<Buffer> {
       if (!single) w.p(w.run(`${s.label ? s.label + " " : ""}${s.title}`, 3), 1, c.kind === "body" || i > 0);
       await w.blocks(docs.get(s)!, fig);
     }
+  }
+  // 참고문헌
+  if (back.biblio?.enabled && back.biblio.entries.length) {
+    w.p(w.run("참고문헌", 2), 1, true);
+    for (const e of back.biblio.entries) w.p(w.run(e.text, 7), 4);
   }
   // 판권면
   const cp = layout.colophon;

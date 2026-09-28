@@ -94,8 +94,8 @@ export const POST = handle(async (_req: Request, ctx: RouteContext<"/api/project
     await prisma.project.delete({ where: { id: copy.id } }).catch(() => {});
     throw e;
   }
-  // 책의 기억도 함께 복제한다 (작가가 확정한 사항은 책 내용과 한 몸)
-  const memory = await prisma.appSetting.findUnique({ where: { key: `book-memory:${id}` } });
-  if (memory) await prisma.appSetting.create({ data: { key: `book-memory:${copy.id}`, value: memory.value } }).catch(() => {});
+  // 책의 기억·찾아보기·참고문헌도 함께 복제한다 (책 내용과 한 몸)
+  const extras = await prisma.appSetting.findMany({ where: { key: { in: ["book-memory", "book-index", "book-biblio"].map((k) => `${k}:${id}`) } } });
+  if (extras.length) await prisma.appSetting.createMany({ data: extras.map((r) => ({ key: r.key.replace(id, copy.id), value: r.value })), skipDuplicates: true }).catch(() => {});
   return ok({ id: copy.id });
 });

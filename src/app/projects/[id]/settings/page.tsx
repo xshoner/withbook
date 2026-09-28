@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import AiSettingsPanel from "@/components/AiSettingsPanel";
 import BookInfoForm, { type BookInfo } from "@/components/BookInfoForm";
 import StyleProfileView from "@/components/StyleProfileView";
+import BackMatterTab from "@/components/BackMatterTab";
 import { api } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
 import type { LayoutSettings } from "@/lib/layout";
@@ -13,8 +14,8 @@ import { BLEED, SAFE_MIN_FROM_TRIM } from "@/lib/print/spec";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 import { useMe } from "@/lib/me-client";
 
-type Tab = "info" | "style" | "layout" | "glossary" | "ai";
-const TABS: Tab[] = ["info", "style", "layout", "glossary", "ai"];
+type Tab = "info" | "style" | "layout" | "glossary" | "back" | "ai";
+const TABS: Tab[] = ["info", "style", "layout", "glossary", "back", "ai"];
 
 export default function ProjectSettings() {
   const { id } = useParams<{ id: string }>();
@@ -69,6 +70,7 @@ export default function ProjectSettings() {
             ["style", "문체"],
             ["layout", "조판 · 판권면"],
             ["glossary", "용어집"],
+            ["back", "색인·참고문헌"],
             ["ai", "AI 설정"],
           ] as const
         ).map(([k, l]) => (
@@ -102,6 +104,7 @@ export default function ProjectSettings() {
       {tab === "style" && <StyleTab p={p} reload={load} flash={flash} />}
       {tab === "layout" && <LayoutTab p={p} reload={load} flash={flash} />}
       {tab === "glossary" && <GlossaryTab id={id} />}
+      {tab === "back" && <BackMatterTab projectId={id} />}
       {tab === "ai" && (
         <section className="card p-6">
           <h2 className="mb-1 font-semibold">AI 설정</h2>

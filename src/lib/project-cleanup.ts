@@ -6,7 +6,7 @@ import { clearSectionExtras } from "./section-refs-store";
 type Db = Prisma.TransactionClient | typeof Client;
 
 /** 책마다 AppSetting에 둔 행의 키 (책 id 기준) — 표지 디자인·실제 쪽수·마지막 PDF 점검·목차 설계 표시·사실 확인/베타 리더 결과 */
-export const projectSettingKeys = (projectId: string) => [`cover:${projectId}`, `pages:${projectId}`, `pdf-check:${projectId}`, `toc-design:${projectId}`, `ai:consistency:${projectId}`, `book-memory:${projectId}`];
+export const projectSettingKeys = (projectId: string) => [`cover:${projectId}`, `pages:${projectId}`, `pdf-check:${projectId}`, `toc-design:${projectId}`, `ai:consistency:${projectId}`, `book-memory:${projectId}`, `book-index:${projectId}`, `book-biblio:${projectId}`];
 export const projectSettingPrefixes = (projectId: string) => [`trash:${projectId}:`, `ai:beta:${projectId}:`, `revise-run:${projectId}:`];
 
 /**

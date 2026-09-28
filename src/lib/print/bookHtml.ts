@@ -4,6 +4,7 @@ import { findFigures, parseDoc } from "../doc/doc";
 import { BLEED, DOC, TRIM, TYPO } from "./spec";
 import { docToHtml, esc, type FigureCtx } from "./render";
 import { figureMaxHeightMm } from "./figure";
+import { type BiblioConfig, type IndexConfig, groupIndex } from "../back-matter";
 
 export type BookHtmlOptions = {
   mode: "preview" | "print" | "measure";
@@ -13,6 +14,8 @@ export type BookHtmlOptions = {
   padEven?: boolean;
   guides?: { trim?: boolean; safe?: boolean; body?: boolean };
   view?: "spread" | "single";
+  /** 뒷붙이 — 참고문헌·찾아보기 (켠 것만, 책 전체 조판일 때만 들어간다) */
+  backMatter?: { index?: IndexConfig | null; biblio?: BiblioConfig | null };
 };
 
 /**
@@ -84,6 +87,32 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
     <div class="cp-copy">ⓒ ${esc(project.author)} ${esc(cp.copyrightYear)}<br>${esc(cp.notice)}</div>
   </div>`;
 
+  /* ---------- 뒷붙이: 참고문헌 · 찾아보기 ---------- */
+  // 찾아보기 쪽 번호는 조판이 끝난 뒤(AFTER_SCRIPT) 쪽마다 글에서 용어를 찾아 채운다 — 원고에는 표시를 넣지 않는다
+  const bib = o.backMatter?.biblio?.enabled && o.backMatter.biblio.entries.length ? o.backMatter.biblio : null;
+  const ix = o.backMatter?.index?.enabled && o.backMatter.index.terms.length ? o.backMatter.index : null;
+  const biblioHtml = bib
+    ? `<div class="chapter back backmatter" data-cid="bm-biblio"><header class="ch-head"><h1 class="ch-title">참고문헌</h1></header><ul class="biblio-list">${bib.entries.map((e) => `<li>${esc(e.text)}</li>`).join("")}</ul></div>`
+    : "";
+  const indexHtml = ix
+    ? `<div class="chapter back backmatter index-page" data-cid="bm-index"><header class="ch-head"><h1 class="ch-title">찾아보기</h1></header>${groupIndex(ix.terms)
+        .map(
+          (g) =>
+            `<div class="ix-group"><h3 class="ix-head">${esc(g.head)}</h3>${g.terms
+              .map((t) =>
+                t.see
+                  ? `<div class="ix"><span class="t">${esc(t.term)} <span class="ix-see">→ ${esc(t.see)}</span></span></div>`
+                  : `<div class="ix" data-terms="${esc(JSON.stringify([t.term, ...t.aliases]))}"><span class="t">${esc(t.term)}</span><span class="pn"></span></div>`,
+              )
+              .join("")}</div>`,
+        )
+        .join("")}</div>`
+    : "";
+  const backMatterToc = [bib && ["bm-biblio", "참고문헌"], ix && ["bm-index", "찾아보기"]]
+    .filter((x): x is string[] => !!x)
+    .map(([t, name]) => `<div class="toc-ch" data-target="${t}"><span class="t">${name}</span><span class="pn"></span></div>`)
+    .join("");
+
   const bodyChapters = book.chapters.filter((c) => c.kind === "body");
   const tocEntries = book.chapters
     .filter((c) => c.kind !== "front")
@@ -96,7 +125,7 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
       return chRow + secs;
     })
     .join("");
-  const toc = bodyChapters.length ? `<div class="toc no-num"><h1 class="toc-title">차례</h1>${tocEntries}</div>` : "";
+  const toc = bodyChapters.length ? `<div class="toc no-num"><h1 class="toc-title">차례</h1>${tocEntries}${backMatterToc}</div>` : "";
 
   const front = book.chapters.filter((c) => c.kind === "front");
   const html = full
@@ -106,6 +135,8 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
         ...parts.filter((_, i) => i < front.length),
         toc,
         ...parts.filter((_, i) => i >= front.length),
+        biblioHtml,
+        indexHtml,
         cp.position === "end" ? colophon : "",
       ].join("\n")
     : parts.join("\n");
@@ -130,6 +161,14 @@ p:not([data-split-to]), h1, h2, h3, h4, li, figure, figcaption, th, td, .toc-ch,
 strong { font-weight: 700; }
 .chapter { break-before: ${breakChapter}; }
 .chapter.front, .chapter.back { break-before: ${breakChapter}; }
+.biblio-list { list-style: none; margin: 0; padding: 0; font-size: 9pt; line-height: 1.65; }
+.biblio-list li { padding-left: 6mm; text-indent: -6mm; margin-bottom: 1.4mm; text-align: left; word-break: normal; overflow-wrap: anywhere; }
+.ix-group { break-inside: auto; }
+.ix-head { font-family: ${TYPO.headingFontCss}, sans-serif; font-weight: 500; font-size: 10.5pt; margin: 4mm 0 1mm; break-after: avoid; }
+.ix { display: flex; align-items: baseline; gap: 2mm; font-size: 9pt; line-height: 1.55; text-align: left; }
+.ix .t { flex: 1; }
+.ix .pn { white-space: nowrap; }
+.ix-see { color: #444; }
 .body-start { break-before: right; }
 .ch-head { padding-top: 0; margin-bottom: 8mm; break-after: avoid; } /* 앞붙이·뒷붙이: 제목은 쪽 첫 줄, 본문이 바로 이어진다 */
 .ch-no { font-family: ${TYPO.headingFontCss}, sans-serif; font-size: 10.5pt; letter-spacing: .08em; margin-bottom: 3mm; color: #000; }
@@ -366,6 +405,39 @@ window.__afterPaged = function () {
     const cid = el.getAttribute('data-cid');
     if (!info.chapters[cid]) info.chapters[cid] = { start: numOf(pageOf(el)) };
   });
+  // 찾아보기 쪽 번호 — 본문 쪽(차례·뒷붙이·표제지·판권면 빼고)의 글에서 용어·다른 표기를 찾는다
+  // (정규식을 쓰지 않는다 — 이 스크립트는 템플릿 문자열 안에 있어 역슬래시가 사라진다)
+  const ixRows = document.querySelectorAll('.ix[data-terms]');
+  if (ixRows.length) {
+    const norm = (s) => s.split('').map((c) => (c.charCodeAt(0) <= 32 ? ' ' : c)).join('').split(' ').filter(Boolean).join(' ');
+    const texts = pages.map((pg, i) => {
+      if (numOf(i) <= 0 || pg.querySelector('.backmatter, .toc, .title-page, .colophon')) return '';
+      const area = pg.querySelector('.pagedjs_area');
+      return area ? norm(area.textContent || '') : '';
+    });
+    const ranges = (ps) => {
+      const out = [];
+      for (let i = 0; i < ps.length; ) {
+        let j = i;
+        while (j + 1 < ps.length && ps[j + 1] === ps[j] + 1) j++;
+        out.push(j - i >= 2 ? ps[i] + '–' + ps[j] : j > i ? ps[i] + ', ' + ps[j] : String(ps[i]));
+        i = j + 1;
+      }
+      return out.join(', ');
+    };
+    let missing = 0;
+    ixRows.forEach((row) => {
+      let terms = [];
+      try { terms = JSON.parse(row.getAttribute('data-terms') || '[]').map(norm).filter(Boolean); } catch (e) {}
+      const ps = [];
+      texts.forEach((t, i) => { if (t && terms.some((w) => t.includes(w))) ps.push(numOf(i)); });
+      const pn = row.querySelector('.pn');
+      if (pn) pn.textContent = ps.length ? ranges(ps) : '';
+      if (!ps.length) { missing++; row.classList.add('ix-none'); }
+    });
+    info.indexMissing = missing;
+  }
+
   // 차례 쪽수 채우기
   document.querySelectorAll('[data-target]').forEach((row) => {
     const t = row.getAttribute('data-target');

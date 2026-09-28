@@ -192,6 +192,13 @@ export default function ExportDialog({
           )}
           {tab === "pdf" && (
             <>
+              <p className="rounded bg-stone-50 px-2 py-1.5 text-xs text-stone-500">
+                책 끝의 참고문헌·찾아보기(색인)는{" "}
+                <a className="underline" href={`/projects/${projectId}/settings?tab=back`} target="_blank" rel="noreferrer">
+                  책 설정 → 색인·참고문헌
+                </a>
+                에서 켭니다. 찾아보기 쪽 번호는 조판 때 자동으로 매깁니다.
+              </p>
               <div>
                 <div className="label">판형</div>
                 <label className="flex items-start gap-2 py-1">
