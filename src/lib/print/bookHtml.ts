@@ -102,7 +102,7 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
               .map((t) =>
                 t.see
                   ? `<div class="ix"><span class="t">${esc(t.term)} <span class="ix-see">→ ${esc(t.see)}</span></span></div>`
-                  : `<div class="ix" data-terms="${esc(JSON.stringify([t.term, ...t.aliases]))}"><span class="t">${esc(t.term)}</span><span class="pn"></span></div>`,
+                  : `<div class="ix" data-terms="${esc(JSON.stringify([t.term, ...t.aliases]))}"><span class="t">${esc(t.term)}</span><span class="lead"></span><span class="pn"></span></div>`,
               )
               .join("")}</div>`,
         )
@@ -166,7 +166,9 @@ strong { font-weight: 700; }
 .ix-group { break-inside: auto; }
 .ix-head { font-family: ${TYPO.headingFontCss}, sans-serif; font-weight: 500; font-size: 10.5pt; margin: 4mm 0 1mm; break-after: avoid; }
 .ix { display: flex; align-items: baseline; gap: 2mm; font-size: 9pt; line-height: 1.55; text-align: left; }
-.ix .t { flex: 1; }
+.ix .t { flex: none; max-width: 75%; }
+.ix .lead { flex: 1; min-width: 4mm; border-bottom: 0.25mm dotted #888; transform: translateY(-0.8mm); }
+.ix.ix-none .lead { visibility: hidden; }
 .ix .pn { white-space: nowrap; }
 .ix-see { color: #444; }
 .body-start { break-before: right; }
