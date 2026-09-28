@@ -55,3 +55,16 @@ test('footnote markers are checked and replaced inside the footnote', () => {
   const next = applyFactCheck(doc, m, t.sentence, '1989년에 처음 쓰였다.');
   assert.equal(findFootnotes(next)[0].attrs.note, '1989년에 처음 쓰였다.');
 });
+
+test('fact-check verdict never clears a marker without evidence', async () => {
+  const { decideFactVerdict } = await import('../src/lib/ai/fact-verdict.ts');
+  const src = [{ source: '통계청 2025 인구동향' }];
+  assert.equal(decideFactVerdict({ verdict: '통과', revised: '', evidence: src }), 'pass');
+  assert.equal(decideFactVerdict({ verdict: '보완', revised: '고친 문장', evidence: src }), 'revise');
+  // 근거 없음 · 보완인데 고친 문장 없음 · 모르는 판정 문구 → 표시를 남긴다
+  assert.equal(decideFactVerdict({ verdict: '통과', revised: '', evidence: [] }), 'unsure');
+  assert.equal(decideFactVerdict({ verdict: '통과', revised: '', evidence: [{ source: '  ' }] }), 'unsure');
+  assert.equal(decideFactVerdict({ verdict: '보완', revised: ' ', evidence: src }), 'unsure');
+  assert.equal(decideFactVerdict({ verdict: 'unknown', revised: '', evidence: src }), 'unsure');
+  assert.equal(decideFactVerdict({ verdict: '확인 불가', revised: '', evidence: src }), 'unsure');
+});

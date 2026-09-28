@@ -866,6 +866,18 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
     return true;
   }
 
+  /** 보관된 AI 글이 이미 본문에 있나 — 글 여러 곳의 토막(마크다운 기호·공백 뺌)이 모두 본문에 있으면 그렇다고 본다 */
+  function partialInBody(text: string) {
+    if (!editor || editor.isDestroyed) return false;
+    const body = editor.getText().replace(/\s+/g, "");
+    const plain = text.replace(/[#*_>`~|\[\]-]/g, "").replace(/\s+/g, "");
+    if (plain.length < 20) return plain.length > 0 && body.includes(plain);
+    return [0.2, 0.5, 0.8].every((f) => {
+      const at = Math.floor((plain.length - 20) * f);
+      return body.includes(plain.slice(at, at + 20));
+    });
+  }
+
   /** 중단된 AI 집필을 새 버전 후보로 — 고르거나 버리면 보관본을 치운다(dropCandidate) */
   function comparePartial(text: string) {
     setCandidate(text);
@@ -1396,7 +1408,8 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
             </button>
           </div>
         )}
-        <PartialBanner sectionId={section.id} busy={!!writing} onAppend={appendPartial} onCompare={comparePartial} />
+        {/* 새 버전 후보를 보여 주는 동안은 같은 글의 서버 보관본을 따로 알리지 않는다 */}
+        <PartialBanner sectionId={section.id} busy={!!writing || candidateActive} onAppend={appendPartial} onCompare={comparePartial} inBody={partialInBody} />
         {candidateActive && !compareOpen && (
           <div className="flex flex-wrap items-center gap-2 border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
             {candidateWriting ? (

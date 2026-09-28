@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/client";
 import { confirmDialog } from "../ui/feedback";
-import { clearPartial } from "./aiJobs";
+import { clearPartial, partialCleared } from "./aiJobs";
 
-export type PartialDraft = { text: string; mode: string; chars: number; startedAt: string; updatedAt: string };
+export type PartialDraft = { text: string; mode: string; chars: number; startedAt: string; updatedAt: string; complete?: boolean };
 
 const MODE: Record<string, string> = { overwrite: "새로 쓰기", continue: "이어쓰기", candidate: "새 버전", newVersion: "새 버전" };
 
@@ -19,12 +19,15 @@ export default function PartialBanner({
   busy,
   onAppend,
   onCompare,
+  inBody,
 }: {
   sectionId: string;
   /** 이 절에서 AI가 쓰는 중 — 보관본은 곧 새 글로 바뀌므로 보이지 않는다 */
   busy: boolean;
   onAppend: (text: string) => Promise<boolean>;
   onCompare: (text: string) => void;
+  /** 이 글이 이미 본문에 있나 */
+  inBody?: (text: string) => boolean;
 }) {
   const [p, setP] = useState<PartialDraft | null>(null);
   const [working, setWorking] = useState(false);
@@ -35,13 +38,23 @@ export default function PartialBanner({
   useEffect(() => {
     if (busy) return;
     let alive = true;
-    api<{ partial: PartialDraft | null }>(`/api/sections/${sectionId}/partial`, { timeoutMs: 20_000 })
-      .then((r) => alive && setP(r?.partial?.text?.trim() ? r.partial : null))
+    partialCleared(sectionId)
+      .then(() => api<{ partial: PartialDraft | null }>(`/api/sections/${sectionId}/partial`, { timeoutMs: 20_000 }))
+      .then((r) => {
+        if (!alive) return;
+        const got = r?.partial?.text?.trim() ? r.partial : null;
+        // 다 쓴 글이 이미 본문에 들어갔는데 보관본 정리만 실패한 경우 — 두 번 붙이지 않게 조용히 치운다
+        if (got?.complete && inBody?.(got.text)) {
+          void clearPartial(sectionId);
+          return setP(null);
+        }
+        setP(got);
+      })
       .catch(() => {}); // 아직 없는 기능(404)·연결 오류는 조용히 넘긴다
     return () => {
       alive = false;
     };
-    // 절을 열 때 한 번 (돌던 작업이 끝나 busy가 풀리면 서버가 이미 치웠다)
+    // 절을 열 때 한 번 (돌던 작업이 끝나면 브라우저가 저장한 뒤 보관본을 치운다)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sectionId]);
   if (!p || busy) return null;
@@ -57,7 +70,7 @@ export default function PartialBanner({
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
       <span>
-        <b>중단된 AI 집필 {chars.toLocaleString()}자가 보관돼 있습니다</b>
+        <b>{p.complete ? `AI가 다 쓴 글 ${chars.toLocaleString()}자가 본문에 들어가지 못하고 보관돼 있습니다` : `중단된 AI 집필 ${chars.toLocaleString()}자가 보관돼 있습니다`}</b>
         <span className="ml-1 text-xs text-amber-700">
           ({MODE[p.mode] ?? p.mode} · {fmtDate(p.updatedAt || p.startedAt)} 마지막 글)
         </span>

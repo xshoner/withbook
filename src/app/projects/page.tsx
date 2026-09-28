@@ -98,7 +98,8 @@ export default function ProjectList() {
     const fd = new FormData();
     try {
       await attachFile(fd, "file", f);
-      const r = await api<{ id: string }>("/api/projects/import", { method: "POST", body: fd });
+      const r = await api<{ id: string; warnings?: string[] }>("/api/projects/import", { method: "POST", body: fd });
+      for (const w of r.warnings ?? []) toast(w, { sticky: true });
       router.push(`/projects/${r.id}`);
     } catch (e: any) {
       toastError(e);

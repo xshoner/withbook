@@ -6,6 +6,7 @@ import { applyFactCheck, factCheckTarget, withoutMarkers, type FactTarget } from
 import { editSections } from "../section-edit";
 import { buildMessages } from "./prompts";
 import { chatJson } from "./tasks";
+import { decideFactVerdict, type FactVerdict } from "./fact-verdict";
 
 /* 팩트체크 — [확인 필요] 표시가 붙은 문장을 최신 자료로 판정·보완한다 */
 
@@ -20,7 +21,7 @@ const factSchema = z.object({
 });
 
 export type FactCheckResult = {
-  verdict: "pass" | "revise";
+  verdict: FactVerdict;
   issue: string;
   reason: string;
   evidence: { source: string; date: string; url: string }[];
@@ -31,6 +32,7 @@ export type FactCheckResult = {
 
 /**
  * 표시 하나를 최신 자료로 판정한다. 통과: 표시만 지운다. 보완: 문장을 근거에 맞게 고친 문장으로 바꾼다.
+ * 확인 불가(unsure — 근거 없음·판정이 애매함): 원고를 건드리지 않고 표시를 남긴다.
  * 원고 수정은 판정 전 읽은 문장이 그대로일 때만 — 바꾸기 전 원고는 버전(factcheck)으로 남는다.
  */
 export async function factCheckMarker(projectId: string, sectionId: string, target: FactTarget): Promise<FactCheckResult> {
@@ -53,17 +55,16 @@ export async function factCheckMarker(projectId: string, sectionId: string, targ
   const v = r.value;
   const clean = withoutMarkers(found.sentence);
   const revised = withoutMarkers(v.revised);
-  const verdict = /보완|revise|fail/i.test(v.verdict) && revised ? "revise" : "pass";
-  // 통과여도 AI가 판정 문구를 잘못 줬을 수 있으니, 보완 문장이 없으면 표시만 지운다
+  const verdict = decideFactVerdict({ verdict: v.verdict, revised, evidence: v.evidence });
   const after = verdict === "revise" ? revised : clean;
-  const changed = await editSections([sectionId], "factcheck", (doc) => applyFactCheck(doc, target, found.sentence, after));
+  const changed = verdict === "unsure" ? [] : await editSections([sectionId], "factcheck", (doc) => applyFactCheck(doc, target, found.sentence, after));
   return {
     verdict,
     issue: v.issue.slice(0, 40),
     reason: v.reason.slice(0, 1000),
     evidence: v.evidence.filter((e) => e.source.trim()).slice(0, 5),
     before: clean,
-    after,
+    after: verdict === "unsure" ? clean : after,
     applied: changed.length > 0,
   };
 }

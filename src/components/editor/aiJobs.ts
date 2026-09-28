@@ -5,7 +5,7 @@ import { createJobStore, registerJobKind, sectionBusyWith } from "./jobStore";
 import { api, readStream, STREAM_STALL_AFTER_PING_MS, STREAM_STALL_MS, type StreamEvent } from "@/lib/client";
 import { appendDocs, charCount, contentHash, markdownToDoc, markdownToDocReport, MdCharCounter, parseDoc, type JNode } from "@/lib/doc/doc";
 import { toast } from "../ui/feedback";
-import { saveViaQueue, settleSection } from "./useAutosave";
+import { conflictOf, saveViaQueue, settleSection } from "./useAutosave";
 import type { WriteTiming } from "@/lib/ai/write-timing";
 import { scheduleSummaryPreparation } from "./preparation";
 
@@ -42,6 +42,11 @@ export type AiJob = {
   stopped?: boolean;
   /** 출력 한도·서버 시간 한도로 끝까지 쓰지 못했다 (쓴 데까지는 넣었다) */
   truncated?: boolean;
+  /**
+   * 덮어쓰기·분량 조정을 시작할 때 서버 본문의 해시 — 편집기 밖에서 저장할 때 이 해시와 다르면(다른 창에서 고침)
+   * 덮지 않고 저장 충돌로 남긴다(그 절을 열면 두 원고를 비교해 고른다. 어느 쪽도 버리지 않는다)
+   */
+  baseHash?: string | null;
 };
 
 type Applier = (job: AiJob, doc: JNode) => Promise<string | null>;
@@ -118,9 +123,18 @@ const detachedSaves = new Set<string>();
 export const takeDetachedSave = (sectionId: string) => detachedSaves.delete(sectionId);
 
 /** 서버에 보관된 끊긴 AI 원고(부분 원고)를 치운다 — 쓴 데까지 본문에 넣었거나 후보를 고른 뒤 */
+const clearing = new Map<string, Promise<unknown>>();
 export function clearPartial(sectionId: string) {
-  return api(`/api/sections/${sectionId}/partial`, { method: "DELETE" }).catch(() => {});
+  const p: Promise<unknown> = api(`/api/sections/${sectionId}/partial`, { method: "DELETE" })
+    .catch(() => {})
+    .finally(() => {
+      if (clearing.get(sectionId) === p) clearing.delete(sectionId);
+    });
+  clearing.set(sectionId, p);
+  return p;
 }
+/** 이 절의 보관본을 지우는 중이면 끝날 때까지 기다린다 (막 넣은 글을 [중단된 AI 집필]로 다시 보이지 않게) */
+export const partialCleared = (sectionId: string) => clearing.get(sectionId) ?? Promise.resolve();
 
 /**
  * 진행 중인 작업 객체(runJob이 쥐고 고치는 것). jobs에는 화면용 복사본을 넣는다 — 그래서 "지금 이 절의 작업인가"는 복사본이 아니라 이것과 비교한다.
@@ -144,7 +158,7 @@ function forget(sectionId: string) {
 /** 편집기가 없을 때 — 서버의 지금 본문을 기준으로 결과를 만들어 저장 큐로 저장 */
 async function saveDetached(job: AiJob, doc: JNode): Promise<string> {
   let next = doc;
-  let baseHash: string | undefined;
+  let baseHash: string | null | undefined = job.baseHash;
   if (job.mode === "continue") {
     await settleSection(job.sectionId);
     const cur = await api<{ content: string; contentHash?: string }>(`/api/sections/${job.sectionId}`);
@@ -152,9 +166,25 @@ async function saveDetached(job: AiJob, doc: JNode): Promise<string> {
     baseHash = cur.contentHash ?? contentHash(cur.content); // 읽은 뒤 다른 곳에서 고쳤으면 덮지 않는다
   }
   const content = JSON.stringify(next);
-  if (!(await saveViaQueue(job.sectionId, { content, status: "ai_draft" }, { baseHash }))) throw new Error("AI가 쓴 원고를 저장하지 못했습니다. 연결을 확인하세요 (브라우저에 보관 중).");
+  if (!(await saveViaQueue(job.sectionId, { content, status: "ai_draft" }, { baseHash }))) {
+    if (conflictOf(job.sectionId)) {
+      throw new Error("AI가 쓰는 동안 다른 곳에서 이 절을 고쳐, AI 원고로 덮지 않았습니다. 그 절을 열면 두 원고를 비교해 고를 수 있습니다(둘 다 보관).");
+    }
+    throw new Error("AI가 쓴 원고를 저장하지 못했습니다. 연결을 확인하세요 (브라우저에 보관 중).");
+  }
   detachedSaves.add(job.sectionId);
   return content;
+}
+
+/** 작업 시작 때 서버 본문 해시 — 못 읽으면 null(예전처럼 확인 없이 저장) */
+async function startHash(sectionId: string): Promise<string | null> {
+  try {
+    await settleSection(sectionId);
+    const cur = await api<{ content: string; contentHash?: string }>(`/api/sections/${sectionId}`);
+    return cur.contentHash ?? contentHash(cur.content);
+  } catch {
+    return null;
+  }
 }
 
 export type StartOptions = {
@@ -187,6 +217,8 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
   jobs.set(o.sectionId, { ...job });
   live.set(o.sectionId, job);
   emit();
+  // 덮어쓰기·분량 조정: 시작 시점의 서버 본문을 기준으로 삼는다(밀린 저장을 먼저 보내고 읽는다)
+  if (job.mode === "overwrite" || job.mode === "adjust") job.baseHash = await startHash(o.sectionId);
   let md = "";
   let last = 0;
   const counter = new MdCharCounter(); // 250ms마다 전체 원고를 다시 변환하지 않고 늘어난 부분만 센다

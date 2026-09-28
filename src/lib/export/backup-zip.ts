@@ -7,6 +7,7 @@ import JSZip from "jszip";
  *   이미지: 차례가 오면 한 장씩 받는다(loadAsset). 이미 압축된 형식이라 다시 압축하지 않는다(STORE).
  * JSZip 스트림 생성(streamFiles)이 파일을 차례로 읽으므로 한 번에 장 하나·이미지 한 장만 메모리에 있다.
  * 복원(import)은 버전 기록이 있든 없든(section.versions 없음) 그대로 받는다.
+ * 이미지 뒤에 tail 파일(extras.json·manifest.json)을 쓴다 — 이미지를 다 읽은 뒤라 저장소에 없던 이미지(missing)를 manifest에 적을 수 있다.
  */
 export const BACKUP_FORMAT = "bookk-writer-backup";
 
@@ -15,8 +16,10 @@ export type BackupSource = {
   head: Record<string, unknown>;
   chapterIds: string[];
   loadChapter: (id: string) => Promise<unknown | null>;
-  /** 이미지: ZIP 안 경로와 받는 함수 (저장소에 파일이 없으면 null → 빈 항목으로 남는다) */
+  /** 이미지: ZIP 안 경로와 받는 함수 (저장소에 파일이 없으면 null → 빈 항목으로 남기고 missing에 적는다) */
   assets: { name: string; load: () => Promise<Buffer | null> }[];
+  /** 이미지 다음에 쓰는 파일 — missing: 저장소에서 찾지 못한 이미지 경로 */
+  tail?: { name: string; build: (missing: string[]) => Promise<Buffer> }[];
 };
 
 const lazy = (gen: () => AsyncGenerator<Buffer>) => Readable.from(gen(), { objectMode: false });
@@ -40,13 +43,18 @@ function projectJson(src: BackupSource) {
 
 export async function buildBackupZip(src: BackupSource): Promise<Buffer> {
   const zip = new JSZip();
+  const missing: string[] = [];
   zip.file("project.json", projectJson(src));
   for (const a of src.assets) {
     zip.file(a.name, lazy(async function* () {
-      const buf = await a.load();
+      const buf = await a.load().catch(() => null);
       if (buf?.length) yield buf;
+      else missing.push(a.name);
     }), { compression: "STORE" });
   }
+  for (const t of src.tail ?? []) zip.file(t.name, lazy(async function* () {
+    yield await t.build(missing);
+  }));
   const chunks: Buffer[] = [];
   await new Promise<void>((resolve, reject) => {
     zip

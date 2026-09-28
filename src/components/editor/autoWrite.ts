@@ -314,12 +314,12 @@ async function factOne(it: AutoItem) {
     setActivity("checker", `사실 확인 중… ${it.label} (${k + 1}/${markers.length})`);
     try {
       const res = await withRetry(it, "checker", "사실 확인", () =>
-        api<{ verdict: "pass" | "revise"; applied: boolean }>(`/api/projects/${projectId}/factcheck`, {
+        api<{ verdict: "pass" | "revise" | "unsure"; applied: boolean }>(`/api/projects/${projectId}/factcheck`, {
           method: "POST",
           json: { sectionId: it.sectionId, paragraph: m.paragraph, offset: m.offset, footnote: m.footnote, marker: m.marker, before: m.before },
         }),
       );
-      if (!res.applied) stats.fail++;
+      if (!res.applied) stats.fail++; // 확인 불가(unsure)도 여기 — 표시가 남아 [확인할 것]에 그대로 있다
       else if (res.verdict === "pass") stats.pass++;
       else stats.revise++;
     } catch (e) {

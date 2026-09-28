@@ -36,6 +36,36 @@ export default function ExportDialog({
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
   const [err, setErr] = useState("");
+  const [backupNote, setBackupNote] = useState("");
+  /** 백업 — 만든 뒤 크기·빠진 이미지·복원 한도를 알리고 내려받는다 */
+  const makeBackup = async () => {
+    setBusy("백업 만드는 중…");
+    setErr("");
+    setBackupNote("");
+    try {
+      const res = await fetch(`/api/projects/${projectId}/backup?json=1${withVersions ? "&versions=all" : ""}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error ?? `백업 실패 (${res.status})`);
+      const a = document.createElement("a");
+      if ((res.headers.get("content-type") ?? "").includes("application/json")) {
+        const j = await res.json();
+        a.href = j.download;
+        a.download = j.filename ?? "backup.zip";
+        const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
+        const notes = [`백업 ${mb(j.size)}을 내려받았습니다.`];
+        if (j.missingImages) notes.push(`저장소에서 찾지 못한 이미지 ${j.missingImages}개는 빠졌습니다.`);
+        if (j.overImportLimit) notes.push(`[백업 불러오기] 한도(${mb(j.importLimit)})보다 커서 이 파일로는 복원할 수 없습니다.${withVersions ? " 버전 기록을 빼고 한 번 더 받아 두세요." : " 이미지가 많은 책입니다 — 파일은 보관용으로 두세요."}`);
+        setBackupNote(notes.join(" "));
+      } else {
+        a.href = URL.createObjectURL(await res.blob()); // 로컬 실행: 파일을 바로 받는다
+        a.download = "backup.zip";
+      }
+      a.click();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   useEffect(() => {
     setIssues(null);
@@ -246,14 +276,15 @@ export default function ExportDialog({
           )}
           {tab === "backup" && (
             <>
-              <p className="text-stone-600">책 전체(책 정보·목차·본문·이미지)를 zip 하나로 내려받습니다. 책 목록의 [백업 불러오기]로 복원할 수 있습니다.</p>
+              <p className="text-stone-600">책 전체(책 정보·목차·본문·이미지·표지 디자인·절 참고 자료·고친 개요)를 zip 하나로 내려받습니다. 책 목록의 [백업 불러오기]로 복원할 수 있습니다(50MB까지). AI 설정·API 키는 담지 않습니다.</p>
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={withVersions} onChange={(e) => setWithVersions(e.target.checked)} /> 버전 기록 포함
               </label>
               <p className="text-xs text-stone-500">기본은 버전 기록을 빼고 현재 원고와 이미지만 담습니다(가볍고 빠름). 절마다 쌓인 이전 원고까지 보관하려면 켜세요 — 백업이 커지고 오래 걸릴 수 있습니다.</p>
-              <a className="btn-accent w-full" href={`/api/projects/${projectId}/backup${withVersions ? "?versions=all" : ""}`}>
-                백업 zip 다운로드
-              </a>
+              <button className="btn-accent w-full" disabled={!!busy} onClick={makeBackup}>
+                {busy ?? "백업 zip 다운로드"}
+              </button>
+              {backupNote && <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">{backupNote}</p>}
             </>
           )}
           {err && <p className="whitespace-pre-wrap rounded bg-red-50 px-3 py-2 text-xs text-red-700">{err}</p>}

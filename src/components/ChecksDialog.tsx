@@ -28,7 +28,8 @@ type Result = {
 };
 
 type FactResult = {
-  verdict: "pass" | "revise";
+  /** unsure: 근거가 없거나 판정이 애매해 원고를 건드리지 않고 표시를 남겼다 */
+  verdict: "pass" | "revise" | "unsure";
   issue: string;
   reason: string;
   evidence: { source: string; date: string; url: string }[];
@@ -146,7 +147,7 @@ export default function ChecksDialog({
           json: { sectionId: s.sectionId, paragraph: m.paragraph, offset: m.offset, footnote: m.footnote, marker: m.marker, before: m.before },
         });
         if (r.applied) edited.add(s.sectionId);
-        rows[i] = { ...rows[i], result: r, error: r.applied ? undefined : "원고가 그사이 바뀌어 적용하지 못했습니다." };
+        rows[i] = { ...rows[i], result: r, error: r.applied || r.verdict === "unsure" ? undefined : "원고가 그사이 바뀌어 적용하지 못했습니다." };
       } catch (e) {
         rows[i] = { ...rows[i], error: e instanceof Error ? e.message : String(e) };
       }
@@ -338,6 +339,7 @@ function FactPanel({
   const done = rows.filter((r) => r.result || r.error).length;
   const pass = rows.filter((r) => r.result?.verdict === "pass" && r.result.applied).length;
   const revise = rows.filter((r) => r.result?.verdict === "revise" && r.result.applied).length;
+  const unsure = rows.filter((r) => r.result?.verdict === "unsure").length;
   const failed = rows.filter((r) => r.error).length;
   return (
     <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50/40">
@@ -345,6 +347,7 @@ function FactPanel({
         <span className="font-semibold text-violet-900">사실 확인</span>
         <span className="text-stone-600">
           {done}/{rows.length} · <span className="text-green-700">통과 {pass}</span> · <span className="text-amber-700">보완 {revise}</span>
+          {unsure > 0 && <span className="text-stone-600"> · 확인 불가 {unsure} (표시 남김)</span>}
           {failed > 0 && <span className="text-red-600"> · 실패 {failed}</span>}
         </span>
         <div className="h-1.5 flex-1 overflow-hidden rounded bg-violet-100">
@@ -371,7 +374,9 @@ function FactPanel({
                 : ["대기", "bg-stone-100 text-stone-500"]
               : f.verdict === "pass"
                 ? ["통과", "bg-green-100 text-green-800"]
-                : ["보완", "bg-amber-100 text-amber-800"];
+                : f.verdict === "unsure"
+                  ? ["확인 불가", "bg-stone-200 text-stone-700"]
+                  : ["보완", "bg-amber-100 text-amber-800"];
           return (
             <li key={i} className="px-3 py-2 text-xs leading-5">
               <div className="flex items-center gap-2">

@@ -46,7 +46,7 @@ const memoryStore = () => {
   return s;
 };
 
-test('partial draft is saved every few seconds, then cleared when the stream completes', async () => {
+test('partial draft is saved every few seconds, and the finished text is kept (marked complete) before done is sent', async () => {
   let now = 0;
   const store = memoryStore();
   const gen = (async function* () {
@@ -59,11 +59,14 @@ test('partial draft is saved every few seconds, then cleared when the stream com
   const seen = [];
   for await (const e of withPartialSave(gen, store, { mode: 'overwrite', now: () => now })) seen.push(e.t);
   assert.deepEqual(seen, ['status', 'delta', 'delta', 'delta', 'done']);
-  assert.equal(store.saved.length, 1);
-  assert.equal(store.saved[0].text, '첫 문단 계속');
-  assert.equal(store.saved[0].mode, 'overwrite');
-  assert.equal(store.saved[0].chars, 7);
-  assert.equal(store.cleared, 1);
+  // 5초 저장 한 번 + 끝날 때 다 쓴 글 한 번 (지우는 것은 브라우저가 본문 저장을 마친 뒤)
+  assert.equal(store.saved.length, 2);
+  assert.equal(store.saved[0].complete, undefined);
+  assert.equal(store.saved[1].text, '첫 문단 계속');
+  assert.equal(store.saved[1].mode, 'overwrite');
+  assert.equal(store.saved[1].chars, 7);
+  assert.equal(store.saved[1].complete, true);
+  assert.equal(store.cleared, 0);
 });
 
 test('partial draft is kept with the latest text when the stream breaks or needs resuming', async () => {
