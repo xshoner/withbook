@@ -10,6 +10,7 @@ export const KEYS = {
   replace: "Ctrl+H",
   stop: "Esc",
   help: "?",
+  focus: "Ctrl+Shift+.",
 } as const;
 
 export const SHORTCUTS: [string, string][] = [
@@ -23,6 +24,7 @@ export const SHORTCUTS: [string, string][] = [
   ["Ctrl+Z / Ctrl+Y", "실행 취소 / 다시 실행"],
   ["F2", "목차에서 고른 절 이름 바꾸기"],
   ["Space + 화살표", "목차에서 ⋮⋮에 초점을 두고 순서 바꾸기"],
+  [KEYS.focus, "집중 모드 켜기·끄기 (목차·패널 접기, 조판은 입력이 멈춘 뒤에)"],
   [KEYS.help, "단축키 목록 열기·닫기"],
 ];
 

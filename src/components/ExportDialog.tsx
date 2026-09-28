@@ -276,7 +276,7 @@ export default function ExportDialog({
           )}
           {tab === "backup" && (
             <>
-              <p className="text-stone-600">책 전체(책 정보·목차·본문·이미지·표지 디자인·절 참고 자료·고친 개요)를 zip 하나로 내려받습니다. 책 목록의 [백업 불러오기]로 복원할 수 있습니다(50MB까지). AI 설정·API 키는 담지 않습니다.</p>
+              <p className="text-stone-600">책 전체(책 정보·목차·본문·이미지·표지 디자인·책 기억·절 참고 자료·고친 개요)를 zip 하나로 내려받습니다. 책 목록의 [백업 불러오기]로 복원할 수 있습니다(50MB까지). AI 설정·API 키는 담지 않습니다.</p>
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={withVersions} onChange={(e) => setWithVersions(e.target.checked)} /> 버전 기록 포함
               </label>

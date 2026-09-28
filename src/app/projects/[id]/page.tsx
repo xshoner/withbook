@@ -18,6 +18,7 @@ import { numberChapters } from "@/lib/layout";
 import { shiftSection } from "@/lib/page-shift";
 import { mergePrintLayouts, type SectionPrintLayout } from "@/components/editor/pageMap";
 import { KEYS, SHORTCUTS, sectionNavKey } from "@/components/editor/shortcuts";
+import { isFocusKey, toggleFocusMode, useFocusMode } from "@/components/editor/focusMode";
 
 // 열 때만 필요한 화면은 따로 불러온다 (편집 화면 첫 로딩을 가볍게)
 const BookSearchDialog = dynamic(() => import("@/components/BookSearchDialog"));
@@ -41,6 +42,20 @@ export default function Workspace() {
   const [checkCount, setCheckCount] = useState<number | null>(null);
   // 목차 접기 — 좁은 화면(1400px 미만)은 처음부터 접는다, 선택은 기억한다
   const [tocCollapsed, setTocCollapsed] = useState(false);
+  // 집중 모드: 켜면 목차를 접고, 끄면 켜기 전 상태로 돌린다
+  const focus = useFocusMode();
+  const tocBeforeFocus = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (focus) {
+      setTocCollapsed((c) => {
+        if (tocBeforeFocus.current === null) tocBeforeFocus.current = c;
+        return true;
+      });
+    } else if (tocBeforeFocus.current !== null) {
+      setTocCollapsed(tocBeforeFocus.current);
+      tocBeforeFocus.current = null;
+    }
+  }, [focus]);
   const [keysOpen, setKeysOpen] = useState(false);
   useEffect(() => {
     try {
@@ -129,6 +144,11 @@ export default function Workspace() {
         return;
       }
       if (e.key === "Escape") setKeysOpen(false);
+      if (isFocusKey(e)) {
+        e.preventDefault();
+        toggleFocusMode();
+        return;
+      }
       // Alt+↑/↓ 이전·다음 절, Alt+Shift+↓ 아직 본문이 없는 다음 절 (Ctrl+↑/↓는 글 안에서 문단 이동과 겹쳐 바꿨다)
       const nav = sectionNavKey(e);
       if (!nav) return;
@@ -424,6 +444,14 @@ export default function Workspace() {
         <Link className="btn" href={`/projects/${id}/settings`}>
           책 설정
         </Link>
+        <button
+          className={`btn-ghost px-2 ${focus ? "bg-amber-600 text-white hover:bg-amber-500" : ""}`}
+          onClick={toggleFocusMode}
+          aria-pressed={focus}
+          title={`집중 모드 (${KEYS.focus}) — 목차·오른쪽 패널을 접고, 쪽 나눔 계산은 입력이 멈춘 뒤에 합니다. 느린 기기에서도 가볍게 씁니다`}
+        >
+          {focus ? "집중 중" : "집중"}
+        </button>
         <button className="btn-ghost px-2" onClick={() => setKeysOpen((o) => !o)} title={`단축키 목록 (${KEYS.help})`} aria-label="단축키 목록" aria-haspopup="dialog">
           ⌨
         </button>

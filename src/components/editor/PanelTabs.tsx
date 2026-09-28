@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-export type PanelTab = "ai" | "refs" | "images" | "versions" | "proof" | "notes";
+export type PanelTab = "ai" | "refs" | "memory" | "images" | "versions" | "proof" | "notes";
 
 /** 탭마다 색·아이콘·설명을 달리해 한눈에 구분한다 (Tailwind가 찾을 수 있게 클래스는 글자 그대로 둔다) */
 const TONE = {
@@ -11,6 +11,7 @@ const TONE = {
   indigo: { on: "bg-white text-indigo-900 ring-indigo-300", icon: "bg-indigo-600 text-white", iconOff: "bg-indigo-100 text-indigo-700", bar: "border-indigo-500 bg-indigo-50 text-indigo-900" },
   sky: { on: "bg-white text-sky-900 ring-sky-300", icon: "bg-sky-600 text-white", iconOff: "bg-sky-100 text-sky-700", bar: "border-sky-500 bg-sky-50 text-sky-900" },
   rose: { on: "bg-white text-rose-900 ring-rose-300", icon: "bg-rose-600 text-white", iconOff: "bg-rose-100 text-rose-700", bar: "border-rose-500 bg-rose-50 text-rose-900" },
+  teal: { on: "bg-white text-teal-900 ring-teal-300", icon: "bg-teal-600 text-white", iconOff: "bg-teal-100 text-teal-700", bar: "border-teal-500 bg-teal-50 text-teal-900" },
   amber: { on: "bg-white text-amber-900 ring-amber-300", icon: "bg-amber-600 text-white", iconOff: "bg-amber-100 text-amber-800", bar: "border-amber-500 bg-amber-50 text-amber-900" },
 } as const;
 
@@ -22,6 +23,7 @@ const svg = (d: ReactNode) => (
 
 const ICON: Record<PanelTab, ReactNode> = {
   ai: svg(<path d="M10 2.5l1.8 4.2 4.2 1.8-4.2 1.8L10 14.5l-1.8-4.2L4 8.5l4.2-1.8zM15.5 13.5l.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8z" />),
+  memory: svg(<path d="M6 3.5h8v13l-4-3-4 3zM8.5 7h3M8.5 9.5h3" />),
   refs: svg(<path d="M3.5 4.5c2-1 4.5-1 6.5.5 2-1.5 4.5-1.5 6.5-.5v11c-2-1-4.5-1-6.5.5-2-1.5-4.5-1.5-6.5-.5zM10 5v11" />),
   images: svg(
     <>
@@ -43,6 +45,7 @@ const ICON: Record<PanelTab, ReactNode> = {
 export const PANEL_TABS: { k: PanelTab; label: string; tone: keyof typeof TONE; desc: string }[] = [
   { k: "ai", label: "AI 옵션", tone: "violet", desc: "집필 추가 지시 · 교정 강도 · AI가 참고하는 것" },
   { k: "refs", label: "자료", tone: "emerald", desc: "이 절의 근거 자료 — AI 집필이 참고하고 출처를 표시" },
+  { k: "memory", label: "책 기억", tone: "teal", desc: "작가가 확정한 정의·주장·쓴 사례·쓰지 않을 것·표현 유지 — 모든 AI 작업이 지킨다" },
   { k: "images", label: "이미지", tone: "indigo", desc: "문단에 맞는 논문 도표·그래프·도식 추천 → 승인하면 캡션과 함께 삽입" },
   { k: "versions", label: "버전 기록", tone: "sky", desc: "저장된 이전 원고 — 비교하고 되돌리기" },
   { k: "proof", label: "교정 내역", tone: "rose", desc: "교정·교열이 고친 곳 — 하나씩 또는 전체 되돌리기" },
@@ -50,14 +53,14 @@ export const PANEL_TABS: { k: PanelTab; label: string; tone: keyof typeof TONE; 
 ];
 
 /**
- * 오른쪽 패널 탭 — 3×2 격자의 색 아이콘 버튼 + 고른 탭의 색 띠(이름·설명).
+ * 오른쪽 패널 탭 — 4열 격자의 색 아이콘 버튼 + 고른 탭의 색 띠(이름·설명).
  * 예전 한 줄 밑줄 탭은 다섯 개가 비슷해 보여 구분이 어려웠다.
  */
 export default function PanelTabs({ tab, onTab, labels }: { tab: PanelTab; onTab: (t: PanelTab) => void; labels?: Partial<Record<PanelTab, ReactNode>> }) {
   const cur = PANEL_TABS.find((t) => t.k === tab) ?? PANEL_TABS[0];
   return (
     <div className="border-b border-stone-200">
-      <div role="tablist" aria-label="보조 패널" className="grid grid-cols-3 gap-1 bg-stone-200/70 p-1.5">
+      <div role="tablist" aria-label="보조 패널" className="grid grid-cols-4 gap-1 bg-stone-200/70 p-1.5">
         {PANEL_TABS.map((t) => {
           const on = t.k === tab;
           const tone = TONE[t.tone];

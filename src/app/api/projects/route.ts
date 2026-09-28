@@ -10,19 +10,35 @@ import { listPages, parsePageCount } from "@/lib/print/page-count";
  * 책 목록 — 절 행을 다 읽지 않고 DB에서 장별로 모아(groupBy) 책별 글자 수·절 수·마지막 수정을 계산한다.
  * 쪽수는 집필 화면이 잰 실제 조판 쪽수(AppSetting pages:{id})를 쓴다 — 잰 뒤 바뀐 글자만큼만 어림해 더한다.
  * 하루 한 번 정리(dailyMaintenance)는 응답을 보낸 뒤(after) 돈다.
+ * 이어 쓰기 카드: 마지막으로 고친 절(장마다 최신 1개만 읽는다)과 다음 빈 절(본문 장의 첫 빈 절) — 본문은 읽지 않는다.
  */
 export const GET = handle(async () => {
   after(() => dailyMaintenance().catch((e) => console.warn("[maintenance]", e?.message)));
-  const [projects, chapters, all, written, measured] = await Promise.all([
+  const [projects, chapters, all, written, measured, recent, empty] = await Promise.all([
     prisma.project.findMany({
       orderBy: { updatedAt: "desc" },
       select: { id: true, title: true, subtitle: true, author: true, targetPages: true, charsPerPage: true, createdAt: true, updatedAt: true, deletedAt: true },
     }),
-    prisma.chapter.findMany({ select: { id: true, projectId: true } }),
+    prisma.chapter.findMany({ select: { id: true, projectId: true, order: true, kind: true } }),
     prisma.section.groupBy({ by: ["chapterId"], _sum: { charCount: true }, _count: { _all: true }, _max: { updatedAt: true } }),
     prisma.section.groupBy({ by: ["chapterId"], where: { charCount: { gt: 0 } }, _count: { _all: true } }),
     prisma.appSetting.findMany({ where: { key: { startsWith: "pages:" } }, select: { key: true, value: true } }),
+    prisma.section.findMany({ where: { charCount: { gt: 0 } }, orderBy: [{ chapterId: "asc" }, { updatedAt: "desc" }], distinct: ["chapterId"], select: { id: true, title: true, chapterId: true, updatedAt: true } }),
+    prisma.section.findMany({ where: { charCount: 0 }, select: { id: true, title: true, chapterId: true, order: true } }),
   ]);
+  const chapterOf = new Map(chapters.map((c) => [c.id, c]));
+  const lastOf = new Map<string, { sectionId: string; title: string; at: Date }>();
+  for (const s of recent) {
+    const pid = chapterOf.get(s.chapterId)?.projectId;
+    if (pid && (!lastOf.has(pid) || s.updatedAt > lastOf.get(pid)!.at)) lastOf.set(pid, { sectionId: s.id, title: s.title, at: s.updatedAt });
+  }
+  const nextOf = new Map<string, { sectionId: string; title: string; rank: number }>();
+  for (const s of empty) {
+    const c = chapterOf.get(s.chapterId);
+    if (!c || c.kind !== "body") continue;
+    const rank = c.order * 10_000 + s.order;
+    if (!nextOf.has(c.projectId) || rank < nextOf.get(c.projectId)!.rank) nextOf.set(c.projectId, { sectionId: s.id, title: s.title, rank });
+  }
   const measuredOf = new Map(measured.map((m) => [m.key.slice("pages:".length), parsePageCount(m.value)]));
   const projectOf = new Map(chapters.map((c) => [c.id, c.projectId]));
   const stats = new Map<string, { chars: number; sections: number; written: number; last: Date | null }>();
@@ -62,6 +78,8 @@ export const GET = handle(async () => {
         createdAt: p.createdAt,
         updatedAt: st.last && st.last > p.updatedAt ? st.last : p.updatedAt,
         deletedAt: p.deletedAt,
+        last: lastOf.has(p.id) ? { sectionId: lastOf.get(p.id)!.sectionId, title: lastOf.get(p.id)!.title } : null,
+        next: nextOf.has(p.id) ? { sectionId: nextOf.get(p.id)!.sectionId, title: nextOf.get(p.id)!.title } : null,
       };
     }),
   );

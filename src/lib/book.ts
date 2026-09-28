@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "./db";
 import { numberChapters, parseLayout } from "./layout";
+import { readMemoryText } from "./book-memory-store";
 
 export async function loadBook(projectId: string) {
   const project = await prisma.project.findUnique({
@@ -13,7 +14,7 @@ export async function loadBook(projectId: string) {
   if (!project) return null;
   const layout = parseLayout(project.layout);
   const numbered = numberChapters(project.chapters, layout.numberFormat);
-  return { project, layout, chapters: numbered };
+  return { project: { ...project, bookMemory: await readMemoryText(projectId) }, layout, chapters: numbered };
 }
 
 export type Book = NonNullable<Awaited<ReturnType<typeof loadBook>>>;
@@ -42,7 +43,8 @@ export async function loadBookOutline(projectId: string) {
   if (!project) return null;
   const layout = parseLayout(project.layout);
   const chapters = project.chapters.map((c) => ({ ...c, sections: c.sections.map((s) => ({ ...s, content: undefined as string | undefined })) }));
-  return { project, layout, chapters: numberChapters(chapters, layout.numberFormat) };
+  // 책의 기억(작가가 확정한 사항) — 집필·퇴고·일관성 프롬프트에 짧은 블록으로 들어간다
+  return { project: { ...project, bookMemory: await readMemoryText(projectId) }, layout, chapters: numberChapters(chapters, layout.numberFormat) };
 }
 
 export type BookOutline = NonNullable<Awaited<ReturnType<typeof loadBookOutline>>>;

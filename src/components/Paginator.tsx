@@ -1,11 +1,14 @@
 "use client";
 
+import { relaxedPagination } from "./editor/focusMode";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PagedInfo, SectionPageInfo } from "./types";
 import { buildPrintLayouts, textLen, type RawFragment, type SectionPrintLayout } from "./editor/pageMap";
 
 /** 입력이 이만큼 멈춘 뒤에만 잰다 — 같은 출처 iframe의 조판은 편집 화면과 같은 스레드에서 돌아 타자를 막는다 */
 const QUIET_MS = 3000;
+/** 집중 모드·저사양 기기: 입력이 이만큼 멈춘 뒤에만 잰다 (쓰는 동안 조판이 입력을 방해하지 않게) */
+const RELAXED_QUIET_MS = 15_000;
 /** 측정이 이 안에 끝나지 않으면(조판이 멈춤) 버리고 다음 측정을 막지 않는다 */
 const FULL_TIMEOUT_MS = 90_000;
 const SECTION_TIMEOUT_MS = 30_000;
@@ -23,7 +26,7 @@ function whenQuiet(fn: () => void) {
   let idle: number | undefined;
   const ric = (window as unknown as { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
   const check = () => {
-    const wait = lastInputAt + QUIET_MS - Date.now();
+    const wait = lastInputAt + (relaxedPagination() ? RELAXED_QUIET_MS : QUIET_MS) - Date.now();
     if (wait > 0) {
       t = setTimeout(check, wait);
       return;
@@ -131,7 +134,8 @@ export default function Paginator({
   useEffect(() => () => cancelQuiet.current?.(), []);
 
   useEffect(() => {
-    if (!section) return;
+    // 집중 모드·저사양 기기는 쓰는 중 절 단위 측정을 건너뛴다 — 입력이 오래 멈춘 뒤 책 전체 측정에 들어간다
+    if (!section || relaxedPagination()) return;
     let cancel: (() => void) | null = null;
     const t = setTimeout(() => {
       cancel = whenQuiet(() => {

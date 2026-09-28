@@ -40,6 +40,7 @@ function bookSig(book: BookOutline) {
   return sha({
     chapters: book.chapters.map((c) => [c.id, c.title, c.promise, c.sections.map((s) => [s.id, s.title, String(s.updatedAt)])]),
     glossary: book.project.glossary.map((g) => [g.term, g.preferred, g.note]),
+    bookMemory: book.project.bookMemory,
     audience: book.project.audience,
     keyMessage: book.project.keyMessage,
   });
@@ -113,6 +114,7 @@ export async function runConsistency(projectId: string, opts: { force?: boolean;
     audience: book.project.audience,
     keyMessage: book.project.keyMessage,
     glossary: glossaryText(book.project.glossary),
+    bookMemory: book.project.bookMemory,
     maxItems: Math.min(30, Math.max(8, written.length * 2)),
     bookSummary,
     partial: skipped ? `시간 한도로 ${skipped}개 장은 요약을 새로 만들지 못해 이전 요약이나 목차 요지로만 표시했다. 그 장의 판단은 조심스럽게 한다.` : "",

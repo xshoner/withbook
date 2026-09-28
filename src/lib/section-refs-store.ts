@@ -78,3 +78,36 @@ export async function clearSectionExtras(db: Db, sectionIds: string[]) {
     });
   }
 }
+
+/** 책 자료실 — 같은 책의 다른 절에 붙인 자료 목록 (본문 없이). 같은 이름·길이의 자료는 한 번만 */
+export async function listBookRefs(projectId: string, exceptSectionId: string): Promise<(RefItem & { sectionId: string; sectionTitle: string })[]> {
+  const sections = await prisma.section.findMany({ where: { chapter: { projectId }, id: { not: exceptSectionId } }, select: { id: true, title: true } });
+  const title = new Map(sections.map((s) => [s.id, s.title]));
+  const out: (RefItem & { sectionId: string; sectionTitle: string })[] = [];
+  const seen = new Set<string>();
+  if (!sections.length) return out;
+  // 한 번에 읽는다 (절마다 따로 묻지 않게) — 본문(text)은 빼고
+  const rows = await prisma.$queryRaw<{ key: string; meta: RefItem | null }[]>`
+    SELECT key, (value::jsonb - 'text') AS meta FROM "AppSetting"
+    WHERE starts_with(key, 'ref:') AND split_part(key, ':', 2) = ANY(${sections.map((s) => s.id)})`;
+  for (const r of rows) {
+    const m = r.meta;
+    if (!m || typeof m.id !== "string") continue;
+    const sectionId = r.key.split(":")[1];
+    const sig = `${m.name}\u0000${m.chars}`;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    out.push({ id: m.id, name: String(m.name ?? ""), chars: Number(m.chars) || 0, createdAt: String(m.createdAt ?? ""), sectionId, sectionTitle: title.get(sectionId) ?? "" });
+  }
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** 다른 절의 자료를 이 절에도 붙인다 (다시 올리지 않고 글을 복사한다 — 절마다 따로 빼고 지울 수 있게) */
+export async function copyRef(fromSectionId: string, refId: string, toSectionId: string) {
+  const row = await prisma.appSetting.findUnique({ where: { key: refKey(fromSectionId, refId) } });
+  if (!row) throw Object.assign(new Error("자료를 찾을 수 없습니다."), { status: 404 });
+  const v = JSON.parse(row.value) as RefRow;
+  const existing = await listRefs(toSectionId);
+  if (existing.some((e) => e.name === v.name && e.chars === v.chars)) throw Object.assign(new Error("이 절에 이미 붙어 있는 자료입니다."), { status: 400 });
+  return addRef(toSectionId, v.name, v.text);
+}

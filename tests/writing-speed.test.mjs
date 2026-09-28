@@ -92,6 +92,7 @@ async function tasksHarness() {
     export const loadAiSettings = async () => state.settings;
     export const getSetting = async key => state.store.get(key) ?? null;
     export const loadSectionReferences = async id => state.refs?.[id] ?? { block: '', ids: [] };
+    export const readMemoryText = async () => state.memory ?? '';
     export const setSetting = async (key, value) => { state.store.set(key, value); };
     export const extractJson = JSON.parse;
     export const chat = async opts => {

@@ -14,6 +14,7 @@ import { WriteClock, type WriteTiming } from "./write-timing";
 import { getSetting, setSetting } from "../app-settings";
 import { loadAiSettings } from "./settings";
 import { loadSectionReferences } from "../section-refs-store";
+import { readMemoryText } from "../book-memory-store";
 import { editedOutlineKey, outlineCacheKey, outlineInputHash, type EditedOutline, type OutlinePart } from "./outline-text";
 
 /* ---------------- 공통 텍스트 조립 ---------------- */
@@ -97,6 +98,7 @@ function bookVars(book: BookOutline) {
     styleProfile: styleProfileText(p.styleProfile),
     styleExcerpts: styleExcerpts(p.styleProfile),
     glossary: glossaryText(p.glossary),
+    bookMemory: p.bookMemory,
   };
 }
 
@@ -181,7 +183,7 @@ async function sectionLite(sectionId: string) {
     },
   });
   if (!sec) throw new Error("절을 찾을 수 없습니다.");
-  return { sec, project: sec.chapter.project };
+  return { sec, project: { ...sec.chapter.project, bookMemory: await readMemoryText(sec.chapter.projectId) } };
 }
 
 /* ---------------- 목차 설계 ---------------- */
@@ -711,6 +713,7 @@ export async function proofread(sectionId: string, contentJson: string, level: "
   const results = await mapLimit(chunkBlocks(blocks.map((t, i) => (inRange(i) ? t : "")), PROOF_BATCH_CHARS), 3, async (idxs) => {
     const { messages, instructionIncluded } = await buildMessages("proofread", {
       glossary,
+      bookMemory: project.bookMemory,
       level_light_edit: level === "light",
       signaturePhrases: sig,
       numberedParagraphs: idxs.map((i) => `[${i + 1}] ${blocks[i]}`).join("\n"),
@@ -733,6 +736,7 @@ export async function rewriteSelection(
   const { messages, instructionIncluded } = await buildMessages("rewrite-selection", {
     styleProfile: styleProfileText(project.styleProfile),
     glossary: glossaryText(project.glossary),
+    bookMemory: project.bookMemory,
     ratio,
     toneTarget: input.toneTarget ?? "",
     action: input.action,
@@ -868,6 +872,7 @@ export async function reviseChapter(chapterId: string, focus = "") {
     keyMessage: book.project.keyMessage,
     styleProfile: styleProfileText(book.project.styleProfile),
     glossary: glossaryText(book.project.glossary),
+    bookMemory: book.project.bookMemory,
     maxChanges: Math.min(40, Math.max(8, Math.round(total / 1500))),
     chapterNo: chapterName(chapter),
     chapterTitle: chapter.title,

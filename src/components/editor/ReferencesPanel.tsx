@@ -6,6 +6,7 @@ import { attachFile } from "@/lib/upload-client";
 import { confirmDialog, toast, toastError } from "../ui/feedback";
 
 type RefItem = { id: string; name: string; chars: number; createdAt: string };
+type BookRef = RefItem & { sectionId: string; sectionTitle: string };
 
 const ACCEPT = ".txt,.md,.pdf,.docx,.hwpx";
 
@@ -21,6 +22,31 @@ export default function ReferencesPanel({ sectionId }: { sectionId: string }) {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  // 책 자료실 — 같은 책 다른 절에 붙인 자료를 다시 올리지 않고 가져온다
+  const [bookRefs, setBookRefs] = useState<BookRef[] | null>(null);
+  const [bookOpen, setBookOpen] = useState(false);
+  const openBook = async () => {
+    setBookOpen((o) => !o);
+    if (bookRefs) return;
+    try {
+      setBookRefs((await api<{ items: BookRef[] }>(`/api/sections/${sectionId}/references?scope=book`)).items);
+    } catch (e) {
+      toastError(e, "책 자료실을 불러오지 못했습니다: ");
+      setBookRefs([]);
+    }
+  };
+  async function takeFromBook(r: BookRef) {
+    setBusy(`「${r.name}」 가져오는 중…`);
+    try {
+      const res = await api<{ item: RefItem }>(`/api/sections/${sectionId}/references`, { method: "POST", json: { copyFrom: { sectionId: r.sectionId, refId: r.id } } });
+      setItems((xs) => [...(xs ?? []), res.item]);
+      toast.success(`「${r.name}」을 이 절 자료로 붙였습니다.`);
+    } catch (e) {
+      toastError(e, "가져오지 못했습니다: ");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +127,9 @@ export default function ReferencesPanel({ sectionId }: { sectionId: string }) {
             <button className="btn px-2 py-1 text-xs" disabled={!!busy} onClick={() => setPasteOpen((o) => !o)} aria-expanded={pasteOpen}>
               글 붙여 넣기
             </button>
+            <button className="btn px-2 py-1 text-xs" disabled={!!busy} onClick={openBook} aria-expanded={bookOpen} title="같은 책의 다른 절에 올린 자료를 다시 올리지 않고 가져옵니다">
+              책 자료실에서
+            </button>
             <input
               ref={fileRef}
               type="file"
@@ -124,6 +153,41 @@ export default function ReferencesPanel({ sectionId }: { sectionId: string }) {
                 </button>
                 <span className="text-[11px] text-stone-400">{text.length.toLocaleString()}자</span>
               </div>
+            </div>
+          )}
+          {bookOpen && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-2">
+              <p className="mb-1 text-[11px] text-stone-500">같은 책 다른 절의 자료 — [가져오기]하면 이 절에도 붙습니다.</p>
+              {bookRefs === null ? (
+                <p className="text-xs text-stone-400">불러오는 중…</p>
+              ) : bookRefs.length === 0 ? (
+                <p className="text-xs text-stone-400">다른 절에 올린 자료가 없습니다.</p>
+              ) : (
+                <ul className="max-h-56 space-y-1 overflow-auto">
+                  {bookRefs.map((r) => {
+                    const here = items?.some((x) => x.name === r.name && x.chars === r.chars);
+                    return (
+                      <li key={`${r.sectionId}:${r.id}`} className="flex items-center gap-2 rounded bg-white px-2 py-1 text-xs">
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium text-stone-800" title={r.name}>
+                            {r.name}
+                          </span>
+                          <span className="block truncate text-[10px] text-stone-400">
+                            {r.sectionTitle} · {r.chars.toLocaleString()}자
+                          </span>
+                        </span>
+                        {here ? (
+                          <span className="shrink-0 text-[11px] text-stone-400">붙어 있음</span>
+                        ) : (
+                          <button className="btn-ghost shrink-0 px-1.5 py-0.5 text-[11px] text-emerald-800" disabled={!!busy} onClick={() => takeFromBook(r)}>
+                            가져오기
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
           )}
           {busy && <p className="text-xs text-sky-700">{busy}</p>}

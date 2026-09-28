@@ -22,6 +22,9 @@ type P = {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** 마지막으로 고친 절 · 다음 빈 절 (이어 쓰기) */
+  last?: { sectionId: string; title: string } | null;
+  next?: { sectionId: string; title: string } | null;
 };
 
 type Sort = "updated" | "created" | "createdAsc" | "title";
@@ -215,6 +218,22 @@ export default function ProjectList() {
                     </span>
                   </div>
                 </Link>
+                {(p.last || p.next) && (
+                  <div className="mt-3 space-y-1 text-xs">
+                    {p.last && (
+                      <Link href={`/projects/${p.id}?s=${p.last.sectionId}`} className="flex items-center gap-1.5 rounded bg-amber-50 px-2 py-1 text-amber-900 hover:bg-amber-100" title="마지막으로 고친 절에서 이어 씁니다">
+                        <span className="shrink-0 font-semibold">이어 쓰기</span>
+                        <span className="truncate">{p.last.title}</span>
+                      </Link>
+                    )}
+                    {p.next && p.next.sectionId !== p.last?.sectionId && (
+                      <Link href={`/projects/${p.id}?s=${p.next.sectionId}`} className="flex items-center gap-1.5 rounded px-2 py-1 text-stone-600 hover:bg-stone-100" title="본문에서 아직 쓰지 않은 첫 절">
+                        <span className="shrink-0 font-semibold">다음 빈 절</span>
+                        <span className="truncate">{p.next.title}</span>
+                      </Link>
+                    )}
+                  </div>
+                )}
                 <div className="mt-4 flex items-center justify-between border-t border-stone-100 pt-3 text-xs text-stone-400">
                   <span className="leading-4">
                     <span className="block" title="마지막으로 고친 때">수정 {fmtDate(p.updatedAt)}</span>

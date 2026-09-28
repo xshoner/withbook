@@ -6,6 +6,7 @@ import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import dynamic from "next/dynamic";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isFocusMode, useFocusMode } from "./focusMode";
 import { api } from "@/lib/client";
 import { confirmDialog, promptDialog, toast, toastError } from "../ui/feedback";
 import { clearJob, clearPartial, jobFor, locksSection, registerApplier, runJob, stopJob, takeDetachedSave, useAiJob, useAnyRunningIn, useLastWriteTiming, type AiJob, type JobMode } from "./aiJobs";
@@ -54,6 +55,7 @@ const ProofPanel = dynamic(() => import("./ProofPanel"));
 const FootnotePopover = dynamic(() => import("./FootnotePopover"));
 const InlineDiff = dynamic(() => import("../InlineDiff"));
 const VersionsPanel = dynamic(() => import("./VersionsPanel"));
+const MemoryPanel = dynamic(() => import("./MemoryPanel"));
 const ChapterReviseDialog = dynamic(() => import("./ChapterReviseDialog"));
 const AutoWriteDialog = dynamic(() => import("./AutoWriteDialog"));
 const CandidateCompareDialog = dynamic(() => import("./CandidateCompareDialog"));
@@ -157,6 +159,9 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   const [compareOpen, setCompareOpen] = useState(false);
   const [lengthHint, setLengthHint] = useState<null | { chars: number; target: number }>(null);
   const [tab, setTab] = useState<PanelTab>("ai");
+  /** 선택 말풍선 [기억]으로 넘긴 글 — 책 기억 탭의 입력 칸에 채운다 */
+  const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
+  const clearMemoryDraft = useCallback(() => setMemoryDraft(null), []);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const me = useMe();
   // 추가 지시: [다른 절에서도 계속 쓰기]를 켜 두면 절을 옮겨도 남고, 집필에 쓴 지시는 최근 목록에서 다시 고를 수 있다
@@ -185,7 +190,12 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   const [preProof, setPreProof] = useState<JNode | null>(null);
   const [versionKey, setVersionKey] = useState(0);
   const [zoom, setZoom] = useState(() => (typeof window !== "undefined" && window.innerWidth < 1500 ? 1 : 1.25));
-  const [panelOpen, setPanelOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 1280);
+  const [panelOpen, setPanelOpen] = useState(() => typeof window === "undefined" || (window.innerWidth >= 1280 && !isFocusMode()));
+  // 집중 모드를 켜면 오른쪽 패널을 닫는다 (필요하면 [◂ 패널]로 다시 연다)
+  const focusMode = useFocusMode();
+  useEffect(() => {
+    if (focusMode) setPanelOpen(false);
+  }, [focusMode]);
   const [caretPage, setCaretPage] = useState<number | null>(null); // 이 절 안에서 몇 번째 쪽(0부터)
   const [pg, setPg] = useState<PaginateResult | null>(null);
   const [bubble, setBubble] = useState<{ x: number; y: number } | null>(null);
@@ -1740,6 +1750,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
             </div>
           )}
           {tab === "refs" && <ReferencesPanel sectionId={section.id} />}
+          {tab === "memory" && <MemoryPanel projectId={project.id} where={secLabel} draft={memoryDraft} onDraftUsed={clearMemoryDraft} />}
           {tab === "images" && editor && (
             <ImagesPanel
               sectionId={section.id}
@@ -1779,6 +1790,17 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
               onRevert={revertOne}
               onRevertAll={revertAll}
               onLocate={(c) => selectInBlock(editor, c.paragraph, c.after) || findInBlock(editor, c.paragraph, c.after)}
+              onKeep={async (c) => {
+                try {
+                  const { addMemory } = await import("./MemoryPanel");
+                  await addMemory(project.id, "keep", `“${c.before.trim()}”은(는) 의도한 표현이다 — “${c.after.trim()}”(으)로 고치지 않는다`, secLabel);
+                  toast.success("표현 유지로 책의 기억에 남겼습니다. 다음 교정·퇴고는 이곳을 고치자고 하지 않습니다.");
+                  return true;
+                } catch (e) {
+                  toastError(e, "책의 기억에 남기지 못했습니다: ");
+                  return false;
+                }
+              }}
             />
           )}
           {tab === "notes" && editor && (
@@ -1858,6 +1880,19 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
               {rewriteBusy === a ? "…" : REWRITE_LABEL[a]}
             </button>
           ))}
+          <span className="mx-0.5 h-4 border-l border-stone-200" />
+          <button
+            className="rounded-md px-2 py-1 text-xs text-teal-800 hover:bg-teal-50"
+            title="고른 글을 책의 기억(정의·주장·쓴 사례·쓰지 않을 것·표현 유지)에 넣습니다 — 모든 AI 작업이 지킵니다"
+            onClick={() => {
+              if (!editor) return;
+              const { from, to } = editor.state.selection;
+              setMemoryDraft(editor.state.doc.textBetween(from, to, " ").trim());
+              setTab("memory");
+            }}
+          >
+            기억
+          </button>
         </div>
       )}
 

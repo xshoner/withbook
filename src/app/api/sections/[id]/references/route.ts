@@ -4,32 +4,36 @@ import { fail, handle, ok } from "@/lib/api";
 import { readUpload } from "@/lib/uploads";
 import { extractText } from "@/lib/style/reference";
 import { REF_EXT, REF_MAX_BYTES } from "@/lib/ai/section-refs";
-import { addRef, deleteRef, listRefs } from "@/lib/section-refs-store";
+import { addRef, copyRef, deleteRef, listBookRefs, listRefs } from "@/lib/section-refs-store";
 
 export const maxDuration = 60;
 
 /**
  * 절 참고 자료 — 집필(새로 쓰기·이어쓰기·새 버전)이 근거로 쓰고, 자료에서 가져온 사실에는 출처 각주를 단다.
  *   GET                                   → { items: [{ id, name, chars, createdAt }] }
+ *   GET ?scope=book                       → { items } 같은 책 다른 절의 자료 (책 자료실 — 다시 올리지 않고 가져오기)
+ *   POST JSON { copyFrom: { sectionId, refId } } → 같은 책 다른 절의 자료를 이 절에도 붙인다
  *   POST multipart file (txt·md·pdf·docx·hwpx, 10MB, 큰 파일은 incoming 업로드 경로 filePath+fileName)
  *        또는 JSON { name, text }         → { item, truncated }  (글은 6만 자까지 보관)
  *   DELETE ?refId=                        → { ok }
  */
 
 async function ensureSection(id: string) {
-  const s = await prisma.section.findUnique({ where: { id }, select: { id: true } });
+  const s = await prisma.section.findUnique({ where: { id }, select: { id: true, chapter: { select: { projectId: true } } } });
   if (!s) throw Object.assign(new Error("절을 찾을 수 없습니다."), { status: 404 });
+  return s.chapter.projectId;
 }
 
-export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/sections/[id]/references">) => {
+export const GET = handle(async (req: Request, ctx: RouteContext<"/api/sections/[id]/references">) => {
   const { id } = await ctx.params;
-  await ensureSection(id);
+  const projectId = await ensureSection(id);
+  if (new URL(req.url).searchParams.get("scope") === "book") return ok({ items: await listBookRefs(projectId, id) });
   return ok({ items: await listRefs(id) });
 });
 
 export const POST = handle(async (req: Request, ctx: RouteContext<"/api/sections/[id]/references">) => {
   const { id } = await ctx.params;
-  await ensureSection(id);
+  const projectId = await ensureSection(id);
   const ct = req.headers.get("content-type") ?? "";
   if (ct.includes("multipart/form-data")) {
     const form = await req.formData();
@@ -51,6 +55,11 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/sections
     return ok(await addRef(id, name, text));
   }
   const b = await req.json();
+  if (b.copyFrom && typeof b.copyFrom.sectionId === "string" && typeof b.copyFrom.refId === "string") {
+    // 같은 책의 절에서만 가져온다
+    if ((await ensureSection(b.copyFrom.sectionId)) !== projectId) return fail("같은 책의 자료만 가져올 수 있습니다.", 403);
+    return ok(await copyRef(b.copyFrom.sectionId, b.copyFrom.refId, id));
+  }
   if (typeof b.text !== "string" || !b.text.trim()) return fail("자료 내용을 붙여 넣으세요.");
   if (b.text.length > 500_000) return fail("자료가 너무 깁니다. 필요한 부분만 붙여 넣으세요.");
   return ok(await addRef(id, String(b.name ?? ""), b.text));
