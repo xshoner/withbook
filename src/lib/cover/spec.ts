@@ -112,7 +112,13 @@ export type CoverDesign = {
   bgColor: string;
   images: Partial<Record<Region, CoverImage>>;
   elements: CoverEl[];
-  ai: { instruction: string; withTitle: boolean; requestSize: string; history: { assetId: string; widthPx: number; heightPx: number; region: Region; at: string; edit?: boolean }[] };
+  ai: {
+    instruction: string;
+    withTitle: boolean;
+    requestSize: string;
+    /** 작가가 직접 고친 프롬프트(영역별). 있으면 자동 프롬프트 대신 이 글을 그대로 보낸다 */
+    prompts: Partial<Record<Region, string>>;
+    history: { assetId: string; widthPx: number; heightPx: number; region: Region; at: string; edit?: boolean }[] };
   updatedAt?: string;
 };
 
@@ -278,7 +284,7 @@ export function defaultCover(project: { title?: string; subtitle?: string; autho
     bgColor: "#ffffff",
     images: {},
     elements: [],
-    ai: { instruction: "", withTitle: true, requestSize: "auto", history: [] },
+    ai: { instruction: "", withTitle: true, requestSize: "auto", prompts: {}, history: [] },
   };
   return d;
 }
@@ -345,6 +351,8 @@ const color = (v: unknown, dflt: string) => (typeof v === "string" && /^#[0-9a-f
 const id = (v: unknown) => (typeof v === "string" && /^[a-zA-Z0-9_-]{1,40}$/.test(v) ? v : "");
 const PANELS = ["backFlap", "back", "spine", "front", "frontFlap"];
 const REGIONS = ["full", ...PANELS];
+/** 직접 고친 프롬프트 최대 길이 */
+export const PROMPT_MAX = 12000;
 
 function normImage(v: any): CoverImage | null {
   if (!v || !id(v.assetId)) return null;
@@ -419,6 +427,7 @@ export function normalizeCover(v: any): CoverDesign {
       instruction: str(v?.ai?.instruction, 4000),
       withTitle: v?.ai?.withTitle === undefined ? true : Boolean(v.ai.withTitle),
       requestSize: /^(auto|\d{3,5}x\d{3,5})$/.test(v?.ai?.requestSize ?? "") ? v.ai.requestSize : "auto",
+      prompts: Object.fromEntries(REGIONS.map((r) => [r, str(v?.ai?.prompts?.[r], PROMPT_MAX)]).filter(([, t]) => t.trim())),
       history: hist
         .filter((h: any) => h && id(h.assetId) && REGIONS.includes(h.region))
         .slice(-24)
@@ -523,6 +532,12 @@ export function buildImagePrompt(d: CoverDesign, book: BookInfo, region: Region)
   return lines.join("\n");
 }
 
+/** 실제로 보낼 프롬프트 — 작가가 고친 글이 있으면 그것, 없으면 자동 프롬프트 */
+export function effectivePrompt(d: CoverDesign, book: BookInfo, region: Region) {
+  const own = d.ai.prompts?.[region]?.trim();
+  return own ? own.slice(0, PROMPT_MAX) : buildImagePrompt(d, book, region);
+}
+
 /* ---------------- AI 그림 수정 ---------------- */
 
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -580,7 +595,7 @@ export function buildEditPrompt(d: CoverDesign, region: Region, request: string,
  *   widthMm × heightMm: 바코드 상자 크기 · fromSpineMm: 책등 쪽 재단선에서 · fromBottomMm: 아래 재단선에서
  */
 export const BARCODE_GUIDE = { panel: "back" as const, widthMm: 40, heightMm: 25, fromSpineMm: 10, fromBottomMm: 10 };
-export const BARCODE_NOTE = "바코드는 부크크가 넣습니다. 이 상자는 예상 자리이며, 정확한 위치는 부크크 표지 가이드로 확인하세요.";
+export const BARCODE_NOTE = "바코드는 인쇄소(출판 플랫폼)가 넣습니다. 이 상자는 예상 자리이며, 정확한 위치는 표지 가이드로 확인하세요.";
 
 /** 바코드 자리 — 뒷표지 패널 기준(x: 뒷표지 왼쪽 재단선, y: 위 재단선) mm */
 export function barcodeRect(l: Pick<CoverLayout, "panels">): Box {
@@ -593,15 +608,55 @@ export function barcodeRect(l: Pick<CoverLayout, "panels">): Box {
 
 export type CoverIssue = { level: "error" | "warn"; message: string };
 
-/** 글자 상자 높이 추정 (mm) — 줄 수 × 줄 높이 */
-export function textHeight(el: TextEl) {
-  const lineMm = el.sizePt * 0.3528 * el.lineHeight;
-  const lines = Math.max(1, el.text.split("\n").length);
-  return lines * lineMm;
+/** 글자 한 자의 대략 폭 (em) — 한글·한자·전각은 1, 라틴 소문자·숫자 0.55, 대문자 0.68, 공백 0.3 */
+function charEm(ch: string) {
+  const c = ch.codePointAt(0) ?? 0;
+  if (c === 0x20) return 0.3;
+  if (c >= 0x1100 && (c <= 0x11ff || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60))) return 1;
+  if (c >= 0x2018 && c <= 0x201f) return 0.35;
+  if (/[A-Z]/.test(ch)) return 0.68;
+  if (/[.,:;'!|il]/.test(ch)) return 0.3;
+  return 0.55;
 }
 
-/** actualPages: 책의 실제 조판 쪽수(편집기 측정·본문 PDF). 모르면 null */
-export function coverIssues(d: CoverDesign, opts: { actualPages?: number | null } = {}): CoverIssue[] {
+/**
+ * 글이 실제로 차지하는 자리 (요소 기준 mm) — 상자 폭 전체가 아니라 정렬에 따라 글자가 놓이는 곳.
+ * 가운데 맞춤한 짧은 글을 상자 폭이 넘게 옮겨도 글자가 안전 영역 안이면 문제 삼지 않도록.
+ * 줄바꿈(keep-all)은 단어 단위로 어림한다. 편집기는 화면에서 잰 값(measured)을 대신 쓴다.
+ */
+export function textInkBox(el: TextEl): Box {
+  const sizeMm = el.sizePt * 0.3528;
+  const lineMm = sizeMm * el.lineHeight;
+  const spacing = el.letterSpacing * sizeMm;
+  const widthOf = (s: string) => [...s].reduce((a, ch) => a + charEm(ch) * sizeMm + spacing, 0);
+  const avail = el.w; // 가로쓰기면 상자 폭, 세로쓰기면 상자 높이(한 줄의 길이)
+  const lines: number[] = [];
+  for (const para of el.text.split("\n")) {
+    let cur = 0;
+    for (const word of para.split(/(?<= )/)) {
+      const ww = widthOf(word);
+      if (cur > 0 && cur + ww > avail + 0.01) {
+        lines.push(Math.min(cur, avail));
+        cur = widthOf(word.trimStart());
+      } else cur += ww;
+    }
+    lines.push(Math.min(widthOf(para.trimEnd()) === 0 ? 0 : cur, avail));
+  }
+  const long = Math.max(0, ...lines);
+  const across = Math.max(1, lines.length) * lineMm;
+  if (el.vertical) {
+    // 세로쓰기: 글줄은 위에서 아래로, 줄은 오른쪽에서 왼쪽으로 쌓인다(상자 왼쪽 위 기준으로 그린다)
+    return { x: 0, y: 0, w: across, h: long };
+  }
+  const offset = el.align === "center" ? (avail - long) / 2 : el.align === "right" ? avail - long : 0;
+  return { x: Math.max(0, offset), y: 0, w: long, h: across };
+}
+
+/**
+ * actualPages: 책의 실제 조판 쪽수(편집기 측정·본문 PDF). 모르면 null
+ * measured: 편집기가 화면에서 잰 글의 실제 자리(요소 기준 mm) — 없으면 textInkBox로 어림한다
+ */
+export function coverIssues(d: CoverDesign, opts: { actualPages?: number | null; measured?: Record<string, Box> } = {}): CoverIssue[] {
   const l = coverLayout(d);
   const out: CoverIssue[] = [];
   const actual = cleanPages(opts.actualPages);
@@ -633,16 +688,23 @@ export function coverIssues(d: CoverDesign, opts: { actualPages?: number | null 
       continue;
     }
     const label = e.kind === "text" ? `‘${e.text.split("\n")[0].slice(0, 12) || "빈 글"}’` : "사진";
-    const w = e.kind === "text" ? (e.vertical ? e.sizePt * 0.3528 * e.lineHeight * Math.max(1, e.text.split("\n").length) : e.w) : e.w;
-    const h = e.kind === "text" ? (e.vertical ? e.w : textHeight(e)) : e.h;
+    // 겹침·안전 영역은 글자가 실제로 놓인 자리로 본다 (빈 글 상자는 인쇄되지 않으므로 건너뛴다)
+    const ink: Box | null = e.kind === "text" ? (e.text.trim() ? (opts.measured?.[e.id] ?? textInkBox(e)) : null) : { x: 0, y: 0, w: e.w, h: e.h };
+    const x = e.x + (ink?.x ?? 0);
+    const y = e.y + (ink?.y ?? 0);
+    const w = ink?.w ?? 0;
+    const h = ink?.h ?? 0;
     const inset = e.panel === "spine" ? 0.5 : SAFE_INSET;
-    const ok = e.x >= inset - 0.01 && e.x + w <= p.w - inset + 0.01 && e.y >= (e.panel === "spine" ? SAFE_INSET : SAFE_INSET) - 0.01 && e.y + h <= p.h - SAFE_INSET + 0.01;
-    if (!ok) out.push({ level: "warn", message: `${PANEL_LABEL[e.panel]}의 ${label}이 안전 영역(재단선·접는 선에서 ${inset}mm) 밖으로 나갑니다.` });
+    const TOL = 0.2; // 반올림·글꼴 차이
+    if (ink) {
+      const sides = [x < inset - TOL && "왼쪽", x + w > p.w - inset + TOL && "오른쪽", y < SAFE_INSET - TOL && "위", y + h > p.h - SAFE_INSET + TOL && "아래"].filter(Boolean);
+      if (sides.length) out.push({ level: "warn", message: `${PANEL_LABEL[e.panel]}의 ${label}이 안전 영역(재단선·접는 선에서 ${e.panel === "spine" ? `좌우 ${inset}mm·위아래 ${SAFE_INSET}mm` : `${inset}mm`}) ${sides.join("·")}으로 나갑니다.` });
+    }
     if (e.kind === "text" && e.text.trim() && e.sizePt < 6) out.push({ level: "warn", message: `${label} 글자가 너무 작습니다 (${e.sizePt}pt, 6pt 이상 권장).` });
     if (e.panel === BARCODE_GUIDE.panel && (e.kind === "image" || e.text.trim())) {
       const b = barcodeRect(l);
-      if (e.x < b.x + b.w && e.x + w > b.x && e.y < b.y + b.h && e.y + h > b.y) {
-        out.push({ level: "warn", message: `뒷표지의 ${label}이 ISBN 바코드 자리(아래쪽 ${BARCODE_GUIDE.widthMm}×${BARCODE_GUIDE.heightMm}mm)와 겹칩니다. 바코드가 가릴 수 있으니 옮기세요(정확한 자리는 부크크 가이드 확인).` });
+      if (ink && x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y) {
+        out.push({ level: "warn", message: `뒷표지의 ${label}이 ISBN 바코드 자리(아래쪽 ${BARCODE_GUIDE.widthMm}×${BARCODE_GUIDE.heightMm}mm)와 겹칩니다. 바코드가 가릴 수 있으니 옮기세요(정확한 자리는 인쇄소 표지 가이드 확인).` });
       }
     }
     if (e.kind === "image") {

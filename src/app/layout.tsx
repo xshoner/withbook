@@ -4,7 +4,7 @@ import { FeedbackHost } from "@/components/ui/feedback";
 
 export const metadata: Metadata = {
   title: "withbook — 작가 서포트 집필 에이전트",
-  description: "스케치를 문체 그대로 원고로, 부크크 A5 규격 그대로 PDF·HWPX로",
+  description: "스케치를 문체 그대로 원고로, A5 인쇄 규격 그대로 PDF·HWPX로",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

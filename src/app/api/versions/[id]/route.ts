@@ -2,12 +2,15 @@ import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
 import { saveSection, snapshot } from "@/lib/sections";
 import { validDocument } from "@/lib/section-input";
+import { reviseRunForVersion } from "@/lib/revise-log";
 
 export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/versions/[id]">) => {
   const { id } = await ctx.params;
   const v = await prisma.version.findUnique({ where: { id } });
   if (!v) return fail("버전을 찾을 수 없습니다.", 404);
-  return ok(v);
+  // 장 퇴고 버전이면 그때의 퇴고 기록(장 안 모든 절의 바뀐 문단)을 함께 준다
+  const revise = v.reason === "chapter_revise" ? await reviseRunForVersion(v.id) : null;
+  return ok(revise ? { ...v, revise } : v);
 });
 
 /** 이 버전으로 복원 (현재 내용은 restore 버전으로 먼저 보관) — 보관·복원을 한 트랜잭션으로, autosave 중복 보관 없이 */

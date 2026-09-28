@@ -1743,6 +1743,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
           {tab === "versions" && editor && (
             <VersionsPanel
               beforeRestore={flush}
+              onServerEdited={onServerEdited}
               sectionId={section.id}
               refreshKey={versionKey}
               lockReason={busyReason}

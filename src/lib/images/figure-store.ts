@@ -34,7 +34,7 @@ async function sectionProject(sectionId: string) {
 export type MakeInput = Omit<FigurePromptInput, "bookTitle" | "sectionTitle"> & { aspect: FigureAspect; requestSize?: string };
 
 /** 새로 그리기, 또는 editOf(이 절에서 만든 그림)를 editPrompt대로 고치기 */
-export async function makeFigure(sectionId: string, input: MakeInput & { editOf?: string; editPrompt?: string }, signal?: AbortSignal) {
+export async function makeFigure(sectionId: string, input: MakeInput & { editOf?: string; editPrompt?: string; customPrompt?: string }, signal?: AbortSignal) {
   const { title, project } = await sectionProject(sectionId);
   const size = figureRequestSize(input.aspect, input.requestSize);
   const fallbackSize = figureFallbackSize(input.aspect);
@@ -65,7 +65,8 @@ export async function makeFigure(sectionId: string, input: MakeInput & { editOf?
     buffer = gen.buffer;
   } else {
     if (input.paragraph.trim().length < 10) throw Object.assign(new Error("그림으로 만들 문단을 고르세요(본문에서 문단을 클릭)."), { status: 400 });
-    prompt = buildFigurePrompt({ ...input, bookTitle: project.title, sectionTitle: title });
+    // 작가가 프롬프트 안을 직접 고쳤으면 그 글을 그대로 보낸다
+    prompt = input.customPrompt?.trim() || buildFigurePrompt({ ...input, bookTitle: project.title, sectionTitle: title });
     buffer = (await generateImage({ prompt, size, fallbackSize, projectId: project.id, signal, purpose: "figure" })).buffer;
   }
   // 흰 바탕으로 굳혀 인쇄용 JPEG (투명 PNG가 인쇄에서 검게 나오지 않게)

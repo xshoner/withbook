@@ -17,7 +17,7 @@ export default function NewProject() {
       </Link>
       <h1 className="font-bookhead text-2xl">새 책</h1>
       <p className="mb-6 mt-1 text-sm text-stone-500">
-        책 정보를 입력하면 AI가 해당 분야 전문가 관점에서 목차를 설계해 보고합니다. 판형은 부크크 A5(148×210mm)로 고정됩니다.
+        책 정보를 입력하면 AI가 해당 분야 전문가 관점에서 목차를 설계해 보고합니다. 판형은 A5(148×210mm)로 고정됩니다.
         <br />
         써 둔 원고가 있나요?{" "}
         <Link href="/projects/new/import" className="text-amber-700 underline">

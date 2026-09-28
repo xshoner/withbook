@@ -5,6 +5,7 @@ import { api, fmtDate } from "@/lib/client";
 import { docParagraphs, parseDoc, type JNode } from "@/lib/doc/doc";
 import { ParagraphDiff } from "@/components/InlineDiff";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
+import ReviseRunView, { type ReviseRun } from "./ReviseRunView";
 
 const REASON: Record<string, string> = {
   autosave: "자동 저장 이전 원고",
@@ -19,11 +20,12 @@ const REASON: Record<string, string> = {
   replace: "책 전체 바꾸기 전",
   check: "확인 표시 처리 전",
   chapter_revise: "장 퇴고 전",
+  revise_undo: "장 퇴고 되돌리기 전",
   factcheck: "AI 사실 확인 전",
   conflict: "저장 충돌 때 고르지 않은 원고",
 };
 
-type V = { id: string; reason: string; charCount: number; createdAt: string };
+type V = { id: string; reason: string; charCount: number; createdAt: string; revise?: { here: number; total: number } };
 
 export default function VersionsPanel({
   sectionId,
@@ -32,6 +34,7 @@ export default function VersionsPanel({
   onRestore,
   onSnapshot,
   beforeRestore,
+  onServerEdited,
   lockReason,
 }: {
   sectionId: string;
@@ -40,6 +43,8 @@ export default function VersionsPanel({
   onRestore: (content: string) => void;
   onSnapshot: () => Promise<void>;
   beforeRestore: () => Promise<boolean>;
+  /** 서버가 이 절(과 같은 장의 다른 절)을 고친 뒤 — 편집기가 다시 불러온다 */
+  onServerEdited?: () => void;
   /** 절이 잠긴 이유 (AI 집필·교정 등) — 그동안은 복원하지 않는다 */
   lockReason?: string;
 }) {
@@ -49,6 +54,9 @@ export default function VersionsPanel({
     v: V;
     before: string[];
     after: string[];
+    /** 장 퇴고 버전이면 그때의 퇴고 기록 */
+    revise: ReviseRun | null;
+    mode: "revise" | "diff";
   } | null>(null);
   const load = () =>
     api<V[]>(`/api/sections/${sectionId}/versions`)
@@ -65,11 +73,13 @@ export default function VersionsPanel({
 
   const open = async (v: V) => {
     try {
-      const full = await api<{ content: string }>(`/api/versions/${v.id}`);
+      const full = await api<{ content: string; revise?: ReviseRun }>(`/api/versions/${v.id}`);
       setView({
         v,
         before: docParagraphs(parseDoc(full.content)),
         after: docParagraphs(getCurrent()),
+        revise: full.revise ?? null,
+        mode: full.revise ? "revise" : "diff",
       });
     } catch (e) {
       toastError(e, "버전을 불러오지 못했습니다: ");
@@ -91,6 +101,23 @@ export default function VersionsPanel({
       toast("이전 버전으로 복원했습니다.");
     } catch (e) {
       toastError(e, "복원하지 못했습니다: ");
+    }
+  };
+
+  /** 한 번의 장 퇴고를 모든 절에서 되돌린다 */
+  const undoRevise = async (run: ReviseRun) => {
+    if (lockReason) return void toast.error(`${lockReason} — 끝난 뒤에 되돌리세요.`);
+    const n = run.sections.length;
+    if (!(await confirmDialog(`${fmtDate(run.at)} 장 퇴고(${run.total}곳${n > 1 ? `, ${n}개 절` : ""})를 되돌릴까요? 그 뒤 고친 절은 퇴고로 바뀐 문장만 되돌리고 나중에 고친 곳은 그대로 둡니다. 되돌리기 전 원고는 버전 기록에 남습니다.`, { okLabel: "되돌리기" }))) return;
+    if (!(await beforeRestore())) return void toast.error("현재 원고 저장을 완료한 뒤 되돌려주세요.");
+    try {
+      const r = await api<{ sections: string[]; restored: number; reverted: number; failed: number }>(`/api/chapters/${run.chapterId}/revise/undo`, { method: "POST", json: { runId: run.runId } });
+      toast.success(`장 퇴고를 되돌렸습니다 — ${r.reverted}곳${r.failed ? ` (원고가 달라 ${r.failed}곳은 그대로 둠)` : ""}.`);
+      setView(null);
+      onServerEdited?.();
+      load();
+    } catch (e) {
+      toastError(e, "되돌리지 못했습니다: ");
     }
   };
 
@@ -132,12 +159,37 @@ export default function VersionsPanel({
               이 버전으로 복원
             </button>
           </div>
-          <p className="px-3 py-1 text-[11px] text-stone-500">
-            <span className="bg-red-100 px-1 line-through">빨강</span> = 이 버전에만 있음, <span className="bg-emerald-100 px-1 underline">초록</span> = 지금 내용에만 있음
-          </p>
-          <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-            <ParagraphDiff key={view.v.id} before={view.before} after={view.after} />
-          </div>
+          {view.revise && (
+            <div className="flex gap-1 border-b border-stone-100 px-3 py-1.5 text-[11px]">
+              {(
+                [
+                  ["revise", `이때 고친 곳 (장 전체 ${view.revise.total})`],
+                  ["diff", "이 버전과 지금 원고 비교"],
+                ] as const
+              ).map(([k, label]) => (
+                <button key={k} className={`rounded px-2 py-0.5 ${view.mode === k ? "bg-stone-800 text-white" : "text-stone-600 hover:bg-stone-100"}`} onClick={() => setView({ ...view, mode: k })}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {view.revise && view.mode === "revise" ? (
+            <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
+              <p className="mb-2 text-[11px] text-stone-500">
+                이 퇴고가 장 안의 절들에서 바꾼 곳입니다. <span className="bg-red-100 px-1 line-through">빨강</span> = 지운 글, <span className="bg-emerald-100 px-1 underline">초록</span> = 새로 쓴 글. [이 버전으로 복원]은 이 절만 되돌립니다.
+              </p>
+              <ReviseRunView run={view.revise} currentSectionId={sectionId} onUndo={lockReason ? undefined : undoRevise} compact />
+            </div>
+          ) : (
+            <>
+              <p className="px-3 py-1 text-[11px] text-stone-500">
+                <span className="bg-red-100 px-1 line-through">빨강</span> = 이 버전에만 있음, <span className="bg-emerald-100 px-1 underline">초록</span> = 지금 내용에만 있음{view.revise ? " (그 뒤 고친 것까지 함께 보입니다)" : ""}
+              </p>
+              <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+                <ParagraphDiff key={view.v.id} before={view.before} after={view.after} />
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <ul className="min-h-0 flex-1 divide-y divide-stone-100 overflow-auto">
@@ -145,7 +197,14 @@ export default function VersionsPanel({
           {list.map((v) => (
             <li key={v.id} className="flex items-center justify-between px-3 py-2 text-xs hover:bg-stone-50">
               <button className="flex-1 text-left" onClick={() => open(v)}>
-                <div className="font-medium text-stone-700">{REASON[v.reason] ?? v.reason}</div>
+                <div className="font-medium text-stone-700">
+                  {REASON[v.reason] ?? v.reason}
+                  {v.revise && (
+                    <span className="ml-1.5 font-normal text-amber-700">
+                      {v.revise.total > v.revise.here ? `이 절 ${v.revise.here}곳 · 장 전체 ${v.revise.total}곳` : `${v.revise.here}곳 수정`}
+                    </span>
+                  )}
+                </div>
                 <div className="text-stone-400">
                   {fmtDate(v.createdAt)} · {v.charCount.toLocaleString()}자
                 </div>

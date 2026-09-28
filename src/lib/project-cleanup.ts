@@ -7,7 +7,7 @@ type Db = Prisma.TransactionClient | typeof Client;
 
 /** 책마다 AppSetting에 둔 행의 키 (책 id 기준) — 표지 디자인·실제 쪽수·마지막 PDF 점검·목차 설계 표시·사실 확인/베타 리더 결과 */
 export const projectSettingKeys = (projectId: string) => [`cover:${projectId}`, `pages:${projectId}`, `pdf-check:${projectId}`, `toc-design:${projectId}`, `ai:consistency:${projectId}`];
-export const projectSettingPrefixes = (projectId: string) => [`trash:${projectId}:`, `ai:beta:${projectId}:`];
+export const projectSettingPrefixes = (projectId: string) => [`trash:${projectId}:`, `ai:beta:${projectId}:`, `revise-run:${projectId}:`];
 
 /**
  * 책을 영구 삭제한 뒤 남는 AppSetting 행 정리 — 책 단위 행, 지운 장·절 휴지통, 절마다 둔 참고 자료·고친 개요·개요 캐시.

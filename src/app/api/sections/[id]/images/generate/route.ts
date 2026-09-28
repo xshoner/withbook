@@ -6,7 +6,8 @@ export const maxDuration = 300;
 
 /**
  * 이미지 추천 → [직접 만들기] (표지 디자인 AI와 같은 그림 연결)
- * GET → { history }  ·  POST { paragraph, style, aspect, instruction, withText, requestSize, editOf?, editPrompt? } → { item, history }
+ * GET → { history }  ·  POST { paragraph, style, aspect, instruction, withText, requestSize, customPrompt?, editOf?, editPrompt? } → { item, history }
+ * customPrompt: 작가가 직접 고친 프롬프트 — 있으면 자동 프롬프트 대신 보낸다
  * DELETE ?assetId= → { history, kept }
  */
 export const GET = handle(async (_req: Request, ctx: RouteContext<"/api/sections/[id]/images/generate">) => {
@@ -32,6 +33,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/sections
         requestSize: typeof b.requestSize === "string" ? b.requestSize.slice(0, 20) : "auto",
         editOf,
         editPrompt: typeof b.editPrompt === "string" ? b.editPrompt : undefined,
+        customPrompt: typeof b.customPrompt === "string" ? b.customPrompt.slice(0, 12000) : undefined,
       },
       req.signal,
     ),

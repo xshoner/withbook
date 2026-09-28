@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   spineWidth, coverLayout, regionBox, placeImage, requestSize, pxAt300, normalizeCover, defaultCover,
-  buildImagePrompt, coverIssues, reflowSpine, panelAt, elAbs, titleElements, DEFAULT_SYSTEM_PROMPT,
+  buildImagePrompt, coverIssues, reflowSpine, panelAt, elAbs, titleElements, DEFAULT_SYSTEM_PROMPT, effectivePrompt,
 } from '../src/lib/cover/spec.ts';
 
 const book = { title: '새벽의 기록', subtitle: '', author: '홍길동', topic: '에세이', keyMessage: '', audience: '', tone: '', chapters: ['1장', '2장'] };
@@ -96,10 +96,26 @@ test('elements follow their panel when the spine changes', () => {
 test('print check flags low resolution and text outside the safe area', () => {
   const d = defaultCover({ targetPages: 200 });
   d.images.full = { assetId: 'a1', widthPx: 1536, heightPx: 1024, fit: 'cover', posX: 50, posY: 50, zoom: 1 };
-  d.elements = [{ ...titleElements(d, { title: 'T' })[0], x: 1 }];
+  d.elements = [{ ...titleElements(d, { title: 'T' })[0], x: 1, align: 'left' }];
   const issues = coverIssues(d);
   assert.ok(issues.some((i) => i.level === 'error' && /DPI/.test(i.message)));
   assert.ok(issues.some((i) => /안전 영역/.test(i.message)));
+});
+
+test('safe-area check follows where centered text actually sits, not the whole box', () => {
+  const d = defaultCover({ targetPages: 200 });
+  const l = coverLayout(d);
+  const author = titleElements(d, { title: '제목', author: '지병석 지음' }).find((e) => e.text === '지병석 지음');
+  // 가운데 맞춘 짧은 글을 오른쪽 아래로 옮겨 상자는 패널 밖으로 넘치지만 글자는 안전 영역 안
+  const moved = { ...author, x: l.panels.front.w - author.w / 2 - 20, y: l.panels.front.h - 20 };
+  assert.ok(!coverIssues({ ...d, elements: [moved] }).some((i) => /안전 영역/.test(i.message)));
+  // 글자까지 재단선 쪽으로 넘기면 알린다
+  const out = { ...author, x: l.panels.front.w - author.w / 2 - 2 };
+  assert.ok(coverIssues({ ...d, elements: [out] }).some((i) => /안전 영역.*오른쪽/.test(i.message)));
+  // 편집기가 잰 값이 있으면 그것을 쓴다
+  assert.ok(!coverIssues({ ...d, elements: [out] }, { measured: { [out.id]: { x: 0, y: 0, w: 1, h: 1 } } }).some((i) => /안전 영역/.test(i.message)));
+  // 빈 글 상자는 인쇄되지 않으므로 문제 삼지 않는다
+  assert.ok(!coverIssues({ ...d, elements: [{ ...author, text: '  ', x: -3 }] }).some((i) => /안전 영역/.test(i.message)));
 });
 
 test('edit mask maps the canvas rectangle into image fractions', async () => {
@@ -156,4 +172,13 @@ test('text outline: color and width are kept within range, off by default', () =
   assert.equal(b.strokeWidth, 3);
   assert.equal(c.strokeColor, '');
   assert.equal(c.strokeWidth, 0.3);
+});
+
+test('author-edited prompt is kept per region and sent instead of the automatic one', () => {
+  const d = normalizeCover({ ...defaultCover({ targetPages: 200 }), ai: { instruction: '', withTitle: true, requestSize: 'auto', prompts: { front: '  내가 쓴 프롬프트  ', back: '   ', bogus: 'x' }, history: [] } });
+  assert.deepEqual(Object.keys(d.ai.prompts), ['front']);
+  assert.equal(effectivePrompt(d, book, 'front'), '내가 쓴 프롬프트');
+  assert.equal(effectivePrompt(d, book, 'full'), buildImagePrompt(d, book, 'full'));
+  // 예전 저장본(prompts 없음)도 읽힌다
+  assert.deepEqual(normalizeCover({ ai: { instruction: 'a' } }).ai.prompts, {});
 });

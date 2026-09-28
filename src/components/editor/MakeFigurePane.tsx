@@ -121,13 +121,17 @@ export default function MakeFigurePane({ sectionId, editor, bookTitle, sectionTi
   }, [sectionId]);
 
   const size = figureRequestSize(opts.aspect, opts.requestSize);
-  const prompt = buildFigurePrompt({ bookTitle, sectionTitle, paragraph: target?.text ?? "(본문에서 그림을 넣을 문단을 클릭하세요)", style: opts.style, instruction: opts.instruction, withText: opts.withText });
+  const autoPrompt = buildFigurePrompt({ bookTitle, sectionTitle, paragraph: target?.text ?? "(본문에서 그림을 넣을 문단을 클릭하세요)", style: opts.style, instruction: opts.instruction, withText: opts.withText });
+  // 직접 고친 프롬프트 — 고친 그 문단에서만 쓴다(다른 문단을 누르면 자동 프롬프트로)
+  const [own, setOwn] = useState<{ anchor: string; text: string } | null>(null);
+  const ownText = own && target && own.anchor === target.text ? own.text : null;
+  const prompt = ownText ?? autoPrompt;
   const elapsed = run ? Math.max(0, Math.round((now - run.startedAt) / 1000)) : 0;
   const body = { style: opts.style, aspect: opts.aspect, requestSize: opts.requestSize, instruction: opts.instruction, withText: opts.withText };
 
   const runMake = () => {
     if (!target) return toast("본문에서 그림을 넣을 문단을 먼저 클릭하세요.");
-    void make(sectionId, { ...body, paragraph: target.text }, "make");
+    void make(sectionId, { ...body, paragraph: target.text, ...(ownText ? { customPrompt: ownText } : {}) }, "make");
   };
   const runEdit = (f: MadeFigure) => {
     if (!sec.editPrompt.trim()) return;
@@ -201,8 +205,25 @@ export default function MakeFigurePane({ sectionId, editor, bookTitle, sectionTi
       </label>
 
       <details className="rounded border border-stone-200 bg-white">
-        <summary className="cursor-pointer px-2 py-1 text-xs font-semibold text-stone-600">프롬프트 안 (요청 {size})</summary>
-        <pre className="max-h-56 overflow-auto whitespace-pre-wrap border-t border-stone-100 bg-stone-50 p-2 text-[11px] leading-4 text-stone-600">{prompt}</pre>
+        <summary className="cursor-pointer px-2 py-1 text-xs font-semibold text-stone-600">
+          프롬프트 안 (요청 {size}){ownText ? <span className="ml-1 font-normal text-amber-700">· 직접 고침</span> : null}
+        </summary>
+        <textarea
+          className={`block h-56 w-full resize-y border-0 border-t border-stone-100 p-2 font-mono text-[11px] leading-4 outline-none ${ownText ? "bg-amber-50/40 text-stone-800" : "bg-stone-50 text-stone-600"}`}
+          spellCheck={false}
+          value={prompt}
+          disabled={!target}
+          aria-label="프롬프트 안 (직접 고칠 수 있음)"
+          onChange={(e) => target && setOwn(e.target.value.trim() && e.target.value !== autoPrompt ? { anchor: target.text, text: e.target.value } : null)}
+        />
+        <div className="flex items-center justify-between gap-2 border-t border-stone-100 px-2 py-1 text-[11px] text-stone-500">
+          <span>{ownText ? "고친 프롬프트를 그대로 보냅니다(이 문단에서만)." : "여기서 바로 고쳐 쓸 수 있습니다."}</span>
+          {ownText && (
+            <button className="btn-ghost px-1.5 py-0.5 text-[11px]" onClick={() => setOwn(null)}>
+              자동으로 되돌리기
+            </button>
+          )}
+        </div>
       </details>
 
       {run?.kind === "make" ? (

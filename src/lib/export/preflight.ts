@@ -50,7 +50,7 @@ export async function preflight(book: Book, size: "bleed" | "trim"): Promise<Iss
   if (fullbleed && size === "trim")
     issues.push({ level: "error", message: "풀블리드 이미지가 있어 148×210 정사이즈로 출력할 수 없습니다. 154×216(재단 여백 포함)을 선택하세요." });
   if (!book.chapters.length) issues.push({ level: "error", message: "목차가 비어 있습니다." });
-  if (!book.layout.colophon.isbn) issues.push({ level: "info", message: "판권면 ISBN이 비어 있습니다(부크크 등록 후 입력)." });
+  if (!book.layout.colophon.isbn) issues.push({ level: "info", message: "판권면 ISBN이 비어 있습니다(ISBN 발급 후 입력)." });
   if (!book.layout.colophon.publishDate) issues.push({ level: "info", message: "판권면 발행일이 비어 있습니다." });
   return issues;
 }

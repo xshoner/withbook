@@ -94,7 +94,7 @@ export function submissionItems(x: SubmitInput): SubmitItem[] {
   const other = x.preflightErrors.filter((e) => !/글꼴/.test(e));
   if (other.length) items.push({ id: "preflight", label: "조판 설정", status: "fail", detail: other.join(" / "), fix: { label: "책 설정", href: settingsHref, action: "settings" } });
   if (x.emptySections) items.push({ id: "empty", label: "빈 절", status: "warn", detail: `아직 비어 있는 절이 ${x.emptySections}개 있습니다(제목만 인쇄됩니다).` });
-  if (!x.isbn.trim()) items.push({ id: "isbn", label: "ISBN", status: "warn", detail: "판권면 ISBN이 비어 있습니다. 부크크에서 ISBN을 받은 뒤 넣으세요(바코드는 부크크가 표지에 넣습니다).", fix: { label: "책 설정 → 조판·판권면", href: settingsHref, action: "settings" } });
+  if (!x.isbn.trim()) items.push({ id: "isbn", label: "ISBN", status: "warn", detail: "판권면 ISBN이 비어 있습니다. ISBN을 받은 뒤 넣으세요(바코드는 인쇄소가 표지에 넣습니다).", fix: { label: "책 설정 → 조판·판권면", href: settingsHref, action: "settings" } });
 
   return items;
 }

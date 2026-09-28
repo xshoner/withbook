@@ -3,7 +3,7 @@ import { fail, handle, ok } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { generateImage } from "@/lib/ai/image";
 import { printJpeg, storeCoverImage } from "@/lib/cover/image-store";
-import { type Region, buildImagePrompt, coverLayout, normalizeCover, pxAt300, regionBox, requestSize } from "@/lib/cover/spec";
+import { type Region, coverLayout, effectivePrompt, normalizeCover, pxAt300, regionBox, requestSize } from "@/lib/cover/spec";
 
 export const maxDuration = 300;
 
@@ -27,7 +27,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   const l = coverLayout(design);
   const box = regionBox(l, region);
   if (box.w <= 0) return fail("이 영역이 없습니다 (날개 설정을 확인하세요).");
-  const prompt = buildImagePrompt(design, { ...project, chapters: project.chapters.map((c) => c.title) }, region);
+  const prompt = effectivePrompt(design, { ...project, chapters: project.chapters.map((c) => c.title) }, region);
   const size = requestSize(box, design.ai.requestSize);
   const fallbackSize = box.w >= box.h ? "1536x1024" : "1024x1536";
   const gen = await generateImage({ prompt, size, fallbackSize, projectId: id, signal: req.signal });

@@ -129,7 +129,7 @@ export default function PreviewPane({ projectId, focus, reloadKey, onInfo }: { p
         {loading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-stone-300/70 text-sm text-stone-600">
             <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-stone-600 border-t-transparent" />
-            부크크 A5 규격으로 조판 중…
+            A5 규격으로 조판 중…
           </div>
         )}
         <iframe ref={ref} src={src} title="미리보기" className="h-full w-full border-0" />

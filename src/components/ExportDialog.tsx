@@ -108,7 +108,7 @@ export default function ExportDialog({
           {(
             [
               ["submit", "제출 전 점검"],
-              ["pdf", "PDF (부크크 제출용)"],
+              ["pdf", "PDF (인쇄 제출용)"],
               ["hwpx", "HWPX (한글)"],
               ["backup", "백업"],
             ] as const
@@ -122,7 +122,7 @@ export default function ExportDialog({
           {tab === "submit" && (
             <>
               <p className="text-xs text-stone-500">
-                부크크에 올리기 전에 본문 PDF와 표지를 한 화면에서 확인합니다. 본문 판형·글꼴·쪽수는 마지막으로 만든 <b>책 전체 PDF</b> 기준입니다.
+                인쇄소에 올리기 전에 본문 PDF와 표지를 한 화면에서 확인합니다. 본문 판형·글꼴·쪽수는 마지막으로 만든 <b>책 전체 PDF</b> 기준입니다.
               </p>
               {submitErr && <p className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{submitErr}</p>}
               {!submit && !submitErr && <p className="text-xs text-stone-400">점검 중…</p>}
@@ -154,7 +154,7 @@ export default function ExportDialog({
                     <button className="btn-ghost text-xs" onClick={loadSubmit}>
                       ↻ 다시 점검
                     </button>
-                    <span className="text-[11px] text-stone-400">ISBN 바코드는 부크크가 뒷표지에 넣습니다 — 표지 편집기의 [바코드 자리] 안내선을 켜고 글·사진이 겹치지 않게 두세요.</span>
+                    <span className="text-[11px] text-stone-400">ISBN 바코드는 인쇄소가 뒷표지에 넣습니다 — 표지 편집기의 [바코드 자리] 안내선을 켜고 글·사진이 겹치지 않게 두세요.</span>
                   </div>
                 </>
               )}
@@ -168,7 +168,7 @@ export default function ExportDialog({
                   <input type="radio" className="mt-1" checked={size === "bleed"} onChange={() => setSize("bleed")} />
                   <span>
                     <b>154×216mm</b> — 재단 여백(사방 3mm) 포함 <span className="text-amber-700">권장</span>
-                    <span className="block text-xs text-stone-500">부크크가 사방 3mm를 잘라 148×210mm(A5)로 제작합니다. 원고가 확대되지 않습니다.</span>
+                    <span className="block text-xs text-stone-500">인쇄소가 사방 3mm를 잘라 148×210mm(A5)로 제작합니다. 원고가 확대되지 않습니다.</span>
                   </span>
                 </label>
                 <label className="flex items-start gap-2 py-1">
@@ -238,7 +238,7 @@ export default function ExportDialog({
                   <>, 여백·글자 크기·줄 간격은 이 책의 [책 설정 → 조판] 값을 따릅니다.</>
                 )}
               </p>
-              <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">쪽 나눔은 한글이 다시 계산하므로 PDF와 쪽수가 조금 다를 수 있습니다. 부크크 제출은 PDF를 권장합니다.</p>
+              <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">쪽 나눔은 한글이 다시 계산하므로 PDF와 쪽수가 조금 다를 수 있습니다. 인쇄 제출은 PDF를 권장합니다.</p>
               <button className="btn-accent w-full" disabled={!!busy} onClick={makeHwpx}>
                 {busy ?? "HWPX 다운로드"}
               </button>

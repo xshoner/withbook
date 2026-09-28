@@ -10,6 +10,7 @@ import {
   BOOK_SIZES,
   type BookInfo,
   type BookSize,
+  type Box,
   COVER_BLEED,
   type CoverDesign,
   type CoverEl,
@@ -19,6 +20,7 @@ import {
   type ImageEl,
   PANEL_LABEL,
   PAPERS,
+  PROMPT_MAX,
   type PanelId,
   type Paper,
   REGION_LABEL,
@@ -138,7 +140,42 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   };
 
   const l = useMemo(() => (design ? coverLayout(design) : null), [design]);
-  const issues = useMemo(() => (settled ? coverIssues(settled, { actualPages }) : []), [settled, actualPages]);
+  // 인쇄 점검의 글 자리는 화면에서 잰 실제 글자 자리로 본다 (상자 폭이 아니라 글자가 놓인 곳).
+  // 잰 값은 위치와 상관없고 글·모양이 같을 때만 쓴다(끄는 동안·고친 직후 어긋나지 않게)
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState<Record<string, { sig: string; box: Box }>>({});
+  useEffect(() => {
+    if (frozen || !design) return;
+    let cancelled = false;
+    const run = () => {
+      const root = sheetRef.current;
+      if (!root || cancelled) return;
+      const pxPerMm = root.getBoundingClientRect().width / coverLayout(design).sheetW;
+      const next: Record<string, { sig: string; box: Box }> = {};
+      for (const el of design.elements) {
+        if (el.kind !== "text" || !el.text.trim()) continue;
+        const node = root.querySelector<HTMLElement>(`[data-el="${CSS.escape(el.id)}"]`);
+        const box = node ? inkBoxOf(node, pxPerMm) : null;
+        if (box) next[el.id] = { sig: inkSig(el), box };
+      }
+      setMeasured((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    const raf = requestAnimationFrame(run);
+    document.fonts?.ready.then(() => !cancelled && requestAnimationFrame(run));
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [design, frozen, zoom, fitZoom]);
+  const issues = useMemo(() => {
+    if (!settled) return [];
+    const m: Record<string, Box> = {};
+    for (const el of settled.elements) {
+      const hit = el.kind === "text" ? measured[el.id] : undefined;
+      if (hit && hit.sig === inkSig(el)) m[el.id] = hit.box;
+    }
+    return coverIssues(settled, { actualPages, measured: m });
+  }, [settled, actualPages, measured]);
   const selected = design?.elements.find((e) => e.id === sel) ?? null;
 
   // 화면에 맞춤 확대율
@@ -418,6 +455,16 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   );
   // 프롬프트 미리보기는 요소를 끄는 동안 다시 만들지 않는다
   const promptText = useMemo(() => (settled && book ? buildImagePrompt(settled, book, region) : ""), [settled, book, region]);
+  /** 이 영역에서 작가가 직접 고친 프롬프트 (없으면 null = 자동) */
+  const ownPrompt = design?.ai.prompts?.[region] ?? null;
+  const setOwnPrompt = (text: string | null) =>
+    update((d) => {
+      const prompts = { ...d.ai.prompts };
+      // 자동 프롬프트와 같아지거나 비우면 자동으로 돌아간다
+      if (text == null || !text.trim() || text === promptText) delete prompts[region];
+      else prompts[region] = text.slice(0, PROMPT_MAX);
+      return { ...d, ai: { ...d.ai, prompts } };
+    }, `ai.prompt.${region}`);
 
   // 영역을 바꾸면 지정한 부분은 버린다
   useEffect(() => {
@@ -805,10 +852,28 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     />
                     <span className="font-mono text-stone-500">→ {requestSize(rbox, design.ai.requestSize)}</span>
                   </div>
-                  <pre className="h-56 overflow-auto whitespace-pre-wrap rounded border border-stone-200 bg-stone-50 p-2 text-[11px] leading-4 text-stone-600">
-                    {`[요청 크기] ${requestSize(rbox, design.ai.requestSize)}${design.ai.requestSize === "auto" ? " (auto: 영역 비율에 맞춘 최대 크기)" : ""} · 거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxAt300(rbox.w)}×${pxAt300(rbox.h)}px(300 DPI)로 저장\n\n${promptText}`}
-                  </pre>
-                  <p className="mt-1 text-[11px] text-stone-500">디자이너 역할 지시·책 정보·펼침면 배치는 자동으로 들어갑니다. 아래 추가 지시와 체크를 바꾸면 바로 반영됩니다.</p>
+                  <p className="mb-1 text-[11px] leading-4 text-stone-500">
+                    {`${design.ai.requestSize === "auto" ? "auto: 영역 비율에 맞춘 최대 크기 · " : ""}거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxAt300(rbox.w)}×${pxAt300(rbox.h)}px(300 DPI)로 저장`}
+                  </p>
+                  <textarea
+                    className={`input h-56 resize-y font-mono text-[11px] leading-4 ${ownPrompt ? "border-amber-400 bg-amber-50/40 text-stone-800" : "bg-stone-50 text-stone-600"}`}
+                    spellCheck={false}
+                    value={ownPrompt ?? promptText}
+                    onChange={(e) => setOwnPrompt(e.target.value)}
+                    aria-label="프롬프트 안 (직접 고칠 수 있음)"
+                  />
+                  <div className="mt-1 flex items-start justify-between gap-2 text-[11px]">
+                    <p className="text-stone-500">
+                      {ownPrompt
+                        ? "직접 고친 프롬프트를 그대로 보냅니다. 추가 지시·체크·배치를 바꿔도 이 글은 바뀌지 않습니다."
+                        : "디자이너 역할 지시·책 정보·펼침면 배치가 자동으로 들어갑니다. 여기서 바로 고쳐 쓸 수 있고, 아래 추가 지시와 체크는 바로 반영됩니다."}
+                    </p>
+                    {ownPrompt && (
+                      <button className="btn-ghost shrink-0 px-1.5 py-0.5 text-[11px]" onClick={() => setOwnPrompt(null)} title="직접 고친 내용을 버리고 자동 프롬프트로 돌아갑니다">
+                        자동으로 되돌리기
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="label">추가 지시 (이 책에서 강조할 것)</label>
@@ -1008,7 +1073,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         >
           <div className="flex min-h-full w-max min-w-full p-6" onPointerDown={(e) => e.target === e.currentTarget && setSel(null)}>
             <div className="relative shadow-xl" style={{ width: l.sheetW * PX_PER_MM * z, height: l.sheetH * PX_PER_MM * z, flex: "none", margin: "auto" }}>
-              <div style={{ position: "relative", width: `${l.sheetW}mm`, height: `${l.sheetH}mm`, transform: `scale(${z})`, transformOrigin: "0 0", ["--z" as string]: z } as React.CSSProperties}>
+              <div ref={sheetRef} style={{ position: "relative", width: `${l.sheetW}mm`, height: `${l.sheetH}mm`, transform: `scale(${z})`, transformOrigin: "0 0", ["--z" as string]: z } as React.CSSProperties}>
                 <CoverSheet
                   design={design}
                   assetSrc={src}
@@ -1098,6 +1163,32 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
 /* ---------------- 작은 부품 ---------------- */
 
 /** 요소의 가로 폭(mm) — 세로쓰기 글은 줄 두께 × 줄 수 */
+/** 글 모양 서명 — 이 값이 같으면 화면에서 잰 글자 자리를 그대로 쓸 수 있다 */
+function inkSig(el: CoverEl) {
+  return el.kind === "text" ? [el.text, el.w, el.sizePt, el.font, el.lineHeight, el.letterSpacing, el.align, el.vertical, el.bold, el.italic].join("|") : "";
+}
+
+/** 글 상자 안에서 글자가 실제로 그려진 자리 (상자 왼쪽 위 기준 mm) — 크기 조절 손잡이 등 글이 아닌 것은 뺀다 */
+function inkBoxOf(node: HTMLElement, pxPerMm: number): Box | null {
+  const base = node.getBoundingClientRect();
+  const range = document.createRange();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType !== Node.TEXT_NODE || !child.textContent?.trim()) continue;
+    range.selectNodeContents(child);
+    for (const r of Array.from(range.getClientRects())) {
+      if (r.width === 0 && r.height === 0) continue;
+      x0 = Math.min(x0, r.left);
+      y0 = Math.min(y0, r.top);
+      x1 = Math.max(x1, r.right);
+      y1 = Math.max(y1, r.bottom);
+    }
+  }
+  if (!Number.isFinite(x0) || pxPerMm <= 0) return null;
+  const mm = (v: number) => Math.round((v / pxPerMm) * 100) / 100;
+  return { x: mm(x0 - base.left), y: mm(y0 - base.top), w: mm(x1 - x0), h: mm(y1 - y0) };
+}
+
 function boxWidth(el: CoverEl) {
   if (el.kind === "image") return el.w;
   if (!el.vertical) return el.w;

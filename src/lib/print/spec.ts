@@ -60,7 +60,7 @@ export function validateMargins(m: Margins): string[] {
   };
   (Object.keys(SAFE_MIN_FROM_TRIM) as (keyof typeof SAFE_MIN_FROM_TRIM)[]).forEach((k) => {
     if (fromTrim[k] < SAFE_MIN_FROM_TRIM[k]) {
-      errors.push(`${label(k)} 여백이 재단선 기준 ${fromTrim[k]}mm로 부크크 최소 ${SAFE_MIN_FROM_TRIM[k]}mm보다 작습니다.`);
+      errors.push(`${label(k)} 여백이 재단선 기준 ${fromTrim[k]}mm로 최소 ${SAFE_MIN_FROM_TRIM[k]}mm보다 작습니다.`);
     }
   });
   return errors;

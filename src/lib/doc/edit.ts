@@ -381,3 +381,16 @@ export function trimIncompleteTail(doc: JNode): JNode {
   }
   return mapTextblocks(doc, (block, idx) => (idx === last ? replaceRange(block, cut, text.length, "") : block));
 }
+
+/**
+ * 장 퇴고 되돌리기(한 절).
+ * - restoreTo가 있으면(퇴고 직후 원고 그대로일 때) 퇴고 전 원고로 통째로 되돌린다.
+ * - 없으면(그 뒤 고친 절) 퇴고로 바뀐 글(after)만 원래 글(before)로 거꾸로 바꾼다 — 나중에 고친 곳은 지킨다.
+ *   통째로 지운 글(after 없음)은 되찾을 자리가 없어 건너뛴다(failed로 센다).
+ */
+export function undoBlockChanges(doc: JNode, changes: BlockChange[], restoreTo: JNode | null): { doc: JNode | null; restored: boolean; reverted: number; failed: number } {
+  if (restoreTo) return { doc: restoreTo, restored: true, reverted: changes.length, failed: 0 };
+  const back = changes.filter((c) => c.after).map((c) => ({ paragraph: c.paragraph, before: c.after, after: c.before }));
+  const r = applyBlockChanges(doc, back);
+  return { doc: r.applied.length ? r.doc : null, restored: false, reverted: r.applied.length, failed: changes.length - r.applied.length };
+}

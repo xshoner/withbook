@@ -2,11 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/client";
+import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
 import { sectionBusyWith } from "./jobStore";
+import ReviseRunView, { REVISE_TYPE, type ReviseRun } from "./ReviseRunView";
 
 type Change = { sectionId: string; sectionLabel: string; sectionTitle: string; paragraph: number; before: string; after: string; type: string; reason: string };
 
-const TYPE: Record<string, string> = { duplicate: "중복", transition: "연결", flow: "흐름", consistency: "통일" };
+/** 적용 요청에 싣는 값 — 원고를 바꾸는 값과 퇴고 기록에 남길 값(종류·이유·절 이름) */
+const toApply = ({ sectionId, paragraph, before, after, type, reason, sectionLabel, sectionTitle }: Change) => ({ sectionId, paragraph, before, after, type, reason, sectionLabel, sectionTitle });
 
 /** 전체 장 퇴고에 쓰는 장 목록 (책 순서) — sectionIds: AI 집필·교정 중인 절이 있는 장은 건너뛴다 */
 export type ReviseChapter = { id: string; name: string; sectionIds?: string[] };
@@ -48,6 +51,36 @@ export default function ChapterReviseDialog({
   const stopRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const running = !!busy || allRunning;
+  // 퇴고 이력 — 이 장에 적용한 퇴고를 절 구분 없이 한눈에, 되돌리기
+  const [history, setHistory] = useState<ReviseRun[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [histErr, setHistErr] = useState("");
+  const loadHistory = async () => {
+    try {
+      setHistory(await api<ReviseRun[]>(`/api/chapters/${chapterId}/revise/history`));
+      setHistErr("");
+    } catch (e: any) {
+      setHistErr(e?.message ?? String(e));
+    }
+  };
+  const showHistory = () => {
+    setHistoryOpen(true);
+    void loadHistory();
+  };
+  const undoRun = async (run: ReviseRun) => {
+    if (!(await confirmDialog(`이 퇴고(${run.total}곳)를 되돌릴까요? 그 뒤 고친 절은 퇴고로 바뀐 문장만 되돌리고 나중에 고친 곳은 그대로 둡니다.`, { okLabel: "되돌리기" }))) return;
+    try {
+      if (!(await beforeRun())) throw new Error("원고 저장을 완료한 뒤 다시 시도하세요.");
+      const busyNow = busyIn(chapters.find((c) => c.id === run.chapterId)?.sectionIds);
+      if (busyNow) throw new Error(`이 장에서 ${busyNow} 중인 절이 있습니다. 끝난 뒤에 되돌리세요.`);
+      const r = await api<{ sections: string[]; reverted: number; failed: number }>(`/api/chapters/${run.chapterId}/revise/undo`, { method: "POST", json: { runId: run.runId } });
+      if (r.sections.length) onApplied(r.sections);
+      toast.success(`되돌렸습니다 — ${r.reverted}곳${r.failed ? ` (원고가 달라 ${r.failed}곳은 그대로 둠)` : ""}.`);
+      void loadHistory();
+    } catch (e) {
+      toastError(e, "되돌리지 못했습니다: ");
+    }
+  };
 
   useEffect(() => {
     if (!allRunning) return;
@@ -95,8 +128,8 @@ export default function ChapterReviseDialog({
             continue;
           }
           set(row.id, { state: "apply" });
-          const changes = r.changes.map(({ sectionId, paragraph, before, after }) => ({ sectionId, paragraph, before, after }));
-          const a = await api<{ applied: number; failed: number; sections: string[] }>(`/api/chapters/${row.id}/revise/apply`, { method: "POST", json: { changes }, signal: ctrl.signal });
+          const changes = r.changes.map(toApply);
+          const a = await api<{ applied: number; failed: number; sections: string[] }>(`/api/chapters/${row.id}/revise/apply`, { method: "POST", json: { changes, chapterName: row.name, focus }, signal: ctrl.signal });
           if (a.sections.length) onApplied(a.sections);
           total += a.applied;
           set(row.id, { state: "done", note: `${a.applied}개 적용${a.failed ? ` · ${a.failed}개는 원고가 달라 건너뜀` : ""}` });
@@ -148,11 +181,12 @@ export default function ChapterReviseDialog({
       if (!(await beforeRun())) throw new Error("원고 저장을 완료한 뒤 다시 시도하세요.");
       const busyNow = busyIn(chapters.find((c) => c.id === chapterId)?.sectionIds);
       if (busyNow) throw new Error(`이 장에서 ${busyNow} 중인 절이 있습니다. 끝난 뒤에 적용하세요.`);
-      const changes = plan.changes.filter((_, i) => picked.has(i)).map(({ sectionId, paragraph, before, after }) => ({ sectionId, paragraph, before, after }));
-      const r = await api<{ applied: number; failed: number; sections: string[] }>(`/api/chapters/${chapterId}/revise/apply`, { method: "POST", json: { changes } });
+      const changes = plan.changes.filter((_, i) => picked.has(i)).map(toApply);
+      const r = await api<{ applied: number; failed: number; sections: string[] }>(`/api/chapters/${chapterId}/revise/apply`, { method: "POST", json: { changes, chapterName, focus } });
       onApplied(r.sections);
-      setMsg(`${r.applied}개를 적용했습니다${r.failed ? ` (${r.failed}개는 원고가 달라 건너뜀)` : ""}. 절마다 적용 전 원고가 버전 기록(장 퇴고 전)에 있습니다.`);
+      setMsg(`${r.applied}개를 적용했습니다${r.failed ? ` (${r.failed}개는 원고가 달라 건너뜀)` : ""}. 바뀐 곳 전체는 [퇴고 이력]에서, 절마다 적용 전 원고는 버전 기록(장 퇴고 전)에서 볼 수 있습니다.`);
       setPlan(null);
+      showHistory();
     } catch (e: any) {
       setMsg(e.message);
     } finally {
@@ -164,10 +198,20 @@ export default function ChapterReviseDialog({
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 p-6" onMouseDown={(e) => e.target === e.currentTarget && !running && onClose()}>
       <div className="flex max-h-[88vh] w-full max-w-3xl flex-col rounded-xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
-          <h2 className="font-semibold">장 단위 퇴고 — {rows && !plan ? "전체 장" : chapterName}</h2>
-          <button className="btn-ghost" disabled={running} onClick={onClose}>
-            ✕
-          </button>
+          <h2 className="font-semibold">장 단위 퇴고 — {rows && !plan && !historyOpen ? "전체 장" : chapterName}</h2>
+          <div className="flex items-center gap-1">
+            <button
+              className={`btn-ghost text-xs ${historyOpen ? "bg-stone-100 font-semibold" : ""}`}
+              disabled={running}
+              onClick={() => (historyOpen ? setHistoryOpen(false) : showHistory())}
+              title="이 장에 적용한 퇴고 — 여러 절에서 바뀐 곳을 한 번에 보고 되돌립니다"
+            >
+              {historyOpen ? "← 퇴고로 돌아가기" : "퇴고 이력"}
+            </button>
+            <button className="btn-ghost" disabled={running} onClick={onClose}>
+              ✕
+            </button>
+          </div>
         </div>
         <div className="space-y-2 border-b border-stone-200 p-4">
           <p className="text-xs leading-5 text-stone-600">
@@ -192,7 +236,27 @@ export default function ChapterReviseDialog({
           {msg && <p className="text-sm text-amber-800">{msg}</p>}
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-4 text-sm">
-          {rows && !plan && (
+          {historyOpen && (
+            <div className="space-y-3">
+              {histErr && (
+                <p className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">
+                  퇴고 이력을 불러오지 못했습니다: {histErr}{" "}
+                  <button className="underline" onClick={loadHistory}>
+                    다시
+                  </button>
+                </p>
+              )}
+              {history === null && !histErr && <p className="py-6 text-center text-xs text-stone-400">불러오는 중…</p>}
+              {history?.length === 0 && <p className="py-6 text-center text-xs text-stone-500">이 장에 적용한 퇴고가 아직 없습니다. (이 기능 전에 적용한 퇴고는 절마다 버전 기록에만 있습니다)</p>}
+              {history?.map((run) => (
+                <div key={run.runId} className="rounded-xl border border-stone-200 p-3">
+                  <ReviseRunView run={run} onUndo={running ? undefined : undoRun} compact />
+                </div>
+              ))}
+              {history && history.length > 0 && <p className="text-[11px] text-stone-400">최근 20번 · 30일 보관</p>}
+            </div>
+          )}
+          {!historyOpen && rows && !plan && (
             <>
               <ol className="space-y-1">
                 {rows.map((r) => (
@@ -220,7 +284,7 @@ export default function ChapterReviseDialog({
               )}
             </>
           )}
-          {plan && (
+          {!historyOpen && plan && (
             <>
               {plan.overview && <p className="mb-3 rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-700">{plan.overview}</p>}
               {!plan.changes.length && <p className="py-6 text-center text-stone-500">고칠 곳을 찾지 못했습니다.</p>}
@@ -238,7 +302,7 @@ export default function ChapterReviseDialog({
                           setPicked(n);
                         }}
                       />
-                      <span className="rounded bg-stone-200 px-1.5 text-[10px]">{TYPE[c.type] ?? c.type}</span>
+                      <span className="rounded bg-stone-200 px-1.5 text-[10px]">{REVISE_TYPE[c.type] ?? c.type}</span>
                       <span className="font-semibold text-stone-700">
                         {c.sectionLabel} {c.sectionTitle}
                       </span>
@@ -256,7 +320,7 @@ export default function ChapterReviseDialog({
             </>
           )}
         </div>
-        {plan && plan.changes.length > 0 && (
+        {!historyOpen && plan && plan.changes.length > 0 && (
           <div className="flex items-center gap-2 border-t border-stone-200 px-4 py-3">
             <button className="btn-ghost text-xs" onClick={() => setPicked(new Set(plan.changes.map((_, i) => i)))}>
               모두 고르기

@@ -248,9 +248,9 @@ function LayoutTab({ p, reload, flash }: { p: any; reload: () => Promise<unknown
   return (
     <div className="space-y-6">
       <div className="card space-y-4 p-6">
-        <h2 className="font-semibold">판형 · 여백 (부크크 A5)</h2>
+        <h2 className="font-semibold">판형 · 여백 (A5)</h2>
         <p className="text-sm text-stone-500">
-          문서 154×216mm (완성 148×210mm + 재단 여백 사방 {BLEED}mm). 여백은 문서 가장자리 기준이며 기본값은 부크크 A5 한글 서식과 같습니다. 부크크 최소 안전 영역(재단선 기준 위·아래·바깥{" "}
+          문서 154×216mm (완성 148×210mm + 재단 여백 사방 {BLEED}mm). 여백은 문서 가장자리 기준이며 기본값은 A5 한글 서식과 같습니다. 최소 안전 영역(재단선 기준 위·아래·바깥{" "}
           {SAFE_MIN_FROM_TRIM.top}mm, 안쪽 {SAFE_MIN_FROM_TRIM.inner}mm)보다 좁게는 저장되지 않습니다.
         </p>
         <div className="grid grid-cols-3 gap-4">
@@ -338,7 +338,7 @@ function LayoutTab({ p, reload, flash }: { p: any; reload: () => Promise<unknown
             <input className="input" value={cp.notice} onChange={(e) => setC("notice", e.target.value)} />
           </div>
         </div>
-        <p className="text-xs text-stone-500">지은이와 책 제목은 책 정보에서 가져옵니다. 기본값은 부크크 판권면 양식입니다.</p>
+        <p className="text-xs text-stone-500">지은이와 책 제목은 책 정보에서 가져옵니다. 기본값은 일반 판권면 양식입니다.</p>
       </div>
       {err && <p className="whitespace-pre-wrap rounded bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>}
       <div className="flex justify-end">

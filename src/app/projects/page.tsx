@@ -19,9 +19,20 @@ type P = {
   pagesExact?: boolean;
   sections: number;
   written: number;
+  createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
 };
+
+type Sort = "updated" | "created" | "createdAsc" | "title";
+const SORTS: [Sort, string][] = [
+  ["updated", "최근 수정순"],
+  ["created", "최근 생성순"],
+  ["createdAsc", "오래된 생성순"],
+  ["title", "제목순"],
+];
+const SORT_KEY = "withbook:projects-sort";
+const time = (s: string) => new Date(s).getTime() || 0;
 
 export default function ProjectList() {
   const router = useRouter();
@@ -30,6 +41,20 @@ export default function ProjectList() {
   const [showTrash, setShowTrash] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [loadErr, setLoadErr] = useState("");
+  const [query, setQuery] = useState("");
+  const [sort, setSortState] = useState<Sort>("updated");
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem(SORT_KEY) as Sort | null;
+      if (s && SORTS.some(([k]) => k === s)) setSortState(s);
+    } catch {}
+  }, []);
+  const setSort = (s: Sort) => {
+    setSortState(s);
+    try {
+      localStorage.setItem(SORT_KEY, s);
+    } catch {}
+  };
   const load = () => api<P[]>("/api/projects").then((r) => {
     setList(r);
     setLoadErr("");
@@ -39,7 +64,19 @@ export default function ProjectList() {
     api("/api/style/global").then(setStyle).catch(() => {});
   }, []);
 
-  const active = list?.filter((p) => !p.deletedAt) ?? [];
+  const allActive = list?.filter((p) => !p.deletedAt) ?? [];
+  const q = query.trim().toLowerCase();
+  const active = allActive
+    .filter((p) => !q || [p.title, p.subtitle, p.author].some((t) => t?.toLowerCase().includes(q)))
+    .toSorted((a, b) =>
+      sort === "title"
+        ? a.title.localeCompare(b.title, "ko")
+        : sort === "created"
+          ? time(b.createdAt) - time(a.createdAt)
+          : sort === "createdAsc"
+            ? time(a.createdAt) - time(b.createdAt)
+            : time(b.updatedAt) - time(a.updatedAt),
+    );
   const trash = list?.filter((p) => p.deletedAt) ?? [];
 
   const act = async (p: P, kind: "dup" | "del" | "restore" | "purge") => {
@@ -75,7 +112,7 @@ export default function ProjectList() {
           <h1 className="font-bookhead text-3xl text-stone-900">
             with<span className="text-amber-700">book</span>
           </h1>
-          <p className="mt-1 text-sm text-stone-500">책 선택 · 스케치를 작가의 문체로, 부크크 A5 규격 그대로</p>
+          <p className="mt-1 text-sm text-stone-500">책 선택 · 스케치를 작가의 문체로, A5 인쇄 규격 그대로</p>
         </div>
         <div className="flex gap-2">
           <Link href="/settings" className="btn">
@@ -126,7 +163,7 @@ export default function ProjectList() {
         ) : (
           <p className="text-stone-400">불러오는 중…</p>
         )
-      ) : active.length === 0 ? (
+      ) : allActive.length === 0 ? (
         <div className="card flex flex-col items-center gap-3 px-6 py-16 text-center">
           <p className="font-bookhead text-xl">첫 책을 시작해 볼까요?</p>
           <p className="text-sm text-stone-500">책 정보를 입력하면 AI가 목차를 설계해 보고합니다. 써 둔 원고가 있으면 가져와서 시작할 수도 있습니다.</p>
@@ -140,6 +177,21 @@ export default function ProjectList() {
           </div>
         </div>
       ) : (
+        <>
+        {allActive.length > 1 && (
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <input className="input w-60 py-1.5 text-sm" placeholder="제목·부제·지은이로 찾기" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="책 찾기" />
+            <select className="input w-auto py-1.5 text-sm" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="정렬">
+              {SORTS.map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs text-stone-400">{q ? `${active.length} / ${allActive.length}권` : `${allActive.length}권`}</span>
+          </div>
+        )}
+        {active.length === 0 && <p className="py-8 text-center text-sm text-stone-500">「{query}」에 맞는 책이 없습니다.</p>}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {active.map((p) => {
             const pct = p.sections ? Math.round((p.written / p.sections) * 100) : 0;
@@ -163,7 +215,10 @@ export default function ProjectList() {
                   </div>
                 </Link>
                 <div className="mt-4 flex items-center justify-between border-t border-stone-100 pt-3 text-xs text-stone-400">
-                  <span>{fmtDate(p.updatedAt)}</span>
+                  <span className="leading-4">
+                    <span className="block" title="마지막으로 고친 때">수정 {fmtDate(p.updatedAt)}</span>
+                    <span className="block text-stone-400/80" title="책을 처음 만든 때">생성 {fmtDate(p.createdAt)}</span>
+                  </span>
                   <span className="flex gap-1 opacity-0 transition group-hover:opacity-100">
                     <button className="btn-ghost text-xs" onClick={() => act(p, "dup")}>
                       복제
@@ -177,6 +232,7 @@ export default function ProjectList() {
             );
           })}
         </div>
+        </>
       )}
 
       {trash.length > 0 && (

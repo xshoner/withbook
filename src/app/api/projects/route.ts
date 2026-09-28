@@ -16,7 +16,7 @@ export const GET = handle(async () => {
   const [projects, chapters, all, written, measured] = await Promise.all([
     prisma.project.findMany({
       orderBy: { updatedAt: "desc" },
-      select: { id: true, title: true, subtitle: true, author: true, targetPages: true, charsPerPage: true, updatedAt: true, deletedAt: true },
+      select: { id: true, title: true, subtitle: true, author: true, targetPages: true, charsPerPage: true, createdAt: true, updatedAt: true, deletedAt: true },
     }),
     prisma.chapter.findMany({ select: { id: true, projectId: true } }),
     prisma.section.groupBy({ by: ["chapterId"], _sum: { charCount: true }, _count: { _all: true }, _max: { updatedAt: true } }),
@@ -59,6 +59,7 @@ export const GET = handle(async () => {
         pagesExact: pages.exact,
         sections: st.sections,
         written: st.written,
+        createdAt: p.createdAt,
         updatedAt: st.last && st.last > p.updatedAt ? st.last : p.updatedAt,
         deletedAt: p.deletedAt,
       };

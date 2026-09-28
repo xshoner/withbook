@@ -4,6 +4,7 @@ import { purgeTrash } from "./trash";
 import { purgePartials } from "./ai/partial";
 import { purgeOldObjects } from "./storage";
 import { clearProjectSettings } from "./project-cleanup";
+import { purgeReviseLogs } from "./revise-log";
 
 /** 마지막으로 정리한 날(YYYY-MM-DD) — 서버리스 인스턴스가 여러 개여도 하루 한 번만 돌게 DB에 둔다 */
 export const MAINTENANCE_KEY = "maintenance:last";
@@ -27,7 +28,7 @@ const DAY = 24 * 3600 * 1000;
 /**
  * 하루 한 번 정리 — 책 목록 응답을 보낸 뒤(after) 돈다.
  * - 휴지통에서 30일이 지난 프로젝트(표지 디자인·실제 쪽수 기록 포함), 지운 장·절(30일)
- * - 개요 캐시(1일), AI 집필 부분 원고(7일), 끊긴 목차 설계 표시(1일), 확정하지 않은 원고 가져오기(1일)
+ * - 개요 캐시(1일), AI 집필 부분 원고(7일), 장 퇴고 기록(30일), 끊긴 목차 설계 표시(1일), 확정하지 않은 원고 가져오기(1일)
  * - 내보내기(exports)·업로드 대기(incoming) 버킷의 하루 지난 파일
  * (DB 자체 백업은 Supabase가 맡는다. 프로젝트 단위 백업은 [내보내기 → 백업 ZIP])
  */
@@ -65,6 +66,7 @@ export async function dailyMaintenance() {
     prisma.appSetting.deleteMany({ where: { key: { startsWith: "ai:outline-cache:" }, updatedAt: { lt: new Date(Date.now() - DAY) } } }),
   );
   await step("AI 부분 원고", () => purgePartials());
+  await step("장 퇴고 기록", () => purgeReviseLogs(30));
   await step("원고 가져오기 대기", () =>
     prisma.appSetting.deleteMany({ where: { key: { startsWith: "manuscript-import:" }, updatedAt: { lt: new Date(Date.now() - DAY) } } }),
   );
