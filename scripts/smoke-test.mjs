@@ -68,11 +68,11 @@ try {
   // 도구줄의 [찾기] 묶음 (이 절에서 찾기·바꾸기)
   const find = page.getByLabel('찾기', { exact: true });
   await find.fill('확인 필요');
-  await page.getByRole('button', { name: '다음', exact: true }).click();
+  await page.getByRole('button', { name: '다음 찾기', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '1 / 1개' }).waitFor();
   await page.getByRole('button', { name: /^바꾸기/ }).click();
   await page.getByPlaceholder('바꿀 말').fill('확인함');
-  await page.getByRole('button', { name: '이 절 모두', exact: true }).click();
+  await page.getByRole('button', { name: '모두', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '1곳을 바꿨습니다.' }).waitFor();
   await waitContent(one.id, '[확인함]');
   await find.fill('');
