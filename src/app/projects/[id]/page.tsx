@@ -322,6 +322,7 @@ export default function Workspace() {
   }, [cur, info]);
   const editorServerEdited = useCallback(() => onServerEdited(), [onServerEdited]);
   const onBookSearch = useCallback((q: string) => setDialog({ kind: "search", q }), []);
+  const onOpenChecks = useCallback(() => setDialog({ kind: "checks" }), []);
   const onMeta = useCallback((p: Partial<TreeSection>) => curRef.current && patchSection(curRef.current.s.id, p), [patchSection]);
   const onLayout = useCallback(
     (patch: Partial<LayoutSettings>) => {
@@ -422,13 +423,6 @@ export default function Workspace() {
             미리보기
           </button>
         </div>
-        <button
-          className={`btn ${checkCount ? "border-red-300 text-red-100" : ""}`}
-          onClick={() => setDialog({ kind: "checks" })}
-          title="AI가 남긴 [확인 필요]·[이미지 제안] 표시를 모아 처리합니다"
-        >
-          확인할 것{checkCount ? ` ${checkCount}` : ""}
-        </button>
         {/* 책을 내는 데 쓰는 것 — 표지·내보내기를 한 메뉴로 */}
         <Menu label="출간 ▾" align="right" buttonClass="btn" title="표지 디자인 · PDF/HWPX 내보내기">
           <button className="block w-56 px-3 py-2 text-left text-sm text-stone-800 hover:bg-stone-100" onClick={() => window.open(`/projects/${id}/cover`, `cover-${id}`)}>
@@ -485,6 +479,8 @@ export default function Workspace() {
             locate={locate?.sid === cur.s.id ? locate : null}
             onServerEdited={editorServerEdited}
             onBookSearch={onBookSearch}
+            checkCount={checkCount ?? 0}
+            onOpenChecks={onOpenChecks}
             project={tree}
             chapter={cur.c}
             section={cur.s}
@@ -547,7 +543,7 @@ export default function Workspace() {
         }}
         onEdited={onServerEdited}
       />
-      {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} onOpenChecks={() => setDialog({ kind: "checks" })} />}
+      {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} onOpenChecks={onOpenChecks} />}
     </div>
   );
 }

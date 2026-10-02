@@ -96,6 +96,9 @@ type Props = {
   onServerEdited: () => void;
   /** 책 전체 찾기 창 열기 */
   onBookSearch: (query: string) => void;
+  /** 팩트체크(확인할 것) — 책 전체에 남은 개수와 창 열기 */
+  checkCount: number;
+  onOpenChecks: () => void;
   /** 이 위치로 이동해 선택 (확인 표시·검색 결과에서) — nonce가 바뀔 때마다 */
   locate?: { paragraph: number; text: string; nonce: number } | null;
 };
@@ -134,7 +137,7 @@ function SectionEditor(props: Props) {
   return <EditorCore {...props} data={data} />;
 }
 
-function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBase = 0, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onLayout, onServerEdited, onBookSearch, locate, data }: Props & { data: Loaded }) {
+function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBase = 0, onMeta, onSaved, onRename, onRenameChapter, onTargetPages, onLayout, onServerEdited, onBookSearch, checkCount, onOpenChecks, locate, data }: Props & { data: Loaded }) {
   const cpp = project.charsPerPage || 700;
   const [sketch, setSketch] = useState(data.sketch);
   const [sketchOpen, setSketchOpen] = useState(!data.content || isDocEmpty(parseDoc(data.content)));
@@ -1295,10 +1298,38 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
               ■ 중지
             </button>
           ) : (
-            <div className="relative">
-              <button className="btn-accent" onClick={onWriteClick} disabled={!canEdit} title={busyReason || undefined}>
+            <div className="relative flex">
+              <button className="btn-accent rounded-r-none!" onClick={onWriteClick} disabled={!canEdit} title={busyReason || undefined}>
                 ✎ AI 집필하기
               </button>
+              {/* PRO — 여러 절을 한꺼번에 다루는 큰 작업 (자동 집필·장 퇴고) */}
+              <Menu label="▾" align="right" buttonClass="btn-accent h-full rounded-l-none! border-l border-amber-900/30 px-2!" title="PRO — 자동 집필 · 장 퇴고">
+                <div className="px-3 pb-1 pt-1.5 text-[10px] font-bold tracking-wider text-violet-700">PRO</div>
+                <button
+                  className="block w-64 px-3 py-2 text-left text-sm hover:bg-violet-50 disabled:opacity-40"
+                  disabled={autoDriving || !canEdit}
+                  title={autoDriving ? "자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : busyReason || undefined}
+                  onClick={() => {
+                    setModeAsk(false);
+                    setAutoOpen(true);
+                  }}
+                >
+                  ⚡ 자동 집필
+                  <span className="block text-xs text-stone-500">여러 절·장·책 전체를 AI가 차례로 집필 → 사실 확인 → 교정</span>
+                </button>
+                <button
+                  className="block w-64 px-3 py-2 text-left text-sm hover:bg-violet-50 disabled:opacity-40"
+                  disabled={!canEdit || chapterWriting || chapterProofing}
+                  title={chapterWriting ? "이 장에서 AI가 쓰는 절이 있습니다 — 끝난 뒤에 하세요" : chapterProofing ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 하세요" : busyReason || undefined}
+                  onClick={async () => {
+                    if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
+                    setReviseOpen(true);
+                  }}
+                >
+                  ↻ 장 퇴고
+                  <span className="block text-xs text-stone-500">이 장의 절들을 함께 읽고 겹치는 내용·흐름을 고칩니다</span>
+                </button>
+              </Menu>
               {modeAsk && (
                 <div className="absolute right-0 top-10 z-30 w-60 rounded-lg border border-stone-200 bg-white p-2 shadow-xl">
                   <p className="px-2 py-1 text-xs text-stone-500">이미 본문이 있습니다. 어떻게 쓸까요?</p>
@@ -1326,35 +1357,12 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
           >
             {proofBusy ? "교정 중…" : "교정·교열"}
           </button>
-          {/* 여러 절을 한꺼번에 다루는 큰 작업은 PRO 한 곳에 모은다 */}
-          <Menu label="PRO ▾" align="right" tone="text-violet-800" title="여러 절을 한꺼번에 쓰고 다듬는 고급 기능">
-            <button
-              className="block w-64 px-3 py-2 text-left text-sm hover:bg-violet-50 disabled:opacity-40"
-              disabled={autoDriving || !canEdit}
-              title={autoDriving ? "자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : busyReason || undefined}
-              onClick={() => {
-                setModeAsk(false);
-                setAutoOpen(true);
-              }}
-            >
-              ⚡ 자동 집필
-              <span className="block text-xs text-stone-500">여러 절·장·책 전체를 AI가 차례로 집필 → 사실 확인 → 교정</span>
-            </button>
-            <button
-              className="block w-64 px-3 py-2 text-left text-sm hover:bg-violet-50 disabled:opacity-40"
-              disabled={!canEdit || chapterWriting || chapterProofing}
-              title={chapterWriting ? "이 장에서 AI가 쓰는 절이 있습니다 — 끝난 뒤에 하세요" : chapterProofing ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 하세요" : busyReason || undefined}
-              onClick={async () => {
-                if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
-                setReviseOpen(true);
-              }}
-            >
-              ↻ 장 퇴고
-              <span className="block text-xs text-stone-500">이 장의 절들을 함께 읽고 겹치는 내용·흐름을 고칩니다</span>
-            </button>
-          </Menu>
-          <button className="btn-ghost px-2 text-xs" onClick={() => setPanelOpen(!panelOpen)} title="오른쪽 패널 열기/닫기" aria-label="오른쪽 패널 열기/닫기">
-            {panelOpen ? "패널 ▸" : "◂ 패널"}
+          <button
+            className={`btn ${checkCount ? "border-red-300 text-red-700" : ""}`}
+            onClick={onOpenChecks}
+            title="AI가 남긴 [확인 필요]·[이미지 제안] 표시를 책 전체에서 모아 확인합니다"
+          >
+            팩트체크{checkCount ? ` ${checkCount}` : ""}
           </button>
         </div>
 
@@ -1608,6 +1616,17 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
       </div>
 
       {/* 오른쪽 보조 패널 */}
+      {/* 패널을 닫았을 때 — 오른쪽 끝의 좁은 띠를 누르면 다시 연다 */}
+      {!panelOpen && (
+        <button
+          className="flex w-7 shrink-0 flex-col items-center gap-1 border-l border-stone-300 bg-stone-100 pt-3 text-xs text-stone-500 hover:bg-stone-200 hover:text-stone-800"
+          onClick={() => setPanelOpen(true)}
+          title="오른쪽 패널 열기"
+          aria-label="오른쪽 패널 열기"
+        >
+          ◂<span style={{ writingMode: "vertical-rl" }}>패널 열기</span>
+        </button>
+      )}
       <aside
         className={`${panelOpen ? "flex" : "hidden"} w-80 shrink-0 flex-col border-l border-stone-300 bg-stone-50 max-xl:absolute max-xl:inset-y-0 max-xl:right-0 max-xl:z-30 max-xl:shadow-2xl`}
       >
@@ -1776,6 +1795,13 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
             />
           )}
         </div>
+        <button
+          className="flex items-center justify-center gap-1 border-t border-stone-200 bg-white py-1.5 text-xs text-stone-500 hover:bg-stone-100 hover:text-stone-800"
+          onClick={() => setPanelOpen(false)}
+          title="오른쪽 패널 닫기"
+        >
+          패널 닫기 ▸
+        </button>
       </aside>
 
       {reviseOpen && (

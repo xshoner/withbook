@@ -176,7 +176,7 @@ export default function ExportDialog({
                             {it.fix.label} →
                           </button>
                         )}
-                        {it.fix?.action === "checks" && !onOpenChecks && <span className="shrink-0 text-[11px] text-stone-400">편집 화면 [확인할 것]</span>}
+                        {it.fix?.action === "checks" && !onOpenChecks && <span className="shrink-0 text-[11px] text-stone-400">편집 화면 [팩트체크]</span>}
                       </li>
                     ))}
                   </ul>
