@@ -11,6 +11,7 @@ export type LayoutSettings = {
   paraSpacingMm: number; // 문단과 문단 사이 추가 간격 mm
   grayscalePreview: boolean; // 흑백 인쇄 미리보기
   colophon: {
+    /** 판권면 위치 — 앞붙이 순서(표제지 · 판권면 · 속표지 · 차례 · 머리말)를 고정해 늘 표제지 뒷면(2쪽). "end"는 예전 값으로 읽기만 한다 */
     position: "end" | "afterTitle";
     publishDate: string;
     publisher: string; // 펴낸이
@@ -35,7 +36,7 @@ export const DEFAULT_LAYOUT: LayoutSettings = {
   paraSpacingMm: 0,
   grayscalePreview: true,
   colophon: {
-    position: "end",
+    position: "afterTitle",
     publishDate: "",
     publisher: "한건희",
     publisherName: "주식회사 부크크",
@@ -81,7 +82,7 @@ export function parseLayout(raw: string | null | undefined): LayoutSettings {
     lineHeight: num(v.lineHeight, DEFAULT_LAYOUT.lineHeight, 1.2, 2.4),
     paraSpacingMm: num(v.paraSpacingMm, DEFAULT_LAYOUT.paraSpacingMm, 0, 8),
     margins: cleanMargins(v.margins),
-    colophon: { ...DEFAULT_LAYOUT.colophon, ...(v.colophon ?? {}) },
+    colophon: { ...DEFAULT_LAYOUT.colophon, ...(v.colophon ?? {}), position: "afterTitle" },
   };
 }
 

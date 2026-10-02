@@ -228,3 +228,26 @@ test('uploaded photos are rotated by EXIF and only downscaled above the long-edg
   assert.equal((await prepareImage(webp)).mime, 'image/jpeg');
   assert.equal(await prepareImage(Buffer.from('not an image at all, just text')), null);
 });
+
+test('book front matter order: title · colophon(2p) · inner title · contents · preface, colophon not at the end', async () => {
+  const { bookHtml } = await load('../src/lib/print/bookHtml.ts');
+  const { parseLayout } = await load('../src/lib/layout.ts');
+  const doc = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: '본문' }] }] });
+  const sec = (id, title, label = '') => ({ id, title, label, content: doc, charCount: 2 });
+  const book = {
+    project: { id: 'p', title: '책 제목', subtitle: '', author: '지은이' },
+    // 예전에 '책 맨 뒤'로 저장한 책도 2쪽으로 온다
+    layout: parseLayout(JSON.stringify({ colophon: { position: 'end' } })),
+    chapters: [
+      { id: 'f', kind: 'front', no: 0, label: '', title: '머리말', sections: [sec('s0', '머리말')] },
+      { id: 'c1', kind: 'body', no: 1, label: '1장', title: '첫 장', sections: [sec('s1', '첫 절', '1.1')] },
+    ],
+  };
+  const html = bookHtml(book, { mode: 'print', size: 'trim' });
+  const at = (needle) => html.indexOf(needle);
+  const order = ['class="title-page no-num"', 'class="colophon no-num"', 'class="title-page inner no-num"', 'class="toc no-num"', 'data-cid="f"', 'data-cid="c1"'].map(at);
+  assert.ok(order.every((i) => i >= 0), JSON.stringify(order));
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.equal(html.split('class="colophon no-num"').length, 2, 'colophon only once');
+  assert.ok(html.includes('data-target="f"'), 'preface is listed in the contents');
+});

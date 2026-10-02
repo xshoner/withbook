@@ -309,14 +309,8 @@ function LayoutTab({ p, reload, flash }: { p: any; reload: () => Promise<unknown
 
       <div className="card space-y-4 p-6">
         <h2 className="font-semibold">판권면</h2>
+        <p className="text-xs text-stone-500">책 앞쪽 순서: 표제지 → 판권면(2쪽) → 속표지 → 차례 → 머리말</p>
         <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="label">위치</label>
-            <select className="input" value={cp.position} onChange={(e) => setC("position", e.target.value)}>
-              <option value="end">책 맨 뒤 (왼쪽 면)</option>
-              <option value="afterTitle">표제지 뒷면</option>
-            </select>
-          </div>
           {(
             [
               ["publishDate", "발행일", "2026년 00월 00일"],

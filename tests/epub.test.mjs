@@ -117,8 +117,8 @@ test('EPUB: container points at the OPF and manifest/spine are consistent', asyn
   const spine = [...opf.matchAll(/<itemref idref="([^"]+)"/g)].map(m => m[1]);
   for (const id of spine) assert.ok(ids.has(id), `spine idref in manifest: ${id}`);
   const href = id => items.find(i => i.id === id).href;
-  // 읽는 순서: 표제지 · 앞붙이 · 차례 · 본문 · 참고문헌 · 판권 (빈 장은 뺀다)
-  assert.deepEqual(spine.map(href), ['title.xhtml', 'ch001.xhtml', 'nav.xhtml', 'ch002.xhtml', 'ch003.xhtml', 'biblio.xhtml', 'colophon.xhtml']);
+  // 읽는 순서: 표제지 · 판권 · 차례 · 앞붙이(머리말) · 본문 · 참고문헌 (빈 장은 뺀다)
+  assert.deepEqual(spine.map(href), ['title.xhtml', 'colophon.xhtml', 'nav.xhtml', 'ch001.xhtml', 'ch002.xhtml', 'ch003.xhtml', 'biblio.xhtml']);
   // 같은 그림은 한 번만 담고 미디어 형식을 맞춘다
   assert.deepEqual(items.filter(i => i.href.startsWith('images/')).map(i => [i.href, i.type]), [['images/img1.png', 'image/png'], ['images/img2.jpg', 'image/jpeg']]);
   assert.deepEqual(await zip.file('OEBPS/images/img1.png').async('nodebuffer'), image);

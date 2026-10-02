@@ -232,7 +232,7 @@ export async function buildEpub(book: Book, back: BackMatter = {}, opts: { modif
       `<section class="colophon" epub:type="colophon"><p class="cp-title">${x(project.title)}</p>${table(row("지은이", project.author))}${table(
         row("발행", cp.publishDate) + row("펴낸이", cp.publisher) + row("펴낸곳", cp.publisherName) + row("출판사등록", cp.registration) + row("주소", cp.address) + row("전화", cp.phone) + row("이메일", cp.email),
       )}${table(row("ISBN", cp.isbn))}${cp.website ? `<p>${x(cp.website)}</p>` : ""}<p>ⓒ ${x(project.author)} ${x(cp.copyrightYear)}</p>${cp.notice ? `<p>${x(cp.notice)}</p>` : ""}</section>`,
-      layout.colophon.position === "end" ? "backmatter" : "frontmatter",
+      "frontmatter",
     ),
     nav: { label: "판권", href: "colophon.xhtml", children: [] },
   };
@@ -275,11 +275,10 @@ export async function buildEpub(book: Book, back: BackMatter = {}, opts: { modif
       }
     : null;
 
-  // 읽는 순서 — PDF와 같다: 표제지 · (판권) · 앞붙이 · 차례 · 본문 · 뒷붙이 · 참고문헌 · (판권)
+  // 읽는 순서 — PDF와 같다: 표제지 · 판권 · 차례 · 앞붙이(머리말) · 본문 · 뒷붙이 · 참고문헌 (속표지는 전자책에서 뺀다)
   const front = chapterDocs.filter((d) => d.kind === "front");
   const rest = chapterDocs.filter((d) => d.kind !== "front");
-  const afterTitle = cp.position === "afterTitle";
-  const navEntries = [...(afterTitle ? [colophonDoc] : []), ...front, ...rest, ...(biblioDoc ? [biblioDoc] : []), ...(afterTitle ? [] : [colophonDoc])];
+  const navEntries = [colophonDoc, ...front, ...rest, ...(biblioDoc ? [biblioDoc] : [])];
   const li = (e: { label: string; href: string; children: { label: string; href: string }[] }): string =>
     `<li><a href="${x(e.href)}">${x(e.label)}</a>${e.children.length ? `<ol>${e.children.map((c) => li({ ...c, children: [] })).join("")}</ol>` : ""}</li>`;
   const firstBody = chapterDocs.find((d) => d.kind === "body") ?? chapterDocs[0];
@@ -293,7 +292,7 @@ export async function buildEpub(book: Book, back: BackMatter = {}, opts: { modif
       "frontmatter",
     ),
   };
-  const spine: Doc[] = [titleDoc, ...(afterTitle ? [colophonDoc] : []), ...front, navDoc, ...rest, ...(biblioDoc ? [biblioDoc] : []), ...(afterTitle ? [] : [colophonDoc])];
+  const spine: Doc[] = [titleDoc, colophonDoc, navDoc, ...front, ...rest, ...(biblioDoc ? [biblioDoc] : [])];
 
   // 패키지 문서
   const uuid = epubUuid(String((project as { id?: string }).id ?? project.title));

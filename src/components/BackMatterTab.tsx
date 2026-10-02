@@ -105,7 +105,7 @@ export default function BackMatterTab({ projectId }: { projectId: string }) {
   return (
     <div className="space-y-6">
       <p className="text-sm text-stone-500">
-        책 끝(판권면 앞)에 <b>참고문헌</b>과 <b>찾아보기</b>를 붙입니다. 찾아보기의 쪽 번호는 미리보기·PDF 조판 때 쪽마다 글에서 용어를 찾아 <b>자동으로</b> 매깁니다 — 원고를 고쳐도 다시 조판하면 맞춰집니다. HWPX에는 참고문헌만 들어갑니다.
+        책 끝에 <b>참고문헌</b>과 <b>찾아보기</b>를 붙입니다. 찾아보기의 쪽 번호는 미리보기·PDF 조판 때 쪽마다 글에서 용어를 찾아 <b>자동으로</b> 매깁니다 — 원고를 고쳐도 다시 조판하면 맞춰집니다. HWPX에는 참고문헌만 들어갑니다.
       </p>
 
       <section className="card space-y-3 p-6">

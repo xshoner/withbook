@@ -226,16 +226,42 @@ class Writer {
   }
 }
 
-/** biblio: 켠 참고문헌은 판권면 앞에 넣는다. 찾아보기는 쪽 번호가 조판(PDF)에서만 정해져 HWPX에는 넣지 않는다 */
+/** 순서: 표제지 · 판권면 · 속표지 · 차례 · 앞붙이 · 본문 · 뒷붙이 · 참고문헌. 찾아보기는 쪽 번호가 조판(PDF)에서만 정해져 HWPX에는 넣지 않는다 */
 export async function buildHwpx(book: Book, back: { biblio?: { enabled: boolean; entries: { text: string }[] } | null } = {}): Promise<Buffer> {
   const { project, layout } = book;
   const docs = new Map(book.chapters.flatMap((c) => c.sections.map((s) => [s, parseDoc(s.content)] as const)));
   const w = new Writer(book, await loadAssets([...docs.values()]));
-  // 표제지
+  // 표제지(1쪽)
   w.p(w.run(project.title, 8), 1);
   if (project.subtitle) w.p(w.run(project.subtitle, 4), 1);
   w.p(w.run(project.author, 0), 1);
-  // 본문
+  // 판권면(2쪽)
+  const cp = layout.colophon;
+  const line = (k: string, v: string) => v && w.p(w.run(`${k}  ${v}`, 7), 4);
+  w.p(w.run(project.title, 4), 4, true);
+  line("지은이", project.author);
+  line("발  행", cp.publishDate);
+  line("펴낸이", cp.publisher);
+  line("펴낸곳", cp.publisherName);
+  line("출판사등록", cp.registration);
+  line("주  소", cp.address);
+  line("전  화", cp.phone);
+  line("이메일", cp.email);
+  line("ISBN", cp.isbn);
+  line("", cp.website);
+  w.p(w.run(`ⓒ ${project.author} ${cp.copyrightYear}`, 7), 4);
+  w.p(w.run(cp.notice, 7), 4);
+  // 속표지(3쪽) — 제목만 가운데
+  w.p(w.run(project.title, 2), 6, true);
+  if (project.subtitle) w.p(w.run(project.subtitle, 4), 2);
+  // 차례(4쪽~) — HWPX는 쪽 번호를 정할 수 없어 제목만 싣는다
+  w.p(w.run("차례", 2), 1, true);
+  for (const c of book.chapters) {
+    w.p(w.run(`${c.label ? c.label + " " : ""}${c.title}`, 1), 4);
+    if (c.kind === "body") for (const s of c.sections) w.p(w.run(`    ${s.label ? s.label + " " : ""}${s.title}`, 0), 4);
+  }
+  if (back.biblio?.enabled && back.biblio.entries.length) w.p(w.run("참고문헌", 1), 4);
+  // 머리말 등 앞붙이 · 본문 · 뒷붙이
   for (const c of book.chapters) {
     const fig = { ch: c.no, n: 0 };
     // 본문 장: 제목만 있는 독립된 쪽 / 앞붙이·뒷붙이: 새 쪽 맨 위에 제목
@@ -253,22 +279,6 @@ export async function buildHwpx(book: Book, back: { biblio?: { enabled: boolean;
     w.p(w.run("참고문헌", 2), 1, true);
     for (const e of back.biblio.entries) w.p(w.run(e.text, 7), 4);
   }
-  // 판권면
-  const cp = layout.colophon;
-  const line = (k: string, v: string) => v && w.p(w.run(`${k}  ${v}`, 7), 4);
-  w.p(w.run(project.title, 4), 4, true);
-  line("지은이", project.author);
-  line("발  행", cp.publishDate);
-  line("펴낸이", cp.publisher);
-  line("펴낸곳", cp.publisherName);
-  line("출판사등록", cp.registration);
-  line("주  소", cp.address);
-  line("전  화", cp.phone);
-  line("이메일", cp.email);
-  line("ISBN", cp.isbn);
-  line("", cp.website);
-  w.p(w.run(`ⓒ ${project.author} ${cp.copyrightYear}`, 7), 4);
-  w.p(w.run(cp.notice, 7), 4);
 
   const section = `${HEAD}<hs:sec ${nsAttrs}>${w.paras.join("")}</hs:sec>`;
   const manifestItems = [

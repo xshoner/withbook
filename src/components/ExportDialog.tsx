@@ -297,7 +297,7 @@ export default function ExportDialog({
           {tab === "epub" && (
             <>
               <p className="text-stone-600">
-                전자책 앱(리디, 교보eBook, 애플 북스 등)에서 읽을 수 있는 EPUB 파일로 내보냅니다. 표제지·차례·본문·그림·각주·참고문헌·판권면이 들어갑니다.
+                전자책 앱(리디, 교보eBook, 애플 북스 등)에서 읽을 수 있는 EPUB 파일로 내보냅니다. 표제지·판권면·차례·머리말·본문·그림·각주·참고문헌이 들어갑니다.
               </p>
               <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">
                 전자책은 쪽이 정해져 있지 않아 글자 크기·글꼴은 읽는 사람이 기기에서 고릅니다. 각주는 장 끝에 모입니다. 찾아보기(색인)와 표지 그림은 들어가지 않습니다.

@@ -71,14 +71,18 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
     );
   }
 
-  /* ---------- 앞붙이: 표제지 · 목차 / 뒷붙이: 판권면 ---------- */
+  /* ---------- 앞붙이: 표제지(1쪽) · 판권면(2쪽) · 속표지(3쪽) · 차례(4쪽~) · 머리말 등 ---------- */
   const titlePage = `<div class="title-page no-num"><div class="tp-title">${esc(project.title)}</div>${
     project.subtitle ? `<div class="tp-sub">${esc(project.subtitle)}</div>` : ""
   }<div class="tp-author">${esc(project.author)}</div></div>`;
+  // 속표지 — 제목만, 표제지와 다른 모양(가운데·작게)
+  const innerTitle = `<div class="title-page inner no-num"><div class="tp-title">${esc(project.title)}</div>${
+    project.subtitle ? `<div class="tp-sub">${esc(project.subtitle)}</div>` : ""
+  }</div>`;
 
   const cp = layout.colophon;
   const row = (k: string, v: string) => (v ? `<tr><th>${k}</th><td>${esc(v)}</td></tr>` : "");
-  const colophon = `<div class="colophon no-num ${cp.position}">
+  const colophon = `<div class="colophon no-num">
     <div class="cp-title">${esc(project.title)}</div>
     <table>${row("지은이", project.author)}</table>
     <table>${row("발　행", cp.publishDate)}${row("펴낸이", cp.publisher)}${row("펴낸곳", cp.publisherName)}${row("출판사등록", cp.registration)}${row("주　소", cp.address)}${row("전　화", cp.phone)}${row("이메일", cp.email)}</table>
@@ -114,8 +118,8 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
     .join("");
 
   const bodyChapters = book.chapters.filter((c) => c.kind === "body");
+  // 차례에는 머리말 같은 앞붙이도 넣는다(차례 뒤에 오므로) — 앞붙이는 쪽 번호가 없어 번호 칸은 비워 둔다
   const tocEntries = book.chapters
-    .filter((c) => c.kind !== "front")
     .map((c) => {
       const chRow = `<div class="toc-ch" data-target="${c.id}"><span class="t">${c.label ? `<b>${esc(c.label)}</b> ` : ""}${esc(c.title)}</span><span class="pn"></span></div>`;
       if (c.kind !== "body") return chRow;
@@ -129,16 +133,7 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
 
   const front = book.chapters.filter((c) => c.kind === "front");
   const html = full
-    ? [
-        titlePage,
-        cp.position === "afterTitle" ? colophon : `<div class="blank-verso no-num"></div>`,
-        ...parts.filter((_, i) => i < front.length),
-        toc,
-        ...parts.filter((_, i) => i >= front.length),
-        biblioHtml,
-        indexHtml,
-        cp.position === "end" ? colophon : "",
-      ].join("\n")
+    ? [titlePage, colophon, innerTitle, toc, ...parts.filter((_, i) => i < front.length), ...parts.filter((_, i) => i >= front.length), biblioHtml, indexHtml].join("\n")
     : parts.join("\n");
 
   /* ---------- CSS ---------- */
@@ -204,8 +199,10 @@ hr::after { content: "* * *"; font-size: 9pt; }
 .tp-title { font-family: ${TYPO.headingFontCss}, sans-serif; font-size: 22pt; line-height: 1.35; }
 .tp-sub { font-size: 11pt; margin-top: 5mm; }
 .tp-author { margin-top: 30mm; font-size: 11pt; }
-.blank-verso { break-before: page; break-after: page; height: 1px; }
-.toc { break-before: right; }
+.title-page.inner { break-before: right; padding-top: 60mm; text-align: center; }
+.title-page.inner .tp-title { font-size: 15pt; letter-spacing: .02em; }
+.title-page.inner .tp-sub { font-size: 10pt; margin-top: 4mm; }
+.toc { break-before: page; }
 .toc-title { font-family: ${TYPO.headingFontCss}, sans-serif; font-weight: 500; font-size: 16pt; margin: 18mm 0 10mm; }
 .toc-ch, .toc-sec { display: flex; align-items: baseline; gap: 2mm; line-height: 1.55; }
 .toc-ch { font-family: ${TYPO.headingFontCss}, sans-serif; margin-top: 4mm; }
@@ -213,7 +210,7 @@ hr::after { content: "* * *"; font-size: 9pt; }
 .toc-ch .t, .toc-sec .t { flex: 1; overflow: hidden; }
 .toc-ch .t::after, .toc-sec .t::after { content: ""; }
 .pn { min-width: 8mm; text-align: right; }
-.colophon { break-before: ${cp.position === "end" ? "left" : "page"}; padding-top: 70mm; font-size: 8.5pt; line-height: 1.7; text-align: left; }
+.colophon { break-before: page; padding-top: 70mm; font-size: 8.5pt; line-height: 1.7; text-align: left; }
 .colophon p { text-indent: 0; }
 .cp-title { font-family: ${TYPO.headingFontCss}, sans-serif; font-size: 11pt; margin-bottom: 4mm; }
 .colophon table { border-collapse: collapse; margin-bottom: 3mm; }
