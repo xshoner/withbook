@@ -110,7 +110,7 @@ async function tasksHarness() {
   js = js.replace('import "server-only";', '').replace(/from "([^"]+)"/g, (whole, path) => {
     if (path === 'zod') return `from ${JSON.stringify(import.meta.resolve('zod'))}`;
     if (path.startsWith('node:')) return whole;
-    if (['../doc/doc', './single-flight', './recent-context', './write-timing', './outline-text'].includes(path)) {
+    if (['../doc/doc', '../request-context', './single-flight', './recent-context', './write-timing', './outline-text', './write-budget', './toc-steps'].includes(path)) {
       return `from ${JSON.stringify(new URL(`../src/lib/ai/${path}.ts`, import.meta.url).href)}`;
     }
     return `from ${JSON.stringify(mockUrl)}`;

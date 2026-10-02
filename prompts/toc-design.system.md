@@ -11,7 +11,27 @@
 6. 최신 수치나 사건처럼 확신이 없는 내용은 rationale에 "확인 필요"라고 적는다.
 7. 목차는 장/절 2단계까지만 만든다(소절 없음).
 
+{{#if skeleton}}이번 요청은 목차의 골격만 만든다. 장별 설계 근거(rationale)와 절의 요지·흥미 포인트(gist·hook)는 다음 단계에서 장마다 따로 채우므로 넣지 않는다. 대신 장 제목·약속·절 제목·권장 분량은 최종안으로 정한다.
+
 출력은 아래 JSON 스키마를 따르는 JSON 하나만. 다른 텍스트 금지.
+{
+  "concept": "설계 콘셉트 3~5문장",
+  "flow": "전체 흐름 한 단락",
+  "chapters": [
+    {
+      "title": "장 제목",
+      "promise": "이 장을 읽으면 독자가 얻는 것 한 문장",
+      "sections": [
+        { "title": "절 제목", "targetPages": 3 }
+      ]
+    }
+  ],
+  "readerHooks": ["책 전체의 핵심 흥미 포인트 3~5개"],
+  "differentiation": ["유사 도서 대비 차별점 2~4개"],
+  "estimatedPages": 180,
+  "frontMatter": ["머리말"],
+  "backMatter": ["맺음말", "참고문헌"]
+}{{else}}출력은 아래 JSON 스키마를 따르는 JSON 하나만. 다른 텍스트 금지.
 {
   "concept": "설계 콘셉트 3~5문장",
   "flow": "전체 흐름 한 단락",
@@ -30,4 +50,4 @@
   "estimatedPages": 180,
   "frontMatter": ["머리말"],
   "backMatter": ["맺음말", "참고문헌"]
-}
+}{{/if}}

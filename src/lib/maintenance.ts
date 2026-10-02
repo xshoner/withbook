@@ -5,6 +5,7 @@ import { purgePartials } from "./ai/partial";
 import { purgeOldObjects } from "./storage";
 import { clearProjectSettings } from "./project-cleanup";
 import { purgeReviseLogs } from "./revise-log";
+import { purgeErrorLogs } from "./error-log";
 
 /** 마지막으로 정리한 날(YYYY-MM-DD) — 서버리스 인스턴스가 여러 개여도 하루 한 번만 돌게 DB에 둔다 */
 export const MAINTENANCE_KEY = "maintenance:last";
@@ -61,6 +62,8 @@ export async function dailyMaintenance() {
   });
   // 지운 장·절(휴지통)도 30일이 지나면 비운다
   await step("장·절 휴지통", () => purgeTrash(30));
+  // 서버 오류 일지(errors:날짜)는 30일만 둔다
+  await step("오류 일지", () => purgeErrorLogs());
   // Rebuildable outline cache expires after one day, including orphaned sections.
   await step("개요 캐시", () =>
     prisma.appSetting.deleteMany({ where: { key: { startsWith: "ai:outline-cache:" }, updatedAt: { lt: new Date(Date.now() - DAY) } } }),

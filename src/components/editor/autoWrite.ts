@@ -274,7 +274,7 @@ async function continueOne(it: AutoItem) {
         res,
         (e) => {
           if (e.t === "delta") md += e.v ?? "";
-          else if (e.t === "resume" && e.parts && e.fromPart) resume = { fromPart: e.fromPart, parts: e.parts };
+          else if (e.t === "resume" && e.parts && typeof e.fromPart === "number") resume = { fromPart: e.fromPart, parts: e.parts };
           else if (e.t === "status" && e.v === "truncated") truncated = true;
           else if (e.t === "status" && e.v && e.v !== "partial") setActivity("writer", `${it.label} 이어 쓰는 중… ${e.v}`);
           else if (e.t === "error") throw new Error(e.v);

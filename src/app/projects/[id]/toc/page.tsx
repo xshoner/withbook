@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, fmtDate } from "@/lib/client";
 import { confirmDialog } from "@/components/ui/feedback";
+import { TOC_DETAIL_CONCURRENCY, pendingChapters, runLimited } from "@/lib/ai/toc-steps";
 
 type Report = {
   id: string;
@@ -17,7 +18,12 @@ type Report = {
   estimatedPages: number;
   frontMatter: string[];
   backMatter: string[];
+  /** 세부 설계(설계 근거·절 요지)가 남은 장 번호 — 골격만 만든 상태 */
+  detailPending?: number[];
 };
+
+type Chapter = Report["chapters"][number];
+const newRunId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 export default function TocDesign() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +32,8 @@ export default function TocDesign() {
   const [reports, setReports] = useState<Report[] | null>(null);
   const [cur, setCur] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
+  /** 지금 하는 단계 — 안내 문구용 (skeleton: 골격, detail: 장별 세부) */
+  const [phase, setPhase] = useState<"skeleton" | "detail" | "one" | "watch" | null>(null);
   const [since, setSince] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [err, setErr] = useState<{ msg: string; raw?: string } | null>(null);
@@ -43,6 +51,7 @@ export default function TocDesign() {
    */
   function watch(run: Running) {
     const before = reportsRef.current?.length ?? 0;
+    setPhase("watch");
     setBusy(run.label || "목차 설계 중");
     setSince(Date.parse(run.startedAt) || Date.now());
     setErr(null);
@@ -55,9 +64,13 @@ export default function TocDesign() {
         poll.current = null;
         const r = await api<Report[]>(`/api/projects/${id}/toc/reports`);
         setReports(r);
+        reportsRef.current = r;
         setCur(0);
         setBusy(null);
-        if (r.length <= before) setErr({ msg: "목차 설계가 끝났지만 새 안이 만들어지지 않았습니다(실패했거나 중단됨). 다시 시도하세요." });
+        setPhase(null);
+        // 다른 탭의 설계가 장별 세부를 다 채우지 못하고 끝났으면 여기서 이어서 채운다
+        if (r[0] && pendingChapters(r[0]).length) void continueDetails(r[0]);
+        else if (r.length <= before) setErr({ msg: "목차 설계가 끝났지만 새 안이 만들어지지 않았습니다(실패했거나 중단됨). 다시 시도하세요." });
       } catch {
         // 잠깐의 연결 오류는 다음 확인 때 다시 본다
       }
@@ -78,6 +91,12 @@ export default function TocDesign() {
         watch(st.running);
         return;
       }
+      // 골격만 만들고 멈춘 최신안 — 남은 장의 세부 설계를 이어서 채운다
+      if (r[0] && pendingChapters(r[0]).length && !started.current) {
+        started.current = true;
+        void continueDetails(r[0]);
+        return;
+      }
       if (!r.length && sp.get("auto") === "1" && !started.current) {
         started.current = true;
         design({});
@@ -94,15 +113,125 @@ export default function TocDesign() {
     return () => clearInterval(t);
   }, [busy, since]);
 
-  async function design(body: { regenerate?: boolean; chapterIndex?: number; baseReportId?: string }) {
-    setBusy(body.chapterIndex ? `${body.chapterIndex}장 다시 설계 중` : body.regenerate ? "다른 구성으로 설계 중" : "목차 설계 중");
+  type DesignReply = { report?: Report; error?: string; raw?: string; running?: Running };
+  type DetailReply = { chapter?: Chapter; detailPending?: number[]; error?: string; running?: Running };
+  const designUrl = `/api/projects/${id}/toc/design`;
+
+  /** 보고서 목록에서 한 보고서만 고친다 */
+  function patchReport(reportId: string, fn: (r: Report) => Report) {
+    setReports((rs) => (rs ? rs.map((r) => (r.id === reportId ? fn(r) : r)) : rs));
+  }
+
+  /**
+   * 장별 세부 설계 — 장마다 요청 하나(각각 서버 시간 한도 안), 동시에 TOC_DETAIL_CONCURRENCY개.
+   * 실패한 장은 한 번 더 시도하고, 그래도 안 되면 비워 둔다(화면을 다시 열면 이어서 채우거나 [이 장만 다시]로 다시 설계할 수 있다).
+   */
+  async function fillDetails(rep: Report, runId: string): Promise<"done" | "watching"> {
+    const todo = pendingChapters(rep);
+    const total = rep.chapters.length;
+    let done = total - todo.length;
+    const failed: number[] = [];
+    let other: Running | null = null;
+    setPhase("detail");
+    setBusy(`장별 세부 설계 중 (${done}/${total}장)`);
+    await runLimited(
+      todo,
+      TOC_DETAIL_CONCURRENCY,
+      async (n) => {
+        for (let attempt = 0; attempt < 2 && !other; attempt++) {
+          try {
+            const r = await api<DetailReply>(designUrl, { method: "POST", json: { step: "detail", runId, reportId: rep.id, chapterIndex: n } });
+            if (r.running) {
+              other = r.running;
+              return;
+            }
+            if (r.chapter) {
+              const ch = r.chapter;
+              patchReport(rep.id, (x) => ({ ...x, chapters: x.chapters.map((c, i) => (i === n - 1 ? ch : c)), detailPending: (x.detailPending ?? []).filter((k) => k !== n) }));
+              done++;
+              setBusy(`장별 세부 설계 중 (${done}/${total}장)`);
+              return;
+            }
+          } catch {
+            // 한 번 더 시도한다
+          }
+        }
+        if (!other) failed.push(n);
+      },
+      () => Boolean(other),
+    );
+    if (other) {
+      // 다른 탭이 설계를 넘겨받았다 — 그 결과를 기다린다
+      watch(other);
+      return "watching";
+    }
+    if (failed.length) {
+      failed.sort((a, b) => a - b);
+      setErr({ msg: `${failed.join(", ")}장은 세부 설계(설계 근거·절 요지)를 채우지 못했습니다. 화면을 다시 열면 이어서 채우고, [이 장만 다시]로 다시 설계할 수도 있습니다.` });
+    }
+    return "done";
+  }
+
+  /** 골격만 저장된 보고서의 남은 장을 채운다 (화면을 떠났다 돌아온 경우) */
+  async function continueDetails(rep: Report) {
+    const runId = newRunId();
     setSince(Date.now());
     setErr(null);
     let waiting = false;
     try {
-      const r = await api<{ report?: Report; error?: string; raw?: string; running?: Running }>(`/api/projects/${id}/toc/design`, { method: "POST", json: body });
+      waiting = (await fillDetails(rep, runId)) === "watching";
+    } finally {
+      if (!waiting) {
+        await api(designUrl, { method: "POST", json: { step: "finish", runId } }).catch(() => {});
+        setBusy(null);
+        setPhase(null);
+      }
+    }
+  }
+
+  /** 새 목차 설계: 골격(요청 하나) → 장별 세부(장마다 요청 하나) */
+  async function design(body: { regenerate?: boolean }) {
+    const runId = newRunId();
+    setPhase("skeleton");
+    setBusy(body.regenerate ? "다른 구성으로 골격 잡는 중" : "목차 골격 잡는 중");
+    setSince(Date.now());
+    setErr(null);
+    let waiting = false;
+    let holding = false;
+    try {
+      const r = await api<DesignReply>(designUrl, { method: "POST", json: { step: "skeleton", runId, regenerate: body.regenerate } });
       if (r.running) {
         // 이미 서버에서 설계 중 — 그 결과를 기다린다
+        waiting = true;
+        watch(r.running);
+      } else if (r.error) setErr({ msg: r.error, raw: r.raw });
+      else if (r.report) {
+        holding = true;
+        setReports((rs) => [r.report!, ...(rs ?? [])]);
+        setCur(0);
+        waiting = (await fillDetails(r.report, runId)) === "watching";
+      }
+    } catch (e: any) {
+      setErr({ msg: e.message });
+    } finally {
+      if (holding && !waiting) await api(designUrl, { method: "POST", json: { step: "finish", runId } }).catch(() => {});
+      if (!waiting) {
+        setBusy(null);
+        setPhase(null);
+      }
+    }
+  }
+
+  /** [이 장만 다시] — 요청 하나로 그 장을 새로 설계해 새 안으로 저장 */
+  async function redesignChapter(chapterIndex: number, baseReportId: string) {
+    setPhase("one");
+    setBusy(`${chapterIndex}장 다시 설계 중`);
+    setSince(Date.now());
+    setErr(null);
+    let waiting = false;
+    try {
+      const r = await api<DesignReply>(designUrl, { method: "POST", json: { chapterIndex, baseReportId } });
+      if (r.running) {
         waiting = true;
         watch(r.running);
       } else if (r.error) setErr({ msg: r.error, raw: r.raw });
@@ -113,7 +242,10 @@ export default function TocDesign() {
     } catch (e: any) {
       setErr({ msg: e.message });
     } finally {
-      if (!waiting) setBusy(null);
+      if (!waiting) {
+        setBusy(null);
+        setPhase(null);
+      }
     }
   }
 
@@ -161,7 +293,15 @@ export default function TocDesign() {
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-600 border-t-transparent" />
           <div>
             <div className="font-semibold">{busy}… ({elapsed}초)</div>
-            <div className="text-sm text-stone-500">분야 전문가 관점에서 최신 트렌드와 독자 흥미 포인트를 반영해 설계하고 있습니다. 장·절이 많으면 2~4분 걸립니다. 이 화면을 떠나도 설계는 계속되고, 돌아오면 결과가 보입니다.</div>
+            <div className="text-sm text-stone-500">
+              {phase === "skeleton"
+                ? "먼저 전체 골격(장·절 제목과 분량)을 잡습니다. 1~2분 걸립니다. 골격이 나오면 장마다 요지와 설계 근거를 채웁니다."
+                : phase === "detail"
+                  ? "골격은 저장됐습니다. 장마다 절 요지·흥미 포인트·설계 근거를 채우고 있습니다. 화면을 떠나면 멈추고, 다시 열면 남은 장부터 이어서 채웁니다."
+                  : phase === "one"
+                    ? "이 장을 새로 설계하고 있습니다. 1~2분 걸립니다."
+                    : "다른 화면에서 설계하고 있습니다. 끝나면 결과가 여기에 보입니다."}
+            </div>
           </div>
         </div>
       )}
@@ -230,8 +370,9 @@ export default function TocDesign() {
                         {ci + 1}장 {c.title}
                       </div>
                       {c.promise && <div className="text-sm text-stone-600">→ {c.promise}</div>}
+                      {rep.detailPending?.includes(ci + 1) && <div className="text-xs text-stone-400">{busy ? "절 요지·설계 근거 채우는 중…" : "절 요지·설계 근거를 아직 채우지 못했습니다"}</div>}
                     </div>
-                    <button className="btn-ghost shrink-0 text-xs" disabled={!!busy} onClick={() => design({ chapterIndex: ci + 1, baseReportId: rep.id })}>
+                    <button className="btn-ghost shrink-0 text-xs" disabled={!!busy} onClick={() => redesignChapter(ci + 1, rep.id)}>
                       이 장만 다시
                     </button>
                   </div>

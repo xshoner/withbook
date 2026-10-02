@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   check:
@@ -20,3 +21,56 @@ jobs:
         run: npx next typegen
       - run: npm run typecheck
       - run: npm test
+
+  # 실제로 빌드해 띄우고(로컬 모드) 새 Postgres에서 편집·저장·찾기·삭제/되돌리기·백업/복원·HWPX(+글꼴이 있으면 미리보기·PDF)를 브라우저로 확인한다.
+  # 운영 DB에는 접근하지 않는다. 글꼴은 공개 fonts 버킷에서 받는다(NEXT_PUBLIC_SUPABASE_URL Secret이 없으면 조판·PDF 검사만 건너뜀).
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Route types
+        run: npx next typegen
+      - name: Build
+        run: npm run build
+        env:
+          APP_ACCESS_MODE: local
+      - name: Fonts
+        env:
+          SB: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+        run: |
+          mkdir -p public/fonts
+          if [ -n "$SB" ]; then
+            for f in KoPubBatangLight.ttf KoPubBatangBold.ttf KoPubDotumMedium.ttf; do
+              curl -fsSL --retry 2 "$SB/storage/v1/object/public/fonts/$f" -o "public/fonts/$f"
+            done
+          else
+            echo "::warning::NEXT_PUBLIC_SUPABASE_URL Secret이 없어 미리보기·PDF 검사를 건너뜁니다"
+            echo "SMOKE_SKIP_PRINT=1" >> "$GITHUB_ENV"
+          fi
+      - name: Smoke test
+        run: npm run test:smoke
+        env:
+          SMOKE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          SMOKE_BROWSER: chrome
+      - name: Keep screenshots and server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: test-results/
+          retention-days: 7

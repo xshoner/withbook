@@ -16,6 +16,9 @@ import { loadAiSettings } from "./settings";
 import { loadSectionReferences } from "../section-refs-store";
 import { readMemoryText } from "../book-memory-store";
 import { editedOutlineKey, outlineCacheKey, outlineInputHash, type EditedOutline, type OutlinePart } from "./outline-text";
+import { getRequestContext } from "../request-context";
+import { OUTLINE_DEADLINE_MS, SUMMARY_DEADLINE_MS, fallbackParts, isDeadlineError, partStart, timeLeft, withinTime } from "./write-budget";
+import { cleanTocTitles, tocDesignText, withDetailPending, type TocChapter, type TocReportJson } from "./toc-steps";
 
 /* ---------------- 공통 텍스트 조립 ---------------- */
 
@@ -188,28 +191,26 @@ async function sectionLite(sectionId: string) {
 
 /* ---------------- 목차 설계 ---------------- */
 
-const tocSchema = z.object({
-  concept: z.string(),
-  flow: z.string().default(""),
-  chapters: z
+const tocChapterSchema = z.object({
+  title: z.string(),
+  promise: z.string().default(""),
+  rationale: z.string().default(""),
+  sections: z
     .array(
       z.object({
         title: z.string(),
-        promise: z.string().default(""),
-        rationale: z.string().default(""),
-        sections: z
-          .array(
-            z.object({
-              title: z.string(),
-              gist: z.string().default(""),
-              hook: z.string().default(""),
-              targetPages: z.coerce.number().default(3),
-            }),
-          )
-          .min(1),
+        gist: z.string().default(""),
+        hook: z.string().default(""),
+        targetPages: z.coerce.number().default(3),
       }),
     )
     .min(1),
+});
+
+const tocSchema = z.object({
+  concept: z.string(),
+  flow: z.string().default(""),
+  chapters: z.array(tocChapterSchema).min(1),
   readerHooks: z.array(z.string()).default([]),
   differentiation: z.array(z.string()).default([]),
   estimatedPages: z.coerce.number().default(0),
@@ -218,28 +219,56 @@ const tocSchema = z.object({
 });
 export type TocDesign = z.infer<typeof tocSchema>;
 
-export async function designToc(
-  projectId: string,
-  opts: { regenerate?: boolean; chapterIndex?: number; previousConcept?: string } = {},
-): Promise<{ design?: TocDesign; raw: string; error?: string }> {
+/** 장 하나만 돌려받는 응답 (세부 설계·[이 장만 다시]) — 나머지 항목은 보지 않는다 */
+const tocOneChapterSchema = z.object({ chapters: z.array(tocChapterSchema).min(1) });
+
+/*
+ * 목차 설계는 요청 여러 개로 나눈다 (toc-steps.ts) — 예전처럼 한 번에(출력 24,000토큰) 만들면 장·절이 많은 책은
+ * 서버 시간 한도(약 4분)에 걸렸다. 골격 한 번 + 장마다 세부 한 번이며 각각 출력이 작아 한 요청 안에 끝난다.
+ */
+const TOC_SKELETON_TOKENS = 12000;
+const TOC_CHAPTER_TOKENS = 10000;
+
+async function tocBookVars(projectId: string) {
   const book = await loadBookOutline(projectId);
   if (!book) throw new Error("책을 찾을 수 없습니다.");
-  const { messages } = await buildMessages("toc-design", {
-    ...bookVars(book),
-    regenerate: opts.regenerate,
-    previousConcept: opts.previousConcept,
-    chapterOnly: opts.chapterIndex !== undefined,
-    chapterIndex: opts.chapterIndex,
-    currentToc: tocOutline(book),
-  });
-  const { value: design, raw } = await chatJson(tocSchema, { purpose: "toc_design", projectId, messages, temperature: 0.8, maxTokens: 24000 });
+  return { book, vars: bookVars(book) };
+}
+
+/** 1단계: 목차 골격 (설계 근거·절 요지·흥미 포인트 없이) — 저장할 보고서에는 모든 장이 세부 설계 대기로 표시된다 */
+export async function designTocSkeleton(
+  projectId: string,
+  opts: { regenerate?: boolean; previousConcept?: string } = {},
+): Promise<{ design?: TocDesign & { detailPending: number[] }; raw: string; error?: string }> {
+  const { vars } = await tocBookVars(projectId);
+  const { messages } = await buildMessages("toc-design", { ...vars, skeleton: true, regenerate: opts.regenerate, previousConcept: opts.previousConcept });
+  const { value: design, raw } = await chatJson(tocSchema, { purpose: "toc_design", projectId, messages, temperature: 0.8, maxTokens: TOC_SKELETON_TOKENS });
   if (!design) return { raw, error: "목차 응답을 해석하지 못했습니다. 원문을 확인하세요." };
-  // 번호는 앱이 붙이므로 AI가 넣은 "1장.", "제1장", "1.1" 같은 접두어 제거
-  for (const c of design.chapters) {
-    c.title = c.title.replace(/^\s*(제\s*)?\d+\s*(장|부)\s*[.:·\-–—]?\s*/, "").trim() || c.title;
-    for (const s of c.sections) s.title = s.title.replace(/^\s*\d+(\.\d+)*\s*[.:)\-–—]?\s+/, "").trim() || s.title;
-  }
-  return { design, raw };
+  cleanTocTitles(design.chapters);
+  return { design: withDetailPending(design), raw };
+}
+
+/**
+ * 장 하나 — mode "detail": 골격(report)의 그 장에 설계 근거와 절 요지·흥미 포인트를 채운다(제목·분량은 그대로).
+ * mode "redesign": [이 장만 다시] — 그 장을 새로 설계한다. 나머지 목차는 보고서(report)에서, 없으면 책의 지금 목차에서 읽는다.
+ */
+export async function designTocChapter(
+  projectId: string,
+  opts: { chapterIndex: number; mode: "detail" | "redesign"; report?: Pick<TocReportJson, "chapters"> | null },
+): Promise<{ chapter?: TocChapter; raw: string; error?: string }> {
+  const { book, vars } = await tocBookVars(projectId);
+  const { messages } = await buildMessages("toc-design", {
+    ...vars,
+    detailOnly: opts.mode === "detail",
+    chapterOnly: opts.mode === "redesign",
+    chapterIndex: opts.chapterIndex,
+    currentToc: opts.report ? tocDesignText(opts.report) : tocOutline(book),
+  });
+  const { value, raw } = await chatJson(tocOneChapterSchema, { purpose: "toc_design", projectId, messages, temperature: opts.mode === "detail" ? 0.6 : 0.8, maxTokens: TOC_CHAPTER_TOKENS });
+  const chapter = value?.chapters[0];
+  if (!chapter) return { raw, error: `${opts.chapterIndex}장 설계 응답을 해석하지 못했습니다. 다시 시도하세요.` };
+  cleanTocTitles([chapter]);
+  return { chapter, raw };
 }
 
 /* ---------------- 요약 (앞 내용 연결용) ---------------- */
@@ -334,20 +363,31 @@ export async function ensureChapterSummary(projectId: string, c: ChapterTarget):
 
 /**
  * 가까운 절부터 필요한 2,500자만 확보한다. 예산이 차면 오래된 장은 조회·생성하지 않는다.
+ * deadline(epoch ms)까지만 기다린다 — 그때까지 준비되지 않은 요약은 빼고 쓴다(요약은 계속 만들어져 다음 집필에 쓰인다).
+ * 요약 하나가 실패해도(AI 서버 혼잡 등) 집필 전체를 실패시키지 않고 그 요약만 뺀다.
  */
-async function previousSummaries(book: BookOutline, chapterIdx: number, sectionIdx: number, signal?: AbortSignal) {
+async function previousSummaries(book: BookOutline, chapterIdx: number, sectionIdx: number, signal?: AbortSignal, deadline?: number) {
   const cur = book.chapters[chapterIdx];
+  const optional = (label: string, run: () => Promise<string>) => async () => {
+    try {
+      return await run();
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      console.warn(`[write] 앞 내용 요약을 건너뜀 (${label}):`, e instanceof Error ? e.message : e);
+      return "";
+    }
+  };
   const items = [
-    ...cur.sections.slice(0, sectionIdx).reverse().map((s) => async () => {
+    ...cur.sections.slice(0, sectionIdx).reverse().map((s) => optional(s.id, async () => {
       const summary = await ensureSectionSummary(book.project.id, cur, s);
       return summary ? `[${s.label || ""} ${s.title}] ${summary}` : "";
-    }),
-    ...book.chapters.slice(0, chapterIdx).reverse().map((c) => async () => {
+    })),
+    ...book.chapters.slice(0, chapterIdx).reverse().map((c) => optional(c.id, async () => {
       const summary = await ensureChapterSummary(book.project.id, c);
       return summary ? `[${chapterName(c)} ${c.title}] ${summary}` : "";
-    }),
+    })),
   ];
-  return collectRecentContext(items, 2500, signal);
+  return collectRecentContext(items, 2500, signal, deadline);
 }
 
 function tailOf(content: string, maxChars = 800) {
@@ -430,7 +470,7 @@ async function preparedOutline(sectionId: string, projectId: string, vars: Recor
       temperature: 0.5, maxTokens: 8000, instructionIncluded: om.instructionIncluded,
     });
     const parts = outline.value?.parts;
-    if (!parts) return { parts: [{ heading: "", points: [], sketchItems: [], chars: Number(vars.targetChars) }], cached: false };
+    if (!parts) return { parts: fallbackParts(Number(vars.targetChars), String(vars.sketch ?? "")), cached: false };
     await setSetting(key, { hash, parts, expires: Date.now() + 24 * 60 * 60_000, ...(opts.inputHash ? { inputHash: opts.inputHash } : {}) }).catch(() => {
       console.warn("[outline-cache] 개요 캐시 저장 실패");
     });
@@ -470,15 +510,29 @@ export async function generateOutline(sectionId: string, input: { sketch?: strin
   return { parts: r.parts, inputHash };
 }
 
-/** 새 파트를 시작할 수 있는 마지막 시점 — AI 호출 예산(요청 시작 후 240초, client.ts) 안에 파트 하나(보통 1분 안팎)를 끝낼 수 있게 */
-const PART_START_BUDGET_MS = 150_000;
+/** 요청 시작 시각 — AI 호출 예산(240초, client.ts)과 같은 기준으로 잰다. 파트 시작 한도 등은 write-budget.ts */
+const requestStartedAt = () => getRequestContext()?.startedAt ?? Date.now();
+
+/** 본문을 하나도 받지 못하고 시간 한도에 걸렸을 때 — 준비한 요약·개요는 저장돼 있어 다시 시도하면 곧바로 본문부터 쓴다 */
+const WRITE_DEADLINE_MSG =
+  "AI 서버 응답이 늦어 이번 요청의 실행 시간(약 4분) 안에 본문을 시작하지 못했습니다. 앞 내용 요약과 개요는 저장돼 있어 다시 시도하면 바로 본문부터 씁니다. 잠시 후 [집필하기]를 다시 눌러 주세요.";
 
 /** 추론 토큰을 사용하는 모델도 본문을 마칠 수 있도록 출력 여유를 둔다. */
 const writeTokens = (chars: number) => Math.min(Math.round(chars * 2.2 + 6000), 32000);
 
-async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undefined>, onText: (t: string) => void): AsyncGenerator<WriteEvent> {
+/** prefix: 첫 본문 조각 앞에 붙일 글(파트 소제목) — 본문이 오지 않으면(시간 한도로 resume) 내보내지 않아 같은 소제목이 두 번 들어가지 않는다 */
+async function* pipe(
+  gen: AsyncGenerator<string, { truncated?: boolean } | undefined>,
+  onText: (t: string) => void,
+  prefix?: { text: string; onEmit: (t: string) => void },
+): AsyncGenerator<WriteEvent> {
   let r = await gen.next();
   while (!r.done) {
+    if (prefix?.text) {
+      prefix.onEmit(prefix.text);
+      yield { t: "delta", v: prefix.text };
+      prefix = undefined;
+    }
     onText(r.value);
     yield { t: "delta", v: r.value };
     r = await gen.next();
@@ -488,6 +542,7 @@ async function* pipe(gen: AsyncGenerator<string, { truncated?: boolean } | undef
 
 async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteClock, override: { sketch?: string } = {}) {
   const loadStarted = Date.now();
+  const summaryDeadline = requestStartedAt() + SUMMARY_DEADLINE_MS;
   const book = await sectionInBook(sectionId);
   const projectId = book.project.id;
 
@@ -505,7 +560,7 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
 
   clock.loadMs = Date.now() - loadStarted;
   const summaryStarted = Date.now();
-  const prevSummaries = await previousSummaries(book, ci, si, opts.signal);
+  const prevSummaries = await previousSummaries(book, ci, si, opts.signal, summaryDeadline);
   clock.summaryMs = Date.now() - summaryStarted;
 
   const cpp = book.project.charsPerPage || 700;
@@ -537,8 +592,26 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
   return { projectId, baseVars, targetChars, inputHash };
 }
 
+/**
+ * 긴 절 개요 — OUTLINE_DEADLINE_MS(요청 시작 기준)까지만 기다린다. 늦거나 시간 한도에 걸리면 분량만 나눈 기본 개요로 쓴다.
+ * 늦은 개요 호출은 그대로 두어 끝나면 캐시에 남는다(다음 집필·[개요 다시 만들기]가 쓴다).
+ */
+async function outlineInTime(sectionId: string, projectId: string, vars: Record<string, unknown>, inputHash: string, started: number) {
+  const fallback = () => ({ parts: fallbackParts(Number(vars.targetChars), String(vars.sketch ?? "")), cached: false });
+  try {
+    const r = await withinTime(preparedOutline(sectionId, projectId, vars, { inputHash }), timeLeft(started, OUTLINE_DEADLINE_MS));
+    if (r.done) return r.value;
+    console.warn(`[write] 개요가 늦어 기본 나눔으로 씀 (${sectionId})`);
+    return fallback();
+  } catch (e) {
+    if (!isDeadlineError(e)) throw e;
+    console.warn(`[write] 개요가 시간 한도에 걸려 기본 나눔으로 씀 (${sectionId})`);
+    return fallback();
+  }
+}
+
 export async function* writeSection(sectionId: string, opts: WriteOptions): AsyncGenerator<WriteEvent> {
-  const started = Date.now();
+  const started = requestStartedAt();
   const clock = new WriteClock();
   let result = "aborted";
   try {
@@ -573,7 +646,7 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
         ? { parts: opts.resume.parts, cached: true }
         : edited
           ? { parts: edited.parts, cached: true }
-          : await preparedOutline(sectionId, projectId, baseVars, { inputHash });
+          : await outlineInTime(sectionId, projectId, baseVars, inputHash, started);
       clock.outlineMs = Date.now() - outlineStarted;
       clock.outlineCached = outline.cached;
       const parts = outline.parts;
@@ -581,8 +654,9 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
       let written = opts.resume?.written ?? "";
       for (let p = from; p < parts.length; p++) {
         if (opts.signal?.aborted) break;
-        if (p > from && Date.now() - started > PART_START_BUDGET_MS) {
+        if (partStart(Date.now() - started, p, from) === "resume") {
           // 한 번의 요청으로 쓸 수 있는 시간을 넘기기 전에 멈춘다 — 브라우저가 같은 개요로 다음 요청을 이어 보낸다(resume)
+          // 준비(요약·개요)가 길어 첫 파트도 시작하지 못했으면 이 요청의 첫 파트부터 넘긴다 — 새 요청은 준비 없이 곧바로 쓴다
           yield { t: "resume", fromPart: p, parts };
           yield { t: "status", v: "partial" };
           result = "partial";
@@ -590,11 +664,8 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
         }
         const part = parts[p];
         yield { t: "status", v: `집필 중… (${p + 1}/${parts.length}) ${part.heading}` };
-        if (part.heading) {
-          const h = `${written ? "\n\n" : ""}## ${part.heading}\n\n`;
-          written += h;
-          yield { t: "delta", v: h };
-        }
+        // 소제목은 본문 첫 조각과 함께 내보낸다 (본문 없이 시간 한도에 걸려 다음 요청이 이 파트를 다시 쓸 때 소제목이 겹치지 않게)
+        const heading = part.heading ? `${written ? "\n\n" : ""}## ${part.heading}\n\n` : "";
         const lastPara = written.trim().split(/\n+/).filter((l) => l.trim() && !l.startsWith("## ")).slice(-1)[0] ?? "";
         const partInfo = [
           `[이번 파트] ${part.heading || "(소제목 없음)"} / 다룰 내용: ${part.points.join("; ") || "(개요 없음)"} / 배정된 스케치: ${part.sketchItems.join("; ") || "(없음)"} / 분량 약 ${part.chars}자`,
@@ -604,13 +675,23 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
         ].join("\n");
         const { messages, instructionIncluded } = await buildMessages("section-write", { ...baseVars, partInfo });
         clock.startGeneration();
-        yield* track(pipe(
-          chatStream({ purpose: "section_write_part", projectId, messages, temperature: 0.7, maxTokens: writeTokens(part.chars), signal: opts.signal, instructionIncluded }),
-          (t) => {
-            count(t);
-            written += t;
-          },
-        ));
+        try {
+          yield* track(pipe(
+            chatStream({ purpose: "section_write_part", projectId, messages, temperature: 0.7, maxTokens: writeTokens(part.chars), signal: opts.signal, instructionIncluded }),
+            (t) => {
+              count(t);
+              written += t;
+            },
+            { text: heading, onEmit: (h) => (written += h) },
+          ));
+        } catch (e) {
+          // 앞 파트를 쓴 뒤 이 파트가 본문 없이 시간 한도에 걸렸다 — 쓴 데까지 두고 새 요청에서 이 파트부터 쓴다
+          if (!isDeadlineError(e) || p === from || opts.signal?.aborted) throw e;
+          yield { t: "resume", fromPart: p, parts };
+          yield { t: "status", v: "partial" };
+          result = "partial";
+          break;
+        }
       }
     }
     if (opts.signal?.aborted) result = "aborted";
@@ -619,6 +700,7 @@ export async function* writeSection(sectionId: string, opts: WriteOptions): Asyn
     yield { t: "done", chars: total };
   } catch (error) {
     result = opts.signal?.aborted ? "aborted" : "error";
+    if (!opts.signal?.aborted && isDeadlineError(error)) throw Object.assign(new Error(WRITE_DEADLINE_MSG), { expose: true, status: 504, httpStatus: 504 });
     throw error;
   } finally {
     console.info("[write-timing]", JSON.stringify({ sectionId, result, ...clock.snapshot() }));

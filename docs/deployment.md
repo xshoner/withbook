@@ -104,6 +104,14 @@ npm run dev
 - 한 절에서 집필과 교정은 겹치지 않는다. 자동 집필은 이미 작업 중인 절을 건너뛰고 알린다.
 - 각 요청은 Vercel 실행 시간(300초) 안에서 끝나야 한다 — 위 [Vercel 제약과 대응] 참고.
 
+## 운영 점검과 알림
+
+- **서버 오류 일지**: `handle()`·NDJSON 스트림이 5xx로 끝나면 `AppSetting`의 `errors:YYYY-MM-DD`(한국 시간)에 경로·오류 종류(이름·코드·상태)·화면 안내 문구만 모아 센다(원래 오류 문구는 원고가 섞일 수 있어 남기지 않는다). 30일 보관.
+- **매일 점검**: GitHub Actions `Daily check`(.github/workflows/daily-check.yml)가 매일 09:00에 `GET /api/health?report=1`(`Authorization: Bearer HEALTH_TOKEN`)을 부른다. 서버가 응답하지 않거나 DB·저장소가 이상하거나 어제 서버 오류가 있으면 `운영 알림` 이슈를 열고(열려 있으면 댓글) 저장소 알림 메일이 온다. 확인을 마치면 이슈를 닫는다. 하루 한 번 정리 작업도 이 호출 뒤에 돈다.
+  - 설정: 같은 임의 값(16자 이상, 예: `openssl rand -hex 24`)을 **Vercel 환경 변수 `HEALTH_TOKEN`**(Production, 넣은 뒤 다시 배포)과 **GitHub Secrets `HEALTH_TOKEN`**에 넣는다. 다른 주소를 점검하려면 Secrets `APP_URL`.
+  - 저장소가 공개라 이슈도 공개다 — 보고에는 경로·종류·건수·화면 안내만 들어간다.
+- **CI**: push·PR마다 타입 검사·단위 테스트(`check`)와, 빌드한 앱을 새 Postgres에 띄워 브라우저로 확인하는 스모크 테스트(`smoke`)를 돌린다. 스모크의 미리보기·PDF 검사는 공개 fonts 버킷에서 KoPub을 받아야 하므로 Secrets `NEXT_PUBLIC_SUPABASE_URL`이 있을 때만 한다.
+
 ## 검증 명령
 
 ```sh

@@ -243,7 +243,7 @@ export async function runJob(o: StartOptions): Promise<AiJob> {
             emit();
             return;
           }
-          if (e.t === "resume" && e.parts && e.fromPart) {
+          if (e.t === "resume" && e.parts && typeof e.fromPart === "number") {
             resume = { fromPart: e.fromPart, parts: e.parts };
             return;
           }

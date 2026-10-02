@@ -1,0 +1,43 @@
+name: Daily check
+
+# 매일 09:00(한국 시간) 운영 점검 — /api/health?report=1로 서버 상태와 어제 서버 오류를 읽고,
+# 문제가 있으면 '운영 알림' 이슈를 열거나(이미 열려 있으면 댓글) 저장소 알림 메일로 알린다. 하루 한 번 정리 작업도 이때 돈다.
+# 필요한 것: 저장소 Secrets HEALTH_TOKEN(Vercel 환경 변수 HEALTH_TOKEN과 같은 값, 16자 이상). 선택: APP_URL(기본 https://withbook.vercel.app)
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Health report
+        id: health
+        env:
+          TOKEN: ${{ secrets.HEALTH_TOKEN }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: |
+          [ -n "$TOKEN" ] || echo "::warning::HEALTH_TOKEN이 없어 서버 상태만 봅니다 (오류 일지는 읽지 않음)"
+          url="${APP_URL:-https://withbook.vercel.app}/api/health"
+          if [ -n "$TOKEN" ]; then url="$url?report=1"; fi
+          code=$(curl -s -o health.json -w '%{http_code}' --max-time 60 --retry 2 --retry-delay 20 -H "Authorization: Bearer $TOKEN" "$url" || echo 0)
+          node scripts/daily-check.mjs health.json "$code"
+      - name: Open or update alert issue
+        if: steps.health.outputs.problem == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "운영 알림" --color d93f0b --description "매일 점검이 찾은 운영 문제" 2>/dev/null || true
+          n=$(gh issue list --label "운영 알림" --state open --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body-file report.md
+          else
+            gh issue create --title "운영 알림 — $(TZ=Asia/Seoul date +%F)" --label "운영 알림" --body-file report.md
+          fi

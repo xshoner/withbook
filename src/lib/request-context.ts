@@ -6,7 +6,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
  */
 export type Role = "superadmin" | "editor";
 export type RequestUser = { id: string; email: string; role: Role | "render" };
-export type RequestContext = { user: RequestUser; startedAt: number };
+/** route: 요청 경로 — 오류 일지(error-log)가 스트림 응답의 오류도 어느 경로인지 알게 */
+export type RequestContext = { user: RequestUser; startedAt: number; route?: string };
 
 const als = new AsyncLocalStorage<RequestContext>();
 
