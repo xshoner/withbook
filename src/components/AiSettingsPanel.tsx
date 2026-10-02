@@ -141,7 +141,7 @@ function ConnectionPanel({ scope, onLock, admin }: { scope: AiScope; onLock: (lo
           <button className="btn" disabled={saving || check.state === "checking"} onClick={() => changeConnection({ copyFrom })}>이 연결 복사</button>
           <span className="text-xs text-stone-500">키를 다시 입력하지 않고 복사합니다. 이후 변경은 각각 적용됩니다.</span>
         </div>}
-        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 사실 확인은 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}{scope === "cover" ? " 표지 그림은 POST {기본 주소}/v1/images/generations로 부르며, Letsur 게이트웨이는 Authorization: Bearer 인증을 씁니다. 연결 점검은 그림을 만들지 않고(비용 없음) 키만 확인합니다." : ""}</p>}
+        {editing && <p className="text-xs text-stone-500">API 키를 입력하고 저장하세요. Gemini 빠른 설정은 추론 강도를 낮음으로 지정합니다.{scope === "factcheck" ? " 사실 확인은 모델이 지원하면 웹 검색으로 최신 자료를 확인합니다." : ""}{scope === "cover" ? " 연결 점검은 그림을 만들지 않고(비용 없음) 키만 확인합니다." : ""}</p>}
         {scope === "cover" && cur.inherited && !editing && <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-900">표지 그림은 글쓰기 모델(기본 연결)로 만들 수 없어 개별 연결이 필요합니다. 위 버튼으로 설정한 뒤 API 키를 입력하세요.</p>}
       </div>
       <div className="flex items-center gap-3 rounded-lg border border-stone-200 bg-stone-50 px-4 py-3">

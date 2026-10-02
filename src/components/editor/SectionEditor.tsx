@@ -33,7 +33,7 @@ import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./Page
 import { editorBlocks, matchPrintLayout, type SectionPrintLayout } from "./pageMap";
 import type { AppliedChange } from "./ProofPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround, textblockAt } from "./pmOps";
-import ImagesPanel, { runImageSuggest, setImageMode, useImageSuggestBusy, type ImageCandidate, type ImageMode, type ImageSuggestion } from "./ImagesPanel";
+import ImagesPanel, { type ImageCandidate, type ImageSuggestion } from "./ImagesPanel";
 import type { FigureTarget, MadeFigure } from "./MakeFigurePane";
 import PanelTabs, { type PanelTab } from "./PanelTabs";
 import { conflictOf, noteServerContent, primeBase, recoverPending, registerCommit, resolveConflict, settleSection, useAutosave } from "./useAutosave";
@@ -43,7 +43,8 @@ import type { AutoItem, AutoOptions } from "@/lib/autowrite";
 import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, stopProof, takeProofResult, useProofJob, useProofRunningIds } from "./proofJobs";
 import WritingOverlay from "./WritingOverlay";
 import EditorToolbar, { REWRITE_LABEL, type RewriteAction } from "./EditorToolbar";
-import { SHORTCUT_HINT } from "./shortcuts";
+import SelectionBubble from "./SelectionBubble";
+import Menu from "./Menu";
 import OutlinePanel from "./OutlinePanel";
 import { useMe } from "@/lib/me-client";
 import FootnotesPanel, { FootnoteTabLabel, footnoteNumberAt } from "./FootnotesPanel";
@@ -198,7 +199,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   }, [focusMode]);
   const [caretPage, setCaretPage] = useState<number | null>(null); // 이 절 안에서 몇 번째 쪽(0부터)
   const [pg, setPg] = useState<PaginateResult | null>(null);
-  const [bubble, setBubble] = useState<{ x: number; y: number } | null>(null);
+  const [bubble, setBubble] = useState<{ x: number; y: number; len: number; single: boolean } | null>(null);
   const [fnEdit, setFnEdit] = useState<{ pos: number; x: number; y: number } | null>(null);
   const [fnBusy, setFnBusy] = useState<null | "one" | "auto" | "regen">(null);
   const [regenPos, setRegenPos] = useState<number | null>(null);
@@ -457,17 +458,6 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
     return placeFigure(ed, t, { assetId: f.assetId, src: f.src, widthPx: f.widthPx, heightPx: f.heightPx }, caption);
   }
 
-  const imageBusy = useImageSuggestBusy(section.id);
-  const onImageSuggest = useStableFn((m: ImageMode) => {
-    if (!editor) return;
-    setImageMode(m);
-    setTab("images");
-    setPanelOpen(true);
-    if (m === "make") return; // 직접 만들기는 문단·설정을 고른 뒤 [AI 제작]
-    if (isDocEmpty(editor.getJSON() as JNode)) return toast("이미지를 추천할 본문이 없습니다. 먼저 본문을 쓰세요.");
-    void runImageSuggest(section.id, JSON.stringify(editor.getJSON()));
-  });
-
   /* ---------- 쪽 나눔 (실제 조판처럼 쪽마다 끊고 사이를 띄운다) ---------- */
   const margins = project.layout.margins;
   const geom = useMemo<PageGeom>(() => {
@@ -710,7 +700,9 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
     if (ed.view.hasFocus()) setFnEdit(null);
     if (!sel.empty && ed.isEditable && !(sel instanceof NodeSelection)) {
       const a = ed.view.coordsAtPos(sel.from);
-      setBubble((b) => (b && b.x === a.left && b.y === a.top ? b : { x: a.left, y: a.top }));
+      const len = ed.state.doc.textBetween(sel.from, sel.to, " ").trim().length;
+      const single = sel.$from.sameParent(sel.$to);
+      setBubble((b) => (b && b.x === a.left && b.y === a.top && b.len === len && b.single === single ? b : { x: a.left, y: a.top, len, single }));
     } else setBubble(null);
   }
 
@@ -1244,9 +1236,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   const pagesNow = counts.chars / cpp;
   const pagesLabel = pageInfo && pageInfo.pages > 0 ? pageInfo.pages : pagesNow;
   // 도구줄에 넘기는 함수는 늘 같은 참조로 (도구줄은 memo — 편집기가 다시 그려져도 도구줄은 커서가 움직일 때만)
-  const onAddFootnote = useStableFn(addFootnote);
   const onAutoFootnote = useStableFn(autoFootnote);
-  const onRewrite = useStableFn(rewrite);
   const onPickImage = useStableFn(() => fileRef.current?.click());
   const onRegenFootnote = useStableFn(regenFootnote);
   // 새 버전 후보 비교 — 입력마다 다시 읽지 않고, 비교 창을 열었을 때만 입력이 멈춘 뒤 읽는다(문단 LCS를 매번 다시 계산하지 않게)
@@ -1259,44 +1249,43 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
       {/* 가운데: 편집 영역 */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 상단 작업줄 */}
-        <div className="flex flex-wrap items-center gap-3 border-b border-stone-300 bg-stone-200 px-4 py-2">
-          <div className="min-w-[160px] flex-1 truncate text-xs text-stone-500" title="현재 절의 쪽 범위와 커서 위치">
+        <div className="flex flex-wrap items-center gap-2 border-b border-stone-300 bg-stone-200 px-4 py-2">
+          <div
+            className="min-w-[120px] flex-1 truncate text-xs text-stone-500"
+            title={
+              pageInfo && pageInfo.start > 0
+                ? `${pageInfo.side === "right" ? "오른쪽" : "왼쪽"} 페이지부터 시작${caretPage !== null ? ` · 커서는 ${sideOf(caretPage)} 페이지` : ""}`
+                : undefined
+            }
+          >
             {pageInfo && pageInfo.start === 0 ? (
-              <span>앞붙이 · 쪽 번호가 인쇄되지 않는 면 ({pageInfo.startIdx}번째 면부터)</span>
+              <span>앞붙이 (쪽 번호 없음)</span>
             ) : pageInfo ? (
               <>
                 <b className="text-stone-700">
                   p.{pageInfo.start}
                   {pageInfo.end !== pageInfo.start && `–${pageInfo.end}`}
-                </b>{" "}
-                · {pageInfo.side === "right" ? "오른쪽(홀수)" : "왼쪽(짝수)"} 페이지부터 시작
-                {caretPage !== null && (
-                  <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">
-                    커서 위치 {pageNo(caretPage)} · {sideOf(caretPage)} 페이지 (안쪽 여백은 {sideOf(caretPage) === "오른쪽" ? "왼쪽" : "오른쪽"})
-                  </span>
-                )}
+                </b>
+                {caretPage !== null && <span className="ml-2 text-stone-400">커서 {pageNo(caretPage)}</span>}
               </>
             ) : (
-              <span>쪽 번호 계산 중…</span>
+              <span>쪽 계산 중…</span>
             )}
           </div>
-          <label className="flex items-center gap-1 text-xs text-stone-600">
-            분량
+          <label className="flex items-center gap-1 text-xs text-stone-600" title={`AI가 이 분량에 맞춰 씁니다 (약 ${targetChars.toLocaleString()}자)`}>
+            목표
             <input
               type="number"
               min={0.5}
               max={60}
               step={0.5}
-              className="w-14 rounded border border-stone-300 px-1.5 py-1 text-right text-sm"
+              className="w-12 rounded border border-stone-300 px-1 py-1 text-right text-sm"
               value={targetPages}
               onChange={(e) => setTargetPages(Math.max(0.5, Math.min(60, Number(e.target.value) || 1)))}
               onBlur={() => onTargetPages(targetPages)}
             />
-            페이지 <span className="text-stone-400">(약 {targetChars.toLocaleString()}자)</span>
+            쪽
           </label>
-          <button className="btn-ghost text-xs" onClick={() => setPanelOpen(!panelOpen)} title="오른쪽 패널(AI 옵션·자료·이미지·버전 기록·교정 내역·각주) 열기/닫기">
-            {panelOpen ? "패널 닫기 ▸" : "◂ 패널"}
-          </button>
           {writing ? (
             <button
               className="btn-primary bg-red-700 hover:bg-red-800"
@@ -1307,33 +1296,20 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
             </button>
           ) : (
             <div className="relative">
-              <div className="flex gap-2">
-                <button className="btn-accent" onClick={onWriteClick} disabled={!canEdit} title={busyReason || undefined}>
-                  ✎ AI 집필하기
-                </button>
-                <button
-                  className="btn border-violet-600 text-violet-800 hover:bg-violet-50"
-                  disabled={autoDriving || !canEdit}
-                  onClick={() => {
-                    setModeAsk(false);
-                    setAutoOpen(true);
-                  }}
-                  title={autoDriving ? "자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : "고른 절 · 한 장 · 책 전체를 골라 절마다 집필 → 사실 확인 → 교정을 AI가 자동으로 진행"}
-                >
-                  ⚡ 자동 집필
-                </button>
-              </div>
+              <button className="btn-accent" onClick={onWriteClick} disabled={!canEdit} title={busyReason || undefined}>
+                ✎ AI 집필하기
+              </button>
               {modeAsk && (
-                <div className="absolute right-0 top-10 z-30 w-64 rounded-lg border border-stone-200 bg-white p-2 shadow-xl">
+                <div className="absolute right-0 top-10 z-30 w-60 rounded-lg border border-stone-200 bg-white p-2 shadow-xl">
                   <p className="px-2 py-1 text-xs text-stone-500">이미 본문이 있습니다. 어떻게 쓸까요?</p>
-                  <button className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100" onClick={() => startWrite("overwrite")}>
-                    덮어쓰기 <span className="block text-xs text-stone-400">지금 본문은 버전 기록에 보관</span>
-                  </button>
                   <button className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100" onClick={() => startWrite("continue")}>
-                    뒤에 이어쓰기 <span className="block text-xs text-stone-400">지정 분량만큼 이어서</span>
+                    뒤에 이어 쓰기 <span className="block text-xs text-stone-400">지금 본문 끝에 덧붙입니다</span>
                   </button>
                   <button className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100" onClick={() => startWrite("newVersion")}>
-                    새 버전으로 생성(비교) <span className="block text-xs text-stone-400">지금 본문은 그대로 두고 후보를 만듭니다 — 편집기 위 띠의 [크게 비교]에서 비교 후 선택</span>
+                    다른 버전 써 보기 <span className="block text-xs text-stone-400">지금 본문과 비교한 뒤 고릅니다</span>
+                  </button>
+                  <button className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-stone-100" onClick={() => startWrite("overwrite")}>
+                    새로 쓰기 <span className="block text-xs text-stone-400">지금 본문은 버전 기록에 남습니다</span>
                   </button>
                   <button className="mt-1 w-full rounded px-2 py-1 text-xs text-stone-400 hover:bg-stone-50" onClick={() => setModeAsk(false)}>
                     취소
@@ -1350,49 +1326,41 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
           >
             {proofBusy ? "교정 중…" : "교정·교열"}
           </button>
-          <button
-            className="btn"
-            disabled={!canEdit || chapterWriting || chapterProofing}
-            onClick={async () => {
-              if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
-              setReviseOpen(true);
-            }}
-            title={
-              chapterWriting
-                ? "이 장에서 AI가 쓰는 절(이어쓰기 포함)이 있습니다 — 끝난 뒤에 퇴고하세요"
-                : chapterProofing
-                  ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 퇴고하세요"
-                  : busyReason || "이 장의 절들을 한꺼번에 읽고 절 사이 중복·연결·흐름을 고칩니다"
-            }
-          >
-            장 퇴고
+          {/* 여러 절을 한꺼번에 다루는 큰 작업은 PRO 한 곳에 모은다 */}
+          <Menu label="PRO ▾" align="right" tone="text-violet-800" title="여러 절을 한꺼번에 쓰고 다듬는 고급 기능">
+            <button
+              className="block w-64 px-3 py-2 text-left text-sm hover:bg-violet-50 disabled:opacity-40"
+              disabled={autoDriving || !canEdit}
+              title={autoDriving ? "자동 집필이 진행 중입니다 (오른쪽 아래 진행 창)" : busyReason || undefined}
+              onClick={() => {
+                setModeAsk(false);
+                setAutoOpen(true);
+              }}
+            >
+              ⚡ 자동 집필
+              <span className="block text-xs text-stone-500">여러 절·장·책 전체를 AI가 차례로 집필 → 사실 확인 → 교정</span>
+            </button>
+            <button
+              className="block w-64 px-3 py-2 text-left text-sm hover:bg-violet-50 disabled:opacity-40"
+              disabled={!canEdit || chapterWriting || chapterProofing}
+              title={chapterWriting ? "이 장에서 AI가 쓰는 절이 있습니다 — 끝난 뒤에 하세요" : chapterProofing ? "이 장에서 교정 중인 절이 있습니다 — 끝난 뒤에 하세요" : busyReason || undefined}
+              onClick={async () => {
+                if (!(await flush())) return toast.error("원고 저장을 완료한 뒤 다시 시도하세요.");
+                setReviseOpen(true);
+              }}
+            >
+              ↻ 장 퇴고
+              <span className="block text-xs text-stone-500">이 장의 절들을 함께 읽고 겹치는 내용·흐름을 고칩니다</span>
+            </button>
+          </Menu>
+          <button className="btn-ghost px-2 text-xs" onClick={() => setPanelOpen(!panelOpen)} title="오른쪽 패널 열기/닫기" aria-label="오른쪽 패널 열기/닫기">
+            {panelOpen ? "패널 ▸" : "◂ 패널"}
           </button>
         </div>
 
-        {/* 서식 도구 — 기능 묶음마다 이름표를 붙여 구분한다 */}
-        <div className="space-y-1.5 border-b border-stone-300 bg-stone-100 px-3 py-1.5">
-          {editor && (
-            <>
-              {/* 한 줄 도구줄: 본문 서식 · 각주 · 찾기 · 선택 AI · 책 서식(펼침) — 선택 AI는 드래그하면 뜨는 말풍선에도 있다 */}
-              <EditorToolbar
-                editor={editor}
-                busyReason={busyReason}
-                fnBusy={fnBusy}
-                rewriteBusy={rewriteBusy}
-                bodySizePt={bodySizePt}
-                lineHeight={lineHeight}
-                paraSpacingMm={paraSpacingMm}
-                onLayout={onLayout}
-                onAddFootnote={onAddFootnote}
-                onAutoFootnote={onAutoFootnote}
-                onRewrite={onRewrite}
-                onPickImage={onPickImage}
-                onBookSearch={onBookSearch}
-                onImageSuggest={onImageSuggest}
-                imageBusy={imageBusy}
-              />
-            </>
-          )}
+        {/* 서식 도구줄 — 글 모양만. AI 기능은 본문을 드래그하면 뜨는 말풍선에 */}
+        <div className="border-b border-stone-300 bg-stone-100 px-3 py-1">
+          {editor && <EditorToolbar editor={editor} busyReason={busyReason} bodySizePt={bodySizePt} lineHeight={lineHeight} paraSpacingMm={paraSpacingMm} onLayout={onLayout} onPickImage={onPickImage} onBookSearch={onBookSearch} />}
           <input
             ref={fileRef}
             type="file"
@@ -1412,7 +1380,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
         {proofBusy && (
           <div className="flex items-center gap-2 border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-sky-700 border-t-transparent" />
-            교정·교열 중 — 끝날 때까지 이 절은 잠겨 있습니다. 목차에서 다른 절로 옮겨 작업해도 교정은 계속되고, 끝나면 알려 드립니다.
+            교정 중 — 끝날 때까지 이 절은 잠깁니다. 다른 절을 써도 됩니다.
             <button className="ml-auto shrink-0 rounded bg-sky-800 px-2 py-0.5 text-xs font-semibold text-white hover:bg-sky-700" onClick={() => stopProof(section.id)} title="교정을 멈추고 잠금을 풉니다 (고친 것은 넣지 않습니다)">
               ■ 중지
             </button>
@@ -1453,7 +1421,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
         {autoChecking && (
           <div className="flex items-center gap-2 border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm text-violet-900">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-violet-700 border-t-transparent" />
-            자동 집필이 이 절을 사실 확인·교정하는 중 — 끝나면 고친 원고를 다시 불러옵니다. 그동안 이 절은 잠겨 있습니다.
+            자동 집필이 이 절을 사실 확인·교정하는 중 — 끝날 때까지 잠깁니다.
           </div>
         )}
         {(notice || lengthHint) && (
@@ -1607,11 +1575,8 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
                 <p className="mt-1 text-[11px] text-amber-700">그동안 위 본문을 고쳐도 됩니다. 다 쓰면 그때의 본문 끝에 이어 붙입니다.</p>
               </div>
             )}
-            <p className="mt-2 text-center font-sans text-[10px] text-stone-400">
-              이 절 {pg?.pages ?? 1}쪽 ·{" "}
-              {pg?.synced
-                ? "쪽 나눔을 실제 조판(펼침면 미리보기)에 맞췄습니다"
-                : "쪽 나눔은 화면 계산값입니다 — 저장 후 실제 조판을 다시 재면 미리보기와 같은 쪽으로 맞춥니다"}
+            <p className="mt-2 text-center font-sans text-[10px] text-stone-400" title={pg?.synced ? "미리보기와 같은 쪽 나눔입니다" : "저장하면 미리보기와 같은 쪽 나눔으로 맞춥니다"}>
+              이 절 {pg?.pages ?? 1}쪽
             </p>
           </div>
         </div>
@@ -1629,8 +1594,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
           <div className="h-1.5 w-32 overflow-hidden rounded-full bg-stone-100">
             <div className="h-full bg-amber-600" style={{ width: `${Math.min(100, (pagesLabel / targetPages) * 100)}%` }} />
           </div>
-          <span className="ml-auto text-stone-400">1쪽 ≈ {Math.round(cpp)}자 (조판 결과로 자동 보정)</span>
-          <label className="flex items-center gap-1" title="화면 확대 (인쇄에는 영향 없음)">
+          <label className="ml-auto flex items-center gap-1" title="화면 확대 (인쇄에는 영향 없음)">
             화면
             <select className="rounded border border-stone-300 bg-white px-1 py-0 text-xs" value={zoom} onChange={(e) => setZoom(Number(e.target.value))}>
               {[1, 1.25, 1.5, 1.75].map((z) => (
@@ -1703,27 +1667,21 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
                   </label>
                 </div>
               </div>
-              <div className="rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-600">
-                <div className="mb-1 font-semibold text-stone-700">집필 때 AI가 함께 참고하는 것</div>
-                <ul className="list-disc pl-4">
-                  <li>instruction.md 스타일 규칙 (항상)</li>
-                  <li>책 정보 · 전체 목차 · 이 절의 요지</li>
-                  <li>작가 문체 프로필 {project.styleProfile ? "✓" : "(없음 — 설정에서 학습)"}</li>
-                  <li>앞 절 요약과 직전 절 마지막 문단</li>
-                  <li>용어집 {project.glossary.length ? `(${project.glossary.length}개)` : "(없음)"}</li>
+              {section.hook && <p className="text-xs text-amber-800">✦ 흥미 포인트: {section.hook}</p>}
+              <details className="rounded-lg bg-stone-100 p-2.5 text-xs leading-5 text-stone-600">
+                <summary className="cursor-pointer font-semibold text-stone-700">AI가 참고하는 것</summary>
+                <ul className="mt-1 list-disc pl-4">
+                  <li>책 정보 · 목차 · 앞 절 내용</li>
+                  <li>내 문체 {project.styleProfile ? "✓" : "(책 설정에서 학습할 수 있어요)"}</li>
+                  {project.glossary.length > 0 && <li>용어집 {project.glossary.length}개</li>}
                   <li>
-                    이 절의 자료 —{" "}
                     <button className="underline" onClick={() => setTab("refs")}>
-                      [자료] 탭
-                    </button>
-                    에 올린 글을 근거로 쓰고 출처를 표시
+                      자료
+                    </button>{" "}
+                    탭에 올린 글 (출처 표시)
                   </li>
                 </ul>
-              </div>
-              {section.hook && <p className="text-xs text-amber-800">✦ 흥미 포인트: {section.hook}</p>}
-              <div className="text-xs text-stone-400">
-                상태: {status} · 단축키: {SHORTCUT_HINT}
-              </div>
+              </details>
               {/* 개발자 정보 — 관리자에게만 */}
               {me?.role === "superadmin" && (
                 <details className="rounded border border-stone-200 p-2 text-xs text-stone-500">
@@ -1867,33 +1825,26 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
         />
       )}
 
-      {/* 드래그 선택 → 선택 AI 말풍선 (각주는 도구줄 [각주]와 오른쪽 [각주] 탭에서) */}
+      {/* 드래그 선택 → 말풍선: 단어·구절이면 각주, 문장·문단이면 다듬기·늘리기… */}
       {bubble && !fnEdit && !streaming && !rewritePreview && (
-        <div
-          data-fn-ui
-          className="fixed z-40 flex items-center gap-0.5 rounded-lg border border-stone-200 bg-white p-0.5 font-sans shadow-lg"
-          style={{ left: Math.max(8, bubble.x - 8), top: Math.max(8, bubble.y - 40) }}
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          {(Object.keys(REWRITE_LABEL) as RewriteAction[]).map((a) => (
-            <button key={a} className="rounded-md px-2 py-1 text-xs text-violet-800 hover:bg-violet-50 disabled:opacity-50" disabled={!canEdit || !!fnBusy} onClick={() => rewrite(a)}>
-              {rewriteBusy === a ? "…" : REWRITE_LABEL[a]}
-            </button>
-          ))}
-          <span className="mx-0.5 h-4 border-l border-stone-200" />
-          <button
-            className="rounded-md px-2 py-1 text-xs text-teal-800 hover:bg-teal-50"
-            title="고른 글을 책의 기억(정의·주장·쓴 사례·쓰지 않을 것·표현 유지)에 넣습니다 — 모든 AI 작업이 지킵니다"
-            onClick={() => {
-              if (!editor) return;
-              const { from, to } = editor.state.selection;
-              setMemoryDraft(editor.state.doc.textBetween(from, to, " ").trim());
-              setTab("memory");
-            }}
-          >
-            기억
-          </button>
-        </div>
+        <SelectionBubble
+          x={bubble.x}
+          y={bubble.y}
+          length={bubble.len}
+          singleBlock={bubble.single}
+          disabled={!canEdit || !!fnBusy}
+          fnBusy={fnBusy === "one"}
+          rewriteBusy={rewriteBusy}
+          onFootnote={(ai) => void addFootnote(ai)}
+          onRewrite={(a) => void rewrite(a)}
+          onMemory={() => {
+            if (!editor) return;
+            const { from, to } = editor.state.selection;
+            setMemoryDraft(editor.state.doc.textBetween(from, to, " ").trim());
+            setTab("memory");
+            setPanelOpen(true);
+          }}
+        />
       )}
 
       {/* 선택 영역 AI 결과 — 원문과 비교해 보고 적용 */}

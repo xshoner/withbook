@@ -1,5 +1,5 @@
 /**
- * 편집 화면 단축키 — 단축키 창·AI 옵션 안내·버튼 툴팁이 모두 이 목록을 쓴다 (한 곳만 고치면 된다).
+ * 편집 화면 단축키 — 단축키 창·버튼 툴팁이 모두 이 목록을 쓴다 (한 곳만 고치면 된다).
  */
 export const KEYS = {
   save: "Ctrl+S",
@@ -24,12 +24,9 @@ export const SHORTCUTS: [string, string][] = [
   ["Ctrl+Z / Ctrl+Y", "실행 취소 / 다시 실행"],
   ["F2", "목차에서 고른 절 이름 바꾸기"],
   ["Space + 화살표", "목차에서 ⋮⋮에 초점을 두고 순서 바꾸기"],
-  [KEYS.focus, "집중 모드 켜기·끄기 (목차·패널 접기, 조판은 입력이 멈춘 뒤에)"],
+  [KEYS.focus, "집중 모드 켜기·끄기 (목차·패널 접기)"],
   [KEYS.help, "단축키 목록 열기·닫기"],
 ];
-
-/** 한 줄 안내 (AI 옵션 탭) */
-export const SHORTCUT_HINT = `${KEYS.save} 저장 · ${KEYS.stop} 집필 중지 · ${KEYS.prevSection}/${KEYS.nextSection} 이전/다음 절 · ${KEYS.find} 찾기 · ${KEYS.help} 단축키 전체`;
 
 /** 절 이동 단축키인가 — Alt(맥 Option)+↑/↓ (Ctrl·Cmd와 함께 누르면 아니다) */
 export function sectionNavKey(e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; key: string }): "prev" | "next" | "nextEmpty" | null {

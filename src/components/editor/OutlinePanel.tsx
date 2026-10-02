@@ -170,7 +170,7 @@ export default function OutlinePanel({
       {open && (
         <div className="mt-1.5 rounded border border-sky-200 bg-white p-2">
           {unavailable ? (
-            <p className="text-stone-500">개요 보기·수정을 아직 쓸 수 없습니다 (서버 기능 준비 중). 지금은 [AI 집필하기]가 개요를 알아서 짭니다.</p>
+            <p className="text-stone-500">[AI 집필하기]가 개요를 알아서 짭니다.</p>
           ) : busy === "load" && !data ? (
             <p className="text-stone-400">불러오는 중…</p>
           ) : !data?.outline && !draft ? (

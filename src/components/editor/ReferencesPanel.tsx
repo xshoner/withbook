@@ -117,7 +117,7 @@ export default function ReferencesPanel({ sectionId }: { sectionId: string }) {
         이 절에 쓸 자료(기사·논문·메모 등)를 올리세요. <b>AI 집필이 자료를 근거로 삼고</b>, 자료에서 가져온 내용에는 출처를 표시합니다.
       </p>
       {unavailable ? (
-        <p className="text-xs text-stone-500">자료 기능을 아직 쓸 수 없습니다 (서버 기능 준비 중).</p>
+        <p className="text-xs text-stone-500">자료 기능을 지금은 쓸 수 없습니다.</p>
       ) : (
         <>
           <div className="flex flex-wrap gap-2">

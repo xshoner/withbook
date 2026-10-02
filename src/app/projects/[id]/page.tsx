@@ -10,15 +10,16 @@ import SectionEditor, { stopWriting } from "@/components/editor/SectionEditor";
 import { flushAllPending, unsavedLabels, useSaveSummary } from "@/components/editor/useAutosave";
 import { useAiJobs, useRunningIds } from "@/components/editor/aiJobs";
 import { stopProof, useProofJobs, useProofRunningIds } from "@/components/editor/proofJobs";
-import type { LayoutSettings } from "@/lib/layout";
 import type { PagedInfo, ProjectTree, SectionPageInfo, TreeSection } from "@/components/types";
 import { api, fmtTime } from "@/lib/client";
 import { toast, toastError } from "@/components/ui/feedback";
+import type { LayoutSettings } from "@/lib/layout";
 import { numberChapters } from "@/lib/layout";
 import { shiftSection } from "@/lib/page-shift";
 import { mergePrintLayouts, type SectionPrintLayout } from "@/components/editor/pageMap";
 import { KEYS, SHORTCUTS, sectionNavKey } from "@/components/editor/shortcuts";
 import { isFocusKey, toggleFocusMode, useFocusMode } from "@/components/editor/focusMode";
+import Menu from "@/components/editor/Menu";
 
 // 열 때만 필요한 화면은 따로 불러온다 (편집 화면 첫 로딩을 가볍게)
 const BookSearchDialog = dynamic(() => import("@/components/BookSearchDialog"));
@@ -327,7 +328,7 @@ export default function Workspace() {
       setTree((t) => (t ? { ...t, layout: { ...t.layout, ...patch } } : t));
       api(`/api/projects/${id}`, { method: "PATCH", json: { layout: patch } })
         .then(() => setMeasureKey((k) => k + 1))
-        .catch((e) => toastError(e, "조판 설정 저장 실패: "));
+        .catch((e) => toastError(e, "서식 저장 실패: "));
     },
     [id],
   );
@@ -418,7 +419,7 @@ export default function Workspace() {
               setView("preview");
             }}
           >
-            펼침면 미리보기
+            미리보기
           </button>
         </div>
         <button
@@ -428,19 +429,23 @@ export default function Workspace() {
         >
           확인할 것{checkCount ? ` ${checkCount}` : ""}
         </button>
-        <button
-          className="btn"
-          onClick={() => window.open(`/projects/${id}/cover`, `cover-${id}`)}
-          title="표지(날개·책등 포함 펼침면)를 AI로 만들고 글을 얹어 인쇄용 PDF로 내보냅니다 — 새 창"
-        >
-          표지 디자인
-        </button>
-        <button className="btn" onClick={async () => {
-          if (!(await flushOrWarn())) return;
-          setExportOpen(true);
-        }}>
-          내보내기
-        </button>
+        {/* 책을 내는 데 쓰는 것 — 표지·내보내기를 한 메뉴로 */}
+        <Menu label="출간 ▾" align="right" buttonClass="btn" title="표지 디자인 · PDF/HWPX 내보내기">
+          <button className="block w-56 px-3 py-2 text-left text-sm text-stone-800 hover:bg-stone-100" onClick={() => window.open(`/projects/${id}/cover`, `cover-${id}`)}>
+            표지 디자인
+            <span className="block text-xs text-stone-500">AI로 표지를 만들고 인쇄용 PDF로 (새 창)</span>
+          </button>
+          <button
+            className="block w-56 px-3 py-2 text-left text-sm text-stone-800 hover:bg-stone-100"
+            onClick={async () => {
+              if (!(await flushOrWarn())) return;
+              setExportOpen(true);
+            }}
+          >
+            내보내기
+            <span className="block text-xs text-stone-500">본문 PDF · HWPX · 백업</span>
+          </button>
+        </Menu>
         <Link className="btn" href={`/projects/${id}/settings`}>
           책 설정
         </Link>
@@ -488,10 +493,10 @@ export default function Workspace() {
             figureBase={figureBase}
             onMeta={onMeta}
             onSaved={onSaved}
-            onLayout={onLayout}
             onRename={onRename}
             onRenameChapter={onRenameChapter}
             onTargetPages={onTargetPages}
+            onLayout={onLayout}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center text-stone-400">

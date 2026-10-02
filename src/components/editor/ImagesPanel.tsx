@@ -121,8 +121,8 @@ export default function ImagesPanel(props: Props) {
       <div role="radiogroup" aria-label="이미지 방식" className="grid grid-cols-2 gap-1 border-b border-stone-200 bg-indigo-50/60 p-1.5 text-xs">
         {(
           [
-            ["search", "🔍 외부 자료에서 찾아 제안"],
-            ["make", "✨ 직접 만들기"],
+            ["search", "🔍 찾아서 추천"],
+            ["make", "✨ AI로 만들기"],
           ] as const
         ).map(([k, l]) => (
           <button
@@ -188,7 +188,7 @@ function SearchPane({ sectionId, lockReason, getContent, onInsert, onLocate }: S
     <div className="flex h-full flex-col text-sm">
       <div className="space-y-2 border-b border-stone-200 p-3">
         <p className="text-xs leading-5 text-stone-600">
-          AI가 이 절의 문단을 읽고 그림이 필요한 곳마다 <b>논문 도표·그래프·도식</b> 같은 전문 이미지를 찾아 추천합니다. [승인]하면 그 문단 끝에 캡션·출처와 함께 들어갑니다.
+          그림이 필요한 문단마다 도표·그래프를 찾아 추천합니다. [승인]하면 캡션·출처와 함께 들어갑니다.
         </p>
         <button className="btn-image w-full px-3.5 py-1.5 text-sm" disabled={running || !!lockReason} title={lockReason || undefined} onClick={() => void runImageSuggest(sectionId, getContent())}>
           {running ? "문단을 읽고 이미지를 찾는 중…" : entry.status === "done" ? "↻ 다시 추천 받기" : "✦ 이 절 이미지 추천 받기"}
@@ -196,7 +196,7 @@ function SearchPane({ sectionId, lockReason, getContent, onInsert, onLocate }: S
         {running && (
           <div className="flex items-center gap-2 text-[11px] text-indigo-800">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-indigo-700 border-t-transparent" />
-            그림이 필요한 문단 고르기 → 이미지 검색 → 후보 고르기 (보통 20초~1분). 다른 탭·절로 옮겨도 계속됩니다.
+            이미지를 찾는 중 (보통 1분 안팎) — 다른 일을 해도 계속됩니다.
           </div>
         )}
         {entry.status === "error" && <p className="rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">추천하지 못했습니다: {entry.error}</p>}

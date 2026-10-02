@@ -92,7 +92,7 @@ export default function FootnotesPanel(props: {
           {props.fnBusy === "auto" ? "중요 키워드 찾는 중…" : "✦ AI 자동 각주 (이 절 전체)"}
         </button>
         <p className="text-[11px] leading-4 text-stone-500">
-          본문에서 단어를 드래그하면 [AI 각주]·[직접 각주]가 뜹니다. 번호를 클릭하면 내용을 고칠 수 있습니다. 보라색 = AI, 주황색 = 직접 단 각주. 인쇄·PDF에서는 쪽 아래에 번호순으로 들어갑니다.
+          본문에서 단어를 드래그하면 각주를 달 수 있습니다. 번호를 누르면 고칩니다.
         </p>
         {locked && <p className="rounded bg-stone-100 px-2 py-1 text-[11px] text-stone-600">{props.lockReason} — 끝날 때까지 각주를 고칠 수 없습니다.</p>}
       </div>

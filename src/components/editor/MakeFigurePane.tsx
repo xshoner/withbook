@@ -152,7 +152,7 @@ export default function MakeFigurePane({ sectionId, editor, bookTitle, sectionTi
   return (
     <div className="h-full space-y-3 overflow-auto p-3 text-sm">
       <p className="text-xs leading-5 text-stone-600">
-        <b>표지 디자인 AI와 같은 그림 연결</b>로 고른 문단의 내용을 그림(도식·인포그래픽·삽화·사진풍)으로 그립니다. 만든 그림에 캡션을 적고 [승인]하면 그 문단 끝에 들어갑니다.
+        고른 문단의 내용을 AI가 그림(도식·삽화 등)으로 그립니다. [승인]하면 그 문단 끝에 들어갑니다.
       </p>
 
       <div>
