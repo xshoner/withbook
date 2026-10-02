@@ -80,7 +80,7 @@ npm run dev
 
 - 원고 입력은 자동 저장(순차 큐·오프라인 복구본). 절마다 버전 기록(원고 전체를 담으므로 DB 용량을 위해 제한): 자동 저장 최근 10개 + 그 이전 14일은 하루 1개 · 직접 저장 30개 · AI 초안 원본 3개 · 그 밖(AI 집필 전·교정 전·복원 전 등) 30개.
 - 프로젝트 ZIP: [내보내기 → 백업]. 표지 디자인·절 참고 자료·고친 개요·만든 그림 목록(extras.json)과 manifest.json(빠진 이미지·담지 않은 것)도 담는다. 복원 한도 50MB를 넘으면 내려받을 때 알리고, 백업 때 저장소에 없던 이미지는 복원에서 건너뛰고 알린다. 기본은 버전 기록을 빼고(현재 원고·이미지), [버전 기록 포함]을 켜면 담는다. 장·이미지를 하나씩 ZIP에 흘려 넣어 메모리를 적게 쓴다. 복원은 두 형식 모두 받는다.
-- **DB 전체 백업 (자동, 주 1회)**: GitHub Actions `DB backup`(.github/workflows/db-backup.yml)이 매주 월요일 03:00(한국 시간)에 `withbook` 스키마를 `pg_dump`로 떠서 AES256으로 암호화한 뒤 Supabase Storage의 비공개 `backups` 버킷(`db/withbook-날짜.dump.gpg`)에 올리고 최근 12개만 남긴다. 저장소가 공개라서 Actions 아티팩트에는 남기지 않는다. [Actions → DB backup → Run workflow]로 바로 돌릴 수도 있다.
+- **DB 전체 백업 (주 1회 — 지금은 꺼 둠, 켜는 법은 워크플로 파일 맨 위 주석)**: GitHub Actions `DB backup`(.github/workflows/db-backup.yml)이 매주 월요일 03:00(한국 시간)에 `withbook` 스키마를 `pg_dump`로 떠서 AES256으로 암호화한 뒤 Supabase Storage의 비공개 `backups` 버킷(`db/withbook-날짜.dump.gpg`)에 올리고 최근 12개만 남긴다. 저장소가 공개라서 Actions 아티팩트에는 남기지 않는다. [Actions → DB backup → Run workflow]로 바로 돌릴 수도 있다.
   - 저장소 Settings → Secrets and variables → Actions에 넣는다: `BACKUP_DATABASE_URL`(Session pooler 5432 또는 Direct 주소 — `DIRECT_URL`과 같은 값), `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `BACKUP_PASSPHRASE`(긴 임의 문자열 — **잃으면 백업을 풀 수 없으니 따로 보관**).
   - 복원(새 DB나 테스트 DB에 먼저):
     ```sh
@@ -107,10 +107,10 @@ npm run dev
 ## 운영 점검과 알림
 
 - **서버 오류 일지**: `handle()`·NDJSON 스트림이 5xx로 끝나면 `AppSetting`의 `errors:YYYY-MM-DD`(한국 시간)에 경로·오류 종류(이름·코드·상태)·화면 안내 문구만 모아 센다(원래 오류 문구는 원고가 섞일 수 있어 남기지 않는다). 30일 보관.
-- **매일 점검**: GitHub Actions `Daily check`(.github/workflows/daily-check.yml)가 매일 09:00에 `GET /api/health?report=1`(`Authorization: Bearer HEALTH_TOKEN`)을 부른다. 서버가 응답하지 않거나 DB·저장소가 이상하거나 어제 서버 오류가 있으면 `운영 알림` 이슈를 열고(열려 있으면 댓글) 저장소 알림 메일이 온다. 확인을 마치면 이슈를 닫는다. 하루 한 번 정리 작업도 이 호출 뒤에 돈다.
+- **매일 점검** (지금은 꺼 둠 — 켜는 법은 워크플로 파일 맨 위 주석): GitHub Actions `Daily check`(.github/workflows/daily-check.yml)가 매일 09:00에 `GET /api/health?report=1`(`Authorization: Bearer HEALTH_TOKEN`)을 부른다. 서버가 응답하지 않거나 DB·저장소가 이상하거나 어제 서버 오류가 있으면 `운영 알림` 이슈를 열고(열려 있으면 댓글) 저장소 알림 메일이 온다. 확인을 마치면 이슈를 닫는다. 하루 한 번 정리 작업도 이 호출 뒤에 돈다.
   - 설정: 같은 임의 값(16자 이상, 예: `openssl rand -hex 24`)을 **Vercel 환경 변수 `HEALTH_TOKEN`**(Production, 넣은 뒤 다시 배포)과 **GitHub Secrets `HEALTH_TOKEN`**에 넣는다. 다른 주소를 점검하려면 Secrets `APP_URL`.
   - 저장소가 공개라 이슈도 공개다 — 보고에는 경로·종류·건수·화면 안내만 들어간다.
-- **CI**: push·PR마다 타입 검사·단위 테스트(`check`)와, 빌드한 앱을 새 Postgres에 띄워 브라우저로 확인하는 스모크 테스트(`smoke`)를 돌린다. 스모크의 미리보기·PDF 검사는 공개 fonts 버킷에서 KoPub을 받아야 하므로 Secrets `NEXT_PUBLIC_SUPABASE_URL`이 있을 때만 한다.
+- **CI**: push·PR마다 타입 검사·단위 테스트(`check`)를 돌린다. 빌드한 앱을 새 Postgres에 띄워 브라우저로 확인하는 스모크 테스트(`smoke`)는 지금은 [Actions → CI → Run workflow]로 손으로 돌릴 때만 실행한다. 스모크의 미리보기·PDF 검사는 공개 fonts 버킷에서 KoPub을 받아야 하므로 Secrets `NEXT_PUBLIC_SUPABASE_URL`이 있을 때만 한다.
 
 ## 검증 명령
 

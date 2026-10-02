@@ -24,7 +24,9 @@ jobs:
 
   # 실제로 빌드해 띄우고(로컬 모드) 새 Postgres에서 편집·저장·찾기·삭제/되돌리기·백업/복원·HWPX(+글꼴이 있으면 미리보기·PDF)를 브라우저로 확인한다.
   # 운영 DB에는 접근하지 않는다. 글꼴은 공개 fonts 버킷에서 받는다(NEXT_PUBLIC_SUPABASE_URL Secret이 없으면 조판·PDF 검사만 건너뜀).
+  # 지금은 꺼 둠 — [Actions → CI → Run workflow]로 손으로 돌릴 때만 실행. 푸시마다 돌리려면 아래 if 줄을 지운다
   smoke:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:

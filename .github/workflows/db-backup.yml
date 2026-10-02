@@ -3,9 +3,10 @@ name: DB backup
 # 매주 월요일 03:00(한국 시간) — withbook 스키마 전체를 pg_dump → 암호화(AES256) → Supabase Storage 비공개 backups 버킷(최근 12개).
 # 필요한 저장소 Secrets: BACKUP_DATABASE_URL(Session pooler 5432 또는 Direct 주소), NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, BACKUP_PASSPHRASE
 # 저장소가 공개라서 백업 파일을 Actions 아티팩트로 남기지 않는다.
+# 지금은 꺼 둠(손으로만 실행) — Secrets 4개를 넣은 뒤 아래 두 줄의 주석을 풀면 매주 돈다
 on:
-  schedule:
-    - cron: "0 18 * * 0"
+  # schedule:
+  #   - cron: "0 18 * * 0"
   workflow_dispatch:
 
 jobs:

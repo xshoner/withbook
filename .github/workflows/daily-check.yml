@@ -3,9 +3,10 @@ name: Daily check
 # 매일 09:00(한국 시간) 운영 점검 — /api/health?report=1로 서버 상태와 어제 서버 오류를 읽고,
 # 문제가 있으면 '운영 알림' 이슈를 열거나(이미 열려 있으면 댓글) 저장소 알림 메일로 알린다. 하루 한 번 정리 작업도 이때 돈다.
 # 필요한 것: 저장소 Secrets HEALTH_TOKEN(Vercel 환경 변수 HEALTH_TOKEN과 같은 값, 16자 이상). 선택: APP_URL(기본 https://withbook.vercel.app)
+# 지금은 꺼 둠(손으로만 실행) — HEALTH_TOKEN을 넣은 뒤 아래 두 줄의 주석을 풀면 매일 돈다
 on:
-  schedule:
-    - cron: "0 0 * * *"
+  # schedule:
+  #   - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
