@@ -48,7 +48,7 @@ function EditorToolbar({ editor, busyReason, bodySizePt, lineHeight, paraSpacing
       disabled={!!busyReason}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className={`flex h-7 min-w-7 items-center justify-center rounded px-1.5 text-xs disabled:opacity-40 ${on ? "bg-stone-800 text-white" : "text-stone-700 hover:bg-stone-200"}`}
+      className={`flex h-7 min-w-7 items-center justify-center rounded px-1.5 text-xs disabled:opacity-40 ${on ? "bg-stone-800 text-white" : "text-stone-700 hover:bg-white"}`}
     >
       {label}
     </button>
@@ -113,7 +113,6 @@ function EditorToolbar({ editor, busyReason, bodySizePt, lineHeight, paraSpacing
         </div>
       </Menu>
       <FindPanel editor={editor} onBookSearch={onBookSearch} disabled={!!busyReason} />
-      <span className="ml-auto hidden text-[11px] text-stone-400 lg:inline">글을 드래그하면 AI 다듬기·각주 메뉴가 뜹니다</span>
     </div>
   );
 }
