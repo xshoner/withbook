@@ -24,7 +24,7 @@ export default function ExportDialog({
   /** 제출 전 점검의 [확인할 것 열기] — 편집 화면의 확인할 것(ChecksDialog)을 연다. 없으면 안내 문구만 */
   onOpenChecks?: () => void;
 }) {
-  const [tab, setTab] = useState<"submit" | "pdf" | "hwpx" | "backup">("pdf");
+  const [tab, setTab] = useState<"submit" | "pdf" | "hwpx" | "epub" | "backup">("pdf");
   const [submit, setSubmit] = useState<{ items: SubmitItem[]; counts: Record<SubmitItem["status"], number> } | null>(null);
   const [submitErr, setSubmitErr] = useState("");
   const [layout, setLayout] = useState<Layout | null>(null);
@@ -125,6 +125,18 @@ export default function ExportDialog({
     }
   };
 
+  const makeEpub = async () => {
+    setBusy("전자책 만드는 중…");
+    setErr("");
+    try {
+      await download(`/api/projects/${projectId}/export/epub`, {}, `${title}.epub`);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
       <div className="card w-[560px] max-w-[95vw] p-0" onClick={(e) => e.stopPropagation()}>
@@ -140,6 +152,7 @@ export default function ExportDialog({
               ["submit", "제출 전 점검"],
               ["pdf", "PDF (인쇄 제출용)"],
               ["hwpx", "HWPX (한글)"],
+              ["epub", "EPUB (전자책)"],
               ["backup", "백업"],
             ] as const
           ).map(([k, l]) => (
@@ -278,6 +291,19 @@ export default function ExportDialog({
               <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">쪽 나눔은 한글이 다시 계산하므로 PDF와 쪽수가 조금 다를 수 있습니다. 인쇄 제출은 PDF를 권장합니다.</p>
               <button className="btn-accent w-full" disabled={!!busy} onClick={makeHwpx}>
                 {busy ?? "HWPX 다운로드"}
+              </button>
+            </>
+          )}
+          {tab === "epub" && (
+            <>
+              <p className="text-stone-600">
+                전자책 앱(리디, 교보eBook, 애플 북스 등)에서 읽을 수 있는 EPUB 파일로 내보냅니다. 표제지·차례·본문·그림·각주·참고문헌·판권면이 들어갑니다.
+              </p>
+              <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">
+                전자책은 쪽이 정해져 있지 않아 글자 크기·글꼴은 읽는 사람이 기기에서 고릅니다. 각주는 장 끝에 모입니다. 찾아보기(색인)와 표지 그림은 들어가지 않습니다.
+              </p>
+              <button className="btn-accent w-full" disabled={!!busy} onClick={makeEpub}>
+                {busy ?? "EPUB 다운로드"}
               </button>
             </>
           )}

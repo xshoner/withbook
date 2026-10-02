@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { prisma } from "../db";
+import { prisma, rawTable } from "../db";
 import { docPlainText, parseDoc } from "../doc/doc";
 import { collectBiblioCandidates, frequentWords, type IndexTerm, normalizeIndex } from "../back-matter";
 import { readMemoryText } from "../book-memory-store";
@@ -75,7 +75,7 @@ export async function collectBiblio(projectId: string) {
   const sectionIds = p.chapters.flatMap((c) => c.sections.map((s) => s.id));
   const refRows = sectionIds.length
     ? await prisma.$queryRaw<{ key: string; name: string | null }[]>`
-        SELECT key, (value::jsonb ->> 'name') AS name FROM "AppSetting"
+        SELECT key, (value::jsonb ->> 'name') AS name FROM ${rawTable("AppSetting")}
         WHERE starts_with(key, 'ref:') AND split_part(key, ':', 2) = ANY(${sectionIds})`
     : [];
   const refsOf = new Map<string, string[]>();

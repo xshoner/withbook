@@ -79,7 +79,16 @@ npm run dev
 ## 백업
 
 - 원고 입력은 자동 저장(순차 큐·오프라인 복구본). 절마다 버전 기록(원고 전체를 담으므로 DB 용량을 위해 제한): 자동 저장 최근 10개 + 그 이전 14일은 하루 1개 · 직접 저장 30개 · AI 초안 원본 3개 · 그 밖(AI 집필 전·교정 전·복원 전 등) 30개.
-- 프로젝트 ZIP: [내보내기 → 백업]. 표지 디자인·절 참고 자료·고친 개요·만든 그림 목록(extras.json)과 manifest.json(빠진 이미지·담지 않은 것)도 담는다. 복원 한도 50MB를 넘으면 내려받을 때 알리고, 백업 때 저장소에 없던 이미지는 복원에서 건너뛰고 알린다. 기본은 버전 기록을 빼고(현재 원고·이미지), [버전 기록 포함]을 켜면 담는다. 장·이미지를 하나씩 ZIP에 흘려 넣어 메모리를 적게 쓴다. 복원은 두 형식 모두 받는다. DB 전체 백업은 Supabase(유료 플랜 일일 백업/PITR) 또는 `pg_dump`로 한다.
+- 프로젝트 ZIP: [내보내기 → 백업]. 표지 디자인·절 참고 자료·고친 개요·만든 그림 목록(extras.json)과 manifest.json(빠진 이미지·담지 않은 것)도 담는다. 복원 한도 50MB를 넘으면 내려받을 때 알리고, 백업 때 저장소에 없던 이미지는 복원에서 건너뛰고 알린다. 기본은 버전 기록을 빼고(현재 원고·이미지), [버전 기록 포함]을 켜면 담는다. 장·이미지를 하나씩 ZIP에 흘려 넣어 메모리를 적게 쓴다. 복원은 두 형식 모두 받는다.
+- **DB 전체 백업 (자동, 주 1회)**: GitHub Actions `DB backup`(.github/workflows/db-backup.yml)이 매주 월요일 03:00(한국 시간)에 `withbook` 스키마를 `pg_dump`로 떠서 AES256으로 암호화한 뒤 Supabase Storage의 비공개 `backups` 버킷(`db/withbook-날짜.dump.gpg`)에 올리고 최근 12개만 남긴다. 저장소가 공개라서 Actions 아티팩트에는 남기지 않는다. [Actions → DB backup → Run workflow]로 바로 돌릴 수도 있다.
+  - 저장소 Settings → Secrets and variables → Actions에 넣는다: `BACKUP_DATABASE_URL`(Session pooler 5432 또는 Direct 주소 — `DIRECT_URL`과 같은 값), `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `BACKUP_PASSPHRASE`(긴 임의 문자열 — **잃으면 백업을 풀 수 없으니 따로 보관**).
+  - 복원(새 DB나 테스트 DB에 먼저):
+    ```sh
+    gpg --decrypt withbook-….dump.gpg > withbook.dump
+    pg_restore --no-owner --no-privileges -d "postgresql://…:5432/postgres" withbook.dump
+    ```
+  - Supabase 유료 플랜의 일일 백업/PITR이 있으면 그것과 함께 쓴다.
+- **원시 SQL 규칙**: `$queryRaw`에는 표 이름을 직접 쓰지 않고 `rawTable("Section")`처럼 스키마를 붙인다(`src/lib/db.ts`). 풀러를 거치면 원시 SQL이 `public` 스키마를 봐서 운영에서만 실패한다(2026-10 교정·퇴고 적용·팩트체크·자료 탭 오류). `tests/raw-sql-schema.test.mjs`가 막는다.
 - 휴지통 프로젝트는 30일 뒤 자동 삭제.
 - 지운 장·절도 30일 보관한다(`AppSetting`의 `trash:` 키). 삭제 알림의 [되돌리기] 또는 목차의 [삭제한 장·절]에서 되돌린다. 지우기 전에 밀린 자동 저장을 먼저 보내고, 지운 절로 가는 저장(404)은 되풀이하지 않고 버린다.
 - AI 집필 중 받은 글은 5초마다 `AppSetting`의 `ai-partial:{절 id}`에 보관한다(7일). 정상으로 끝나면 다 쓴 글을 `complete`로 저장한 **뒤** 끝 신호를 보내고, 브라우저가 본문 저장(또는 새 버전 후보 선택)을 마친 뒤 지운다 — 그 사이 탭이 닫혀도 [중단된 AI 집필]로 되찾는다. 이미 본문에 들어간 글이면 알리지 않고 치운다.

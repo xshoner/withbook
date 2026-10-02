@@ -1,5 +1,5 @@
 import "server-only";
-import { prisma } from "./db";
+import { prisma, rawTable } from "./db";
 import { parseDoc, type JNode } from "./doc/doc";
 import { saveSection, snapshot } from "./sections";
 
@@ -29,7 +29,7 @@ export async function editSections(
     while (i < jobs.length) {
       const j = jobs[i++];
       const done = await prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT 1 FROM "Section" WHERE "id" = ${j.id} FOR UPDATE`;
+        await tx.$queryRaw`SELECT 1 FROM ${rawTable("Section")} WHERE "id" = ${j.id} FOR UPDATE`;
         const fresh = await tx.section.findUnique({ where: { id: j.id }, select: { content: true } });
         if (!fresh) return null; // 그사이 지워졌다
         const content = fresh.content === j.before ? j.content : changed(fresh.content, fn(parseDoc(fresh.content), j.id, fresh.content));

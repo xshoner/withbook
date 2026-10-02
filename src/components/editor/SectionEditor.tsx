@@ -3,7 +3,7 @@
 import Placeholder from "@tiptap/extension-placeholder";
 import { NodeSelection, type Transaction } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
+import { BookKit } from "./bookKit";
 import dynamic from "next/dynamic";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isFocusMode, useFocusMode } from "./focusMode";
@@ -33,7 +33,7 @@ import { PageBreaks, paginate, type PageGeom, type PaginateResult } from "./Page
 import { editorBlocks, matchPrintLayout, type SectionPrintLayout } from "./pageMap";
 import type { AppliedChange } from "./ProofPanel";
 import { findInBlock, posAfterTerm, replaceInBlock, selectInBlock, sentenceRangeAround, textblockAt } from "./pmOps";
-import ImagesPanel, { type ImageCandidate, type ImageSuggestion } from "./ImagesPanel";
+import type { ImageCandidate, ImageSuggestion } from "./ImagesPanel";
 import type { FigureTarget, MadeFigure } from "./MakeFigurePane";
 import PanelTabs, { type PanelTab } from "./PanelTabs";
 import { conflictOf, noteServerContent, primeBase, recoverPending, registerCommit, resolveConflict, settleSection, useAutosave } from "./useAutosave";
@@ -41,13 +41,11 @@ import { loadExtra, rememberExtra, saveExtra, type ExtraMemory } from "./extraMe
 import { pauseAutoRun, startAutoRun, useAutoChecking, useAutoWrite } from "./autoWrite";
 import type { AutoItem, AutoOptions } from "@/lib/autowrite";
 import { clearProofResult, loadProofResult, proofRunning, registerProofApplier, runProof, saveProofResult, stopProof, takeProofResult, useProofJob, useProofRunningIds } from "./proofJobs";
-import WritingOverlay from "./WritingOverlay";
 import EditorToolbar, { REWRITE_LABEL, type RewriteAction } from "./EditorToolbar";
 import SelectionBubble from "./SelectionBubble";
 import Menu from "./Menu";
-import OutlinePanel from "./OutlinePanel";
 import { useMe } from "@/lib/me-client";
-import FootnotesPanel, { FootnoteTabLabel, footnoteNumberAt } from "./FootnotesPanel";
+import { FootnoteTabLabel, footnoteNumberAt } from "./footnoteInfo";
 import PartialBanner from "./PartialBanner";
 import { clipboardHasText, compositionDone, trackPositions, useDocValue, useEditLock, useStableFn } from "./editorHooks";
 
@@ -62,6 +60,10 @@ const AutoWriteDialog = dynamic(() => import("./AutoWriteDialog"));
 const CandidateCompareDialog = dynamic(() => import("./CandidateCompareDialog"));
 const SaveConflictDialog = dynamic(() => import("./SaveConflictDialog"));
 const ReferencesPanel = dynamic(() => import("./ReferencesPanel"));
+const ImagesPanel = dynamic(() => import("./ImagesPanel"));
+const FootnotesPanel = dynamic(() => import("./FootnotesPanel"));
+const OutlinePanel = dynamic(() => import("./OutlinePanel"));
+const WritingOverlay = dynamic(() => import("./WritingOverlay"));
 
 /**
  * AI 집필 중지 — 자동 집필이 쓰는 절이면 전체가 일시 정지되므로 먼저 묻는다.
@@ -294,7 +296,7 @@ function EditorCore({ project, chapter, section, pageInfo, printLayout, figureBa
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({ heading: { levels: [3] }, code: false, codeBlock: false, strike: false, link: false, underline: false }),
+      BookKit,
       Placeholder.configure({ placeholder: "여기에 본문을 직접 쓰거나, 위 스케치를 채우고 [집필하기]를 누르세요." }),
       Figure.configure({ margins: project.layout.margins }),
       Footnote,

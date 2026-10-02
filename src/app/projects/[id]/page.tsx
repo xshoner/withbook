@@ -100,6 +100,8 @@ export default function Workspace() {
         want = want ?? localStorage.getItem(`bookk-last:${id}`);
       } catch {}
       setCurrent(want && all.includes(want) ? want : (all[0] ?? null));
+      // 책 목록의 [팩트체크 N]에서 왔으면 바로 연다
+      if (sp.get("checks") === "1") setDialog({ kind: "checks" });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -110,6 +112,7 @@ export default function Workspace() {
       localStorage.setItem(`bookk-last:${id}`, current);
       const url = new URL(window.location.href);
       url.searchParams.set("s", current);
+      url.searchParams.delete("checks");
       window.history.replaceState(window.history.state, "", url);
     } catch {}
   }, [current, id]);

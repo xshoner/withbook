@@ -4,14 +4,17 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { memo, useEffect, useRef, useState } from "react";
 import { STATUS_LABEL, api } from "@/lib/client";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
-import TrashDialog from "./TrashDialog";
 import { jobFor, stopJob, waitJobIdle } from "./editor/aiJobs";
 import { proofRunning, stopProof, waitProofIdle } from "./editor/proofJobs";
 import { settleSection } from "./editor/useAutosave";
 import type { PagedInfo, TreeChapter, TreeSection } from "./types";
+
+// 삭제한 장·절 창은 열 때만 불러온다
+const TrashDialog = dynamic(() => import("./TrashDialog"));
 
 type LabeledChapter = Omit<TreeChapter, "sections"> & { label: string; sections: (TreeSection & { label: string })[] };
 

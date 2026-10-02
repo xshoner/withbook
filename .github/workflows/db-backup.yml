@@ -1,0 +1,51 @@
+name: DB backup
+
+# 매주 월요일 03:00(한국 시간) — withbook 스키마 전체를 pg_dump → 암호화(AES256) → Supabase Storage 비공개 backups 버킷(최근 12개).
+# 필요한 저장소 Secrets: BACKUP_DATABASE_URL(Session pooler 5432 또는 Direct 주소), NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, BACKUP_PASSPHRASE
+# 저장소가 공개라서 백업 파일을 Actions 아티팩트로 남기지 않는다.
+on:
+  schedule:
+    - cron: "0 18 * * 0"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check secrets
+        env:
+          DB: ${{ secrets.BACKUP_DATABASE_URL }}
+          SB: ${{ secrets.SUPABASE_SECRET_KEY }}
+          PW: ${{ secrets.BACKUP_PASSPHRASE }}
+          URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+        run: |
+          for v in DB SB PW URL; do [ -n "${!v}" ] || { echo "::error::저장소 Secrets가 비어 있습니다 (BACKUP_DATABASE_URL·NEXT_PUBLIC_SUPABASE_URL·SUPABASE_SECRET_KEY·BACKUP_PASSPHRASE)"; exit 1; }; done
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install PostgreSQL 17 client
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-17
+      - name: Dump, check, encrypt
+        env:
+          DB: ${{ secrets.BACKUP_DATABASE_URL }}
+          PW: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          # Prisma 전용 매개변수(schema= 등)는 pg_dump가 모르므로 뗀다
+          /usr/lib/postgresql/17/bin/pg_dump "${DB%%\?*}" --schema=withbook --no-owner --no-privileges -Fc -f backup.dump
+          /usr/lib/postgresql/17/bin/pg_restore --list backup.dump | grep -Eq 'TABLE DATA withbook "?Section"? ' || { echo "::error::백업에 Section 표가 없습니다"; exit 1; }
+          ls -lh backup.dump
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$PW" --symmetric --cipher-algo AES256 -o backup.dump.gpg backup.dump
+          rm backup.dump
+      - name: Upload
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: node scripts/backup-db.mjs backup.dump.gpg

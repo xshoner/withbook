@@ -1,6 +1,6 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "../db";
+import { prisma, rawTable } from "../db";
 import { loadPageCount } from "../print/page-count";
 import { type CoverDesign, coverAssetIds, defaultCover, normalizeCover, syncActualPages } from "./spec";
 
@@ -84,7 +84,7 @@ export async function updateCover<R>(projectId: string, fn: (design: CoverDesign
   const p = await project(projectId);
   const key = coverKey(projectId);
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    const rows = await tx.$queryRaw<{ value: string }[]>`SELECT value FROM "AppSetting" WHERE key = ${key} FOR UPDATE`;
+    const rows = await tx.$queryRaw<{ value: string }[]>`SELECT value FROM ${rawTable("AppSetting")} WHERE key = ${key} FOR UPDATE`;
     const raw = parse(rows[0]?.value);
     const { design, result } = fn(raw ? designFromRaw(raw, p) : defaultCover(p), Boolean(raw));
     if (design) {

@@ -200,11 +200,11 @@ export async function trashChapter(tx: Prisma.TransactionClient, chapterId: stri
 
 /** 휴지통 목록 (최신순, 본문 없이) */
 export async function listTrash(projectId: string): Promise<TrashMeta[]> {
-  const prisma = await db();
+  const { prisma, rawTable } = await import("./db");
   const prefix = trashKey(projectId, "");
   // 본문까지 내려받지 않도록 meta만 DB에서 꺼낸다
   const rows = await prisma.$queryRaw<{ key: string; meta: TrashMeta | null }[]>`
-    SELECT key, (value::jsonb -> 'meta') AS meta FROM "AppSetting" WHERE starts_with(key, ${prefix})`;
+    SELECT key, (value::jsonb -> 'meta') AS meta FROM ${rawTable("AppSetting")} WHERE starts_with(key, ${prefix})`;
   return rows
     .map((r) => r.meta)
     .filter((m): m is TrashMeta => !!m && typeof m.id === "string")

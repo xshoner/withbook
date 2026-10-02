@@ -7,6 +7,7 @@ import LogoutButton from "@/components/LogoutButton";
 import { api, fmtDate } from "@/lib/client";
 import { attachFile } from "@/lib/upload-client";
 import { confirmDialog, toast, toastError } from "@/components/ui/feedback";
+import { deadlinePlan, type DeadlinePlan } from "@/lib/progress";
 
 type P = {
   id: string;
@@ -25,6 +26,11 @@ type P = {
   /** 마지막으로 고친 절 · 다음 빈 절 (이어 쓰기) */
   last?: { sectionId: string; title: string } | null;
   next?: { sectionId: string; title: string } | null;
+  /** 남은 [확인 필요]·[이미지 제안] 표시 수 (팩트체크) */
+  checks?: number;
+  /** 마감일 (YYYY-MM-DD)과 하루 분량 */
+  deadline?: string | null;
+  plan?: DeadlinePlan | null;
 };
 
 type Sort = "updated" | "created" | "createdAsc" | "title";
@@ -81,6 +87,16 @@ export default function ProjectList() {
             : time(b.updatedAt) - time(a.updatedAt),
     );
   const trash = list?.filter((p) => p.deletedAt) ?? [];
+
+  /** 마감일 정하기·지우기 — 목록을 다시 받지 않고 이 카드만 고친다 */
+  const setDeadline = async (p: P, date: string | null) => {
+    try {
+      await api(`/api/projects/${p.id}/deadline`, { method: "PUT", json: { date } });
+      setList((l) => l?.map((x) => (x.id === p.id ? { ...x, deadline: date, plan: date ? deadlinePlan(date, x.estPages, x.targetPages) : null } : x)) ?? l);
+    } catch (e) {
+      toastError(e, "마감일을 저장하지 못했습니다: ");
+    }
+  };
 
   const act = async (p: P, kind: "dup" | "del" | "restore" | "purge") => {
     if (kind === "del" && !(await confirmDialog(`「${p.title}」을(를) 휴지통으로 옮길까요? 30일 뒤 자동 삭제됩니다.`, { okLabel: "휴지통으로" }))) return;
@@ -218,6 +234,7 @@ export default function ProjectList() {
                     </span>
                   </div>
                 </Link>
+                <Progress p={p} onDeadline={(d) => void setDeadline(p, d)} />
                 {(p.last || p.next) && (
                   <div className="mt-3 space-y-1 text-xs">
                     {p.last && (
@@ -282,5 +299,47 @@ export default function ProjectList() {
         </section>
       )}
     </main>
+  );
+}
+
+/** 책 진행 현황 — 마감일·하루 분량·남은 팩트체크 */
+function Progress({ p, onDeadline }: { p: P; onDeadline: (date: string | null) => void }) {
+  const plan = p.plan;
+  const d = p.deadline;
+  const tone = !plan ? "text-stone-500" : plan.pagesLeft === 0 ? "text-emerald-700" : plan.daysLeft <= 0 ? "text-red-700" : plan.daysLeft <= 7 ? "text-amber-800" : "text-stone-600";
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      {d && plan ? (
+        <span className={tone}>
+          <b>{plan.daysLeft > 0 ? `D-${plan.daysLeft - 1 || "day"}` : "마감 지남"}</b>
+          {" · "}
+          {plan.pagesLeft === 0 ? "목표 분량 달성" : plan.perDay ? `하루 약 ${plan.perDay}쪽` : `${plan.pagesLeft}쪽 남음`}
+        </span>
+      ) : null}
+      <label className="flex cursor-pointer items-center gap-1 rounded px-1 text-stone-500 hover:bg-stone-100" title="마감일을 정하면 하루에 쓸 분량을 알려 줍니다">
+        {d ? `마감 ${d.slice(5).replace("-", "/")}` : "+ 마감일"}
+        <input
+          type="date"
+          className="w-0 opacity-0"
+          value={d ?? ""}
+          onChange={(e) => onDeadline(e.target.value || null)}
+          onClick={(e) => {
+            try {
+              (e.currentTarget as HTMLInputElement).showPicker?.();
+            } catch {}
+          }}
+        />
+      </label>
+      {d && (
+        <button className="text-stone-300 hover:text-red-600" aria-label="마감일 지우기" title="마감일 지우기" onClick={() => onDeadline(null)}>
+          ✕
+        </button>
+      )}
+      {!!p.checks && (
+        <Link href={`/projects/${p.id}?checks=1`} className="ml-auto rounded bg-red-50 px-1.5 py-0.5 font-semibold text-red-700 hover:bg-red-100" title="AI가 남긴 [확인 필요]·[이미지 제안] 표시 — 책을 열고 [팩트체크]에서 처리합니다">
+          팩트체크 {p.checks}
+        </Link>
+      )}
+    </div>
   );
 }

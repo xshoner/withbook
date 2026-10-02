@@ -1,7 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import { prisma } from "./db";
+import { prisma, rawTable } from "./db";
 import { buildReferencesBlock, cleanRefName, cleanRefText, REF_MAX_COUNT, refKey, refPrefix, type RefItem, type RefRow } from "./ai/section-refs";
 import { editedOutlineKey, outlineCacheKey } from "./ai/outline-text";
 
@@ -13,7 +13,7 @@ type Db = Prisma.TransactionClient | typeof prisma;
 export async function listRefs(sectionId: string): Promise<RefItem[]> {
   const prefix = refPrefix(sectionId);
   const rows = await prisma.$queryRaw<{ meta: RefItem | null }[]>`
-    SELECT (value::jsonb - 'text') AS meta FROM "AppSetting" WHERE starts_with(key, ${prefix})`;
+    SELECT (value::jsonb - 'text') AS meta FROM ${rawTable("AppSetting")} WHERE starts_with(key, ${prefix})`;
   return rows
     .map((r) => r.meta)
     .filter((m): m is RefItem => !!m && typeof m.id === "string")
@@ -88,7 +88,7 @@ export async function listBookRefs(projectId: string, exceptSectionId: string): 
   if (!sections.length) return out;
   // 한 번에 읽는다 (절마다 따로 묻지 않게) — 본문(text)은 빼고
   const rows = await prisma.$queryRaw<{ key: string; meta: RefItem | null }[]>`
-    SELECT key, (value::jsonb - 'text') AS meta FROM "AppSetting"
+    SELECT key, (value::jsonb - 'text') AS meta FROM ${rawTable("AppSetting")}
     WHERE starts_with(key, 'ref:') AND split_part(key, ':', 2) = ANY(${sections.map((s) => s.id)})`;
   for (const r of rows) {
     const m = r.meta;
