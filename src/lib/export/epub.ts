@@ -53,7 +53,7 @@ a.noteref { text-decoration: none; }
 .title-page { text-align: center; margin-top: 30%; }
 .title-page .tp-title { font-size: 1.8em; font-weight: bold; text-indent: 0; margin-bottom: 0.5em; }
 .title-page .tp-sub { font-size: 1.1em; text-indent: 0; }
-.title-page .tp-author { margin-top: 3em; text-indent: 0; }
+.title-page .tp-author { margin-top: 3em; text-indent: 0; text-align: right; }
 .biblio { list-style: none; margin: 0; padding: 0; }
 .biblio li { padding-left: 1.5em; text-indent: -1.5em; margin-bottom: 0.4em; text-align: left; }
 .colophon { font-size: 0.85em; margin-top: 30%; }

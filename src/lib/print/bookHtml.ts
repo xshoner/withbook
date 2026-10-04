@@ -118,7 +118,7 @@ export function bookHtml(book: Book, o: BookHtmlOptions): string {
     .join("");
 
   const bodyChapters = book.chapters.filter((c) => c.kind === "body");
-  // 차례에는 머리말 같은 앞붙이도 넣는다(차례 뒤에 오므로) — 앞붙이는 쪽 번호가 없어 번호 칸은 비워 둔다
+  // 차례에는 머리말 같은 앞붙이도 넣는다(차례 뒤에 오므로) — 쪽 번호는 머리말부터 보인다
   const tocEntries = book.chapters
     .map((c) => {
       const chRow = `<div class="toc-ch" data-target="${c.id}"><span class="t">${c.label ? `<b>${esc(c.label)}</b> ` : ""}${esc(c.title)}</span><span class="pn"></span></div>`;
@@ -198,7 +198,7 @@ hr::after { content: "* * *"; font-size: 9pt; }
 .title-page { break-after: page; padding-top: 42mm; text-align: left; }
 .tp-title { font-family: ${TYPO.headingFontCss}, sans-serif; font-size: 22pt; line-height: 1.35; }
 .tp-sub { font-size: 11pt; margin-top: 5mm; }
-.tp-author { margin-top: 30mm; font-size: 11pt; }
+.tp-author { margin-top: 30mm; font-size: 11pt; text-align: right; }
 .title-page.inner { break-before: right; padding-top: 60mm; text-align: center; }
 .title-page.inner .tp-title { font-size: 15pt; letter-spacing: .02em; }
 .title-page.inner .tp-sub { font-size: 10pt; margin-top: 4mm; }
@@ -210,7 +210,8 @@ hr::after { content: "* * *"; font-size: 9pt; }
 .toc-ch .t, .toc-sec .t { flex: 1; overflow: hidden; }
 .toc-ch .t::after, .toc-sec .t::after { content: ""; }
 .pn { min-width: 8mm; text-align: right; }
-.colophon { break-before: page; padding-top: 70mm; font-size: 8.5pt; line-height: 1.7; text-align: left; }
+/* 판권면 — 글은 모두 쪽 아래에 모은다 */
+.colophon { break-before: page; height: ${H - top - bottom - 2}mm; display: flex; flex-direction: column; justify-content: flex-end; font-size: 8.5pt; line-height: 1.7; text-align: left; }
 .colophon p { text-indent: 0; }
 .cp-title { font-family: ${TYPO.headingFontCss}, sans-serif; font-size: 11pt; margin-bottom: 4mm; }
 .colophon table { border-collapse: collapse; margin-bottom: 3mm; }
@@ -313,6 +314,9 @@ window.__afterPaged = function () {
   const pageOf = (el) => pages.indexOf(el.closest('.pagedjs_page'));
   const bs = document.querySelector('.body-start');
   const B = bs ? pageOf(bs) : 0;
+  // 쪽 번호는 첫 면(표제지)부터 세고, 보이는 것은 머리말(첫 앞붙이)부터 — 앞붙이가 없으면 본문부터
+  const fm = document.querySelector('.chapter.front');
+  const F = fm ? pageOf(fm) : B;
   // 글꼴: 불러오기 실패 + 글꼴 목록의 KoPub 얼굴 상태(loaded가 아니면 대체 글꼴로 조판된 것)
   const fontFail = (window.__FONT_FAIL || []).slice();
   const kopub = [...document.fonts].filter((f) => /BookBody|BookHeading/.test(f.family));
@@ -337,14 +341,14 @@ window.__afterPaged = function () {
     pages.push(blank);
   }
 
-  const numOf = (i) => (i >= B ? i - B + 1 : 0);
-  const info = { total: pages.length, bodyStart: B + 1, fontOk, missingImages: imgFail.length, sections: {}, chapters: {}, pages: [] };
+  const numOf = (i) => (i >= F ? i + 1 : 0);
+  const info = { total: pages.length, bodyStart: B + 1, numStart: F + 1, fontOk, missingImages: imgFail.length, sections: {}, chapters: {}, pages: [] };
 
   pages.forEach((pg, i) => {
     const right = pg.classList.contains('pagedjs_right_page');
     const n = numOf(i);
     const blank = pg.classList.contains('pagedjs_blank_page') || !pg.querySelector('.pagedjs_area *');
-    const noNum = blank || pg.querySelector('.no-num, .fig.fullbleed') || i < B;
+    const noNum = blank || pg.querySelector('.no-num, .fig.fullbleed') || i < F;
     info.pages.push({ i: i + 1, n: noNum ? 0 : n, side: right ? 'right' : 'left', blank: !!blank });
     if (!noNum && n > 0) {
       const d = document.createElement('div');
@@ -410,7 +414,7 @@ window.__afterPaged = function () {
   if (ixRows.length) {
     const norm = (s) => s.split('').map((c) => (c.charCodeAt(0) <= 32 ? ' ' : c)).join('').split(' ').filter(Boolean).join(' ');
     const texts = pages.map((pg, i) => {
-      if (numOf(i) <= 0 || pg.querySelector('.backmatter, .toc, .title-page, .colophon')) return '';
+      if (i < B || pg.querySelector('.backmatter, .toc, .title-page, .colophon')) return '';
       const area = pg.querySelector('.pagedjs_area');
       return area ? norm(area.textContent || '') : '';
     });

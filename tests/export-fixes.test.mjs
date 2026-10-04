@@ -251,3 +251,18 @@ test('book front matter order: title · colophon(2p) · inner title · contents 
   assert.equal(html.split('class="colophon no-num"').length, 2, 'colophon only once');
   assert.ok(html.includes('data-target="f"'), 'preface is listed in the contents');
 });
+
+test('chapter titles drop their own numbers so labels do not repeat', async () => {
+  const { stripChapterNo, numberChapters } = await load('../src/lib/layout.ts');
+  for (const [raw, want] of [
+    ['#1. 타이틀', '타이틀'], ['# 2 타이틀', '타이틀'], ['1. 타이틀', '타이틀'], ['1장 타이틀', '타이틀'],
+    ['제3장: 타이틀', '타이틀'], ['Chapter 4 - 타이틀', '타이틀'], ['1장 #1. 타이틀', '타이틀'],
+    ['2030년의 세계', '2030년의 세계'], ['3.14의 비밀', '3.14의 비밀'], ['#1', '#1'],
+  ]) assert.equal(stripChapterNo(raw), want, raw);
+  const [front, body] = numberChapters([
+    { kind: 'front', order: 1, title: '1. 머리말', sections: [] },
+    { kind: 'body', order: 2, title: '#1. 타이틀', sections: [{ title: 's' }] },
+  ], 'basic');
+  assert.equal(front.title, '1. 머리말');
+  assert.equal(`${body.label} ${body.title}`, '1장 타이틀');
+});

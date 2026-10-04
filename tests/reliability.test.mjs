@@ -38,22 +38,23 @@ test('other server errors keep the draft and report failure', async () => {
 });
 
 /* ---------- 절 하나 다시 잰 결과로 쪽 밀기 ---------- */
-const sec = (startIdx, endIdx, bodyStart, extra = {}) => ({
+// 쪽 번호 = 면 번호, 머리말(numStart)부터 보인다
+const sec = (startIdx, endIdx, numStart, extra = {}) => ({
   startIdx, endIdx,
-  start: startIdx >= bodyStart ? startIdx - bodyStart + 1 : 0,
-  end: endIdx >= bodyStart ? endIdx - bodyStart + 1 : 0,
+  start: startIdx >= numStart ? startIdx : 0,
+  end: endIdx >= numStart ? endIdx : 0,
   side: startIdx % 2 === 1 ? 'right' : 'left',
   pages: endIdx - startIdx + 1, startFrac: 0, chars: 1000, fig: 0, ...extra,
 });
-const pagesOf = (total, bodyStart) => Array.from({ length: total }, (_, k) => ({ i: k + 1, n: k + 1 >= bodyStart ? k + 2 - bodyStart : 0, side: (k + 1) % 2 ? 'right' : 'left', blank: false }));
-// 앞붙이 f(3~4면) · 본문 시작 5면 · 1장 a(5~7), b(8~9) · 2장 c(11~12)
+const pagesOf = (total, numStart) => Array.from({ length: total }, (_, k) => ({ i: k + 1, n: k + 1 >= numStart ? k + 1 : 0, side: (k + 1) % 2 ? 'right' : 'left', blank: false }));
+// 표제지·판권면(1~2면) · 머리말 f(3~4면) · 본문 시작 5면 · 1장 a(5~7), b(8~9) · 2장 c(11~12)
 function book() {
-  const B = 5;
+  const N = 3;
   return {
-    total: 12, bodyStart: B, fontOk: true,
-    sections: { f: sec(3, 4, B), a: sec(5, 7, B), b: sec(8, 9, B), c: sec(11, 12, B) },
-    chapters: { front: { start: 0 }, ch1: { start: 1 }, ch2: { start: 7 } },
-    pages: pagesOf(12, B),
+    total: 12, bodyStart: 5, numStart: N, fontOk: true,
+    sections: { f: sec(3, 4, N), a: sec(5, 7, N), b: sec(8, 9, N), c: sec(11, 12, N) },
+    chapters: { front: { start: 3 }, ch1: { start: 5 }, ch2: { start: 11 } },
+    pages: pagesOf(12, N),
   };
 }
 const order = [{ id: 'front', sectionIds: ['f'] }, { id: 'ch1', sectionIds: ['a', 'b'] }, { id: 'ch2', sectionIds: ['c'] }];
@@ -63,27 +64,30 @@ test('numbered section growing by an even count pushes later pages and chapters'
   const info = book();
   const next = shiftSection(info, 'a', measured(info.sections.a, 5), { startRight: true, chapters: order });
   assert.equal(next.sections.a.endIdx, 9);
-  assert.equal(next.sections.a.end, 5);
-  assert.deepEqual([next.sections.b.startIdx, next.sections.b.start, next.sections.b.side], [10, 6, 'left']);
-  assert.equal(next.sections.c.start, 9);
-  assert.equal(next.chapters.ch2.start, 9);
-  assert.equal(next.chapters.ch1.start, 1);
+  assert.equal(next.sections.a.end, 9);
+  assert.deepEqual([next.sections.b.startIdx, next.sections.b.start, next.sections.b.side], [10, 10, 'left']);
+  assert.equal(next.sections.c.start, 13);
+  assert.equal(next.chapters.ch2.start, 13);
+  assert.equal(next.chapters.ch1.start, 5);
   assert.equal(next.total, 14);
   assert.equal(next.pages.length, 14);
   assert.deepEqual(next.pages.map(p => p.i), Array.from({ length: 14 }, (_, k) => k + 1));
-  assert.equal(next.pages[13].n, 10);
+  assert.equal(next.pages[13].n, 14);
 });
 
-test('front matter change never renumbers body pages', () => {
+test('front matter change shifts body start and page numbers', () => {
   const info = book();
   const next = shiftSection(info, 'f', measured(info.sections.f, 4), { startRight: true, chapters: order });
   assert.equal(next.bodyStart, 7);
-  assert.equal(next.sections.f.end, 0);
-  assert.deepEqual([next.sections.a.startIdx, next.sections.a.start], [7, 1]);
-  assert.equal(next.sections.c.start, 7);
-  assert.equal(next.chapters.ch2.start, 7);
-  assert.equal(next.pages[6].n, 1);
-  assert.equal(next.pages[5].n, 0);
+  assert.equal(next.numStart, 3);
+  assert.equal(next.sections.f.end, 6);
+  assert.deepEqual([next.sections.a.startIdx, next.sections.a.start], [7, 7]);
+  assert.equal(next.sections.c.start, 13);
+  assert.equal(next.chapters.ch2.start, 13);
+  assert.equal(next.chapters.front.start, 3);
+  assert.equal(next.pages[6].n, 7);
+  assert.equal(next.pages[5].n, 6);
+  assert.equal(next.pages[1].n, 0);
 });
 
 test('odd change before a right-hand start asks for a full measure', () => {
@@ -96,13 +100,18 @@ test('odd change before a right-hand start asks for a full measure', () => {
 test('odd change without right-hand chapter starts shifts and flips sides', () => {
   const info = book();
   const next = shiftSection(info, 'a', measured(info.sections.a, 4), { startRight: false, chapters: order });
-  assert.deepEqual([next.sections.b.startIdx, next.sections.b.start, next.sections.b.side], [9, 5, 'right']);
+  assert.deepEqual([next.sections.b.startIdx, next.sections.b.start, next.sections.b.side], [9, 9, 'right']);
   assert.equal(next.sections.c.side, 'left');
-  assert.equal(next.chapters.ch2.start, 8);
+  assert.equal(next.chapters.ch2.start, 12);
   // 마지막 장 마지막 절은 오른쪽 시작 설정이 켜져 있어도 뒤에 맞출 장이 없다
   const last = shiftSection(info, 'c', measured(info.sections.c, 3), { startRight: true, chapters: order });
-  assert.equal(last.sections.c.end, 9);
+  assert.equal(last.sections.c.end, 13);
   assert.equal(last.total, 13);
+});
+
+test('info measured with the old numbering asks for a full measure', () => {
+  const { numStart, ...old } = book();
+  assert.equal(shiftSection(old, 'a', measured(old.sections.a, 5), { startRight: true, chapters: order }), null);
 });
 
 test('unknown section leaves info untouched', () => {

@@ -40,6 +40,8 @@ export type SectionPageInfo = {
 export type PagedInfo = {
   total: number;
   bodyStart: number;
+  /** 쪽 번호가 보이기 시작하는 면(머리말, 없으면 본문 시작) — 쪽 번호 = 면 번호 (예전 조판 결과에는 없다) */
+  numStart?: number;
   fontOk: boolean;
   /** 조판 중 불러오지 못한 그림 수 (예전 조판 결과에는 없다) */
   missingImages?: number;

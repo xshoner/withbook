@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, download } from "@/lib/client";
+import type { PagedInfo } from "./types";
 
 type Issue = { level: "error" | "warn" | "info"; message: string; where?: string };
 type SubmitItem = { id: string; label: string; status: "pass" | "warn" | "fail"; detail: string; fix?: { label: string; href?: string; action?: "pdf" | "checks" | "cover" | "settings" } };
@@ -15,6 +16,7 @@ export default function ExportDialog({
   sectionId,
   onClose,
   onOpenChecks,
+  pageInfo,
 }: {
   projectId: string;
   title: string;
@@ -23,6 +25,8 @@ export default function ExportDialog({
   onClose: () => void;
   /** 제출 전 점검의 [확인할 것 열기] — 편집 화면의 확인할 것(ChecksDialog)을 연다. 없으면 안내 문구만 */
   onOpenChecks?: () => void;
+  /** 편집 화면이 잰 조판(PDF와 같은 쪽 번호) — HWPX 차례 쪽 번호에 쓴다. 아직 재지 못했으면 없다 */
+  pageInfo?: PagedInfo | null;
 }) {
   const [tab, setTab] = useState<"submit" | "pdf" | "hwpx" | "epub" | "backup">("pdf");
   const [submit, setSubmit] = useState<{ items: SubmitItem[]; counts: Record<SubmitItem["status"], number> } | null>(null);
@@ -117,7 +121,11 @@ export default function ExportDialog({
     setBusy("HWPX 만드는 중…");
     setErr("");
     try {
-      await download(`/api/projects/${projectId}/export/hwpx`, {}, `${title}.hwpx`);
+      // 차례 쪽 번호: 장·절 첫 쪽 (PDF 차례와 같은 값)
+      const pages: Record<string, number> = {};
+      for (const [k, v] of Object.entries(pageInfo?.chapters ?? {})) if (v.start > 0) pages[k] = v.start;
+      for (const [k, v] of Object.entries(pageInfo?.sections ?? {})) if (v.start > 0) pages[k] = v.start;
+      await download(`/api/projects/${projectId}/export/hwpx`, { pages }, `${title}.hwpx`);
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -288,7 +296,12 @@ export default function ExportDialog({
                   <>, 여백·글자 크기·줄 간격은 이 책의 [책 설정 → 조판] 값을 따릅니다.</>
                 )}
               </p>
-              <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">쪽 나눔은 한글이 다시 계산하므로 PDF와 쪽수가 조금 다를 수 있습니다. 인쇄 제출은 PDF를 권장합니다.</p>
+              <p className="rounded bg-stone-50 p-2 text-xs text-stone-500">
+                {pageInfo
+                  ? "차례에 쪽 번호가 들어갑니다(PDF와 같은 번호). 장·절 첫 쪽마다 그 번호로 쪽 번호를 새로 시작하므로, 한글이 쪽을 다시 나누거나 한글에서 글을 고쳐도 차례와 각 장·절 첫 쪽 번호가 맞습니다. "
+                  : "쪽 번호를 아직 재지 못해 차례에 쪽 번호 없이 내보냅니다 — 편집 화면에서 조판이 끝난 뒤(목차에 p.쪽 번호가 보이면) 다시 내보내세요. "}
+                쪽 나눔은 한글이 다시 계산하므로 장·절 안의 쪽수는 PDF와 조금 다를 수 있습니다. 인쇄 제출은 PDF를 권장합니다.
+              </p>
               <button className="btn-accent w-full" disabled={!!busy} onClick={makeHwpx}>
                 {busy ?? "HWPX 다운로드"}
               </button>

@@ -7,7 +7,7 @@ import type { Book } from "../book";
 import type { LayoutSettings } from "../layout";
 import { parseDoc, type JNode } from "../doc/doc";
 import { printWidthMm, type FigureLayout } from "../print/figure";
-import { DOC, TYPO, mmToHwp } from "../print/spec";
+import { DOC, TYPO, bodyBox, mmToHwp } from "../print/spec";
 
 /**
  * HWPX(OWPML) 생성 — 부크크 A5 서식과 같은 용지·여백.
@@ -55,8 +55,11 @@ const chars = (l: LayoutSettings): CharDef[] => [
   { size: l.bodySizePt, font: 0, italic: true },
   { size: 24, font: 1 },
 ];
-// paraPr: 0 본문(양쪽, 들여쓰기 1em, 줄 간격·문단 간격은 책 설정), 1 제목(왼쪽, 들여쓰기 없음), 2 가운데(그림·캡션), 3 인용, 4 판권(왼쪽 130%), 5 각주, 6 장 제목 쪽(가운데, 위 60mm)
-type ParaDef = { align: string; indent: number; line: number; left?: number; prev?: number; next?: number; keepNext?: boolean };
+// paraPr: 0 본문(양쪽, 들여쓰기 1em, 줄 간격·문단 간격은 책 설정), 1 제목(왼쪽, 들여쓰기 없음), 2 가운데(그림·캡션), 3 인용, 4 판권(왼쪽 170%), 5 각주, 6 장 제목 쪽(가운데, 위 60mm),
+// 7 표제지 지은이(오른쪽), 8 판권면 빈 줄(줄 간격 100%, 문단 간격 없음 — 판권 글을 쪽 아래로 민다.
+//   한글은 쪽 맨 위 문단의 큰 위 간격을 그대로 두지 않아(실측: 20mm → 50mm, 80mm → 다음 쪽) 빈 줄 수로 민다),
+// 9 차례 줄(본문 폭 끝 오른쪽 탭 + 점선 채움 — 제목 … 쪽 번호)
+type ParaDef = { align: string; indent: number; line: number; left?: number; prev?: number; next?: number; keepNext?: boolean; tab?: number };
 const paras = (l: LayoutSettings): ParaDef[] => [
   { align: "JUSTIFY", indent: l.bodySizePt * 100, line: Math.round(l.lineHeight * 100), next: mmToHwp(l.paraSpacingMm) },
   { align: "LEFT", indent: 0, line: 140, prev: 1200, next: 1200, keepNext: true },
@@ -65,7 +68,20 @@ const paras = (l: LayoutSettings): ParaDef[] => [
   { align: "LEFT", indent: 0, line: 170 },
   { align: "JUSTIFY", indent: 0, line: 145 },
   { align: "CENTER", indent: 0, line: 135, prev: mmToHwp(60) },
+  { align: "RIGHT", indent: 0, line: 140, prev: 1200, next: 1200 },
+  { align: "LEFT", indent: 0, line: 100 },
+  { align: "LEFT", indent: 0, line: 170, tab: 1 },
 ];
+
+/** 판권면 글 높이(mm) — 줄 간격 170%. 줄바꿈은 한글 1em, 영문·숫자·기호 0.6em으로 어림한다 */
+function colophonHeightMm(rows: { text: string; pt: number }[], widthMm: number) {
+  const PT = 25.4 / 72;
+  return rows.reduce((h, r) => {
+    const em = [...r.text].reduce((w, c) => w + (c.charCodeAt(0) < 0x1100 ? 0.6 : 1), 0);
+    const lines = Math.max(1, Math.ceil((em * r.pt * PT) / widthMm));
+    return h + lines * r.pt * 1.7 * PT;
+  }, 0);
+}
 
 function charPr(id: number, c: CharDef) {
   const h = Math.round(c.size * 100);
@@ -78,7 +94,7 @@ function charPr(id: number, c: CharDef) {
 function paraPr(id: number, p: ParaDef) {
   const u = (tag: string, v: number) => `<hc:${tag} value="${v}" unit="HWPUNIT"/>`;
   const margin = `<hh:margin>${u("intent", p.indent)}${u("left", p.left ?? 0)}${u("right", 0)}${u("prev", p.prev ?? 0)}${u("next", p.next ?? 0)}</hh:margin>`;
-  return `<hh:paraPr id="${id}" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0"><hh:align horizontal="${p.align}" vertical="BASELINE"/><hh:heading type="NONE" idRef="0" level="0"/><hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="1" keepWithNext="${p.keepNext ? 1 : 0}" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/><hh:autoSpacing eAsianEng="0" eAsianNum="0"/><hp:switch><hp:case hp:required-namespace="${NS.hwpunitchar}">${margin}<hh:lineSpacing type="PERCENT" value="${p.line}" unit="HWPUNIT"/></hp:case><hp:default>${margin}<hh:lineSpacing type="PERCENT" value="${p.line}" unit="HWPUNIT"/></hp:default></hp:switch><hh:border borderFillIDRef="2" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/></hh:paraPr>`;
+  return `<hh:paraPr id="${id}" tabPrIDRef="${p.tab ?? 0}" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0"><hh:align horizontal="${p.align}" vertical="BASELINE"/><hh:heading type="NONE" idRef="0" level="0"/><hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="1" keepWithNext="${p.keepNext ? 1 : 0}" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/><hh:autoSpacing eAsianEng="0" eAsianNum="0"/><hp:switch><hp:case hp:required-namespace="${NS.hwpunitchar}">${margin}<hh:lineSpacing type="PERCENT" value="${p.line}" unit="HWPUNIT"/></hp:case><hp:default>${margin}<hh:lineSpacing type="PERCENT" value="${p.line}" unit="HWPUNIT"/></hp:default></hp:switch><hh:border borderFillIDRef="2" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/></hh:paraPr>`;
 }
 
 function headerXml(l: LayoutSettings) {
@@ -89,7 +105,7 @@ function headerXml(l: LayoutSettings) {
     `<hh:fontface lang="${lang}" fontCnt="2"><hh:font id="0" face="${TYPO.bodyFont}" type="TTF" isEmbedded="0"><hh:typeInfo familyType="FCAT_MYUNGJO" weight="4" proportion="0" contrast="0" strokeVariation="0" armStyle="0" letterform="0" midline="0" xHeight="0"/></hh:font><hh:font id="1" face="${TYPO.headingFont}" type="TTF" isEmbedded="0"><hh:typeInfo familyType="FCAT_GOTHIC" weight="6" proportion="0" contrast="0" strokeVariation="0" armStyle="0" letterform="0" midline="0" xHeight="0"/></hh:font></hh:fontface>`;
   const border = (id: number) =>
     `<hh:borderFill id="${id}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"><hh:slash type="NONE" Crooked="0" isCounter="0"/><hh:backSlash type="NONE" Crooked="0" isCounter="0"/><hh:leftBorder type="NONE" width="0.1 mm" color="#000000"/><hh:rightBorder type="NONE" width="0.1 mm" color="#000000"/><hh:topBorder type="NONE" width="0.1 mm" color="#000000"/><hh:bottomBorder type="NONE" width="0.1 mm" color="#000000"/><hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/></hh:borderFill>`;
-  return `${HEAD}<hh:head ${nsAttrs} version="1.4" secCnt="1"><hh:beginNum page="1" footnote="1" endnote="1" pic="1" tbl="1" equation="1"/><hh:refList><hh:fontfaces itemCnt="7">${langs.map(fontface).join("")}</hh:fontfaces><hh:borderFills itemCnt="2">${border(1)}${border(2)}</hh:borderFills><hh:charProperties itemCnt="${CHARS.length}">${CHARS.map((c, i) => charPr(i, c)).join("")}</hh:charProperties><hh:tabProperties itemCnt="1"><hh:tabPr id="0" autoTabLeft="0" autoTabRight="0"/></hh:tabProperties><hh:numberings itemCnt="1"><hh:numbering id="1" start="0"><hh:paraHead start="1" level="1" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0">^1.</hh:paraHead></hh:numbering></hh:numberings><hh:paraProperties itemCnt="${PARAS.length}">${PARAS.map((p, i) => paraPr(i, p)).join("")}</hh:paraProperties><hh:styles itemCnt="1"><hh:style id="0" type="PARA" name="바탕글" engName="Normal" paraPrIDRef="0" charPrIDRef="0" nextStyleIDRef="0" langID="1042" lockForm="0"/></hh:styles></hh:refList><hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument><hh:docOption><hh:linkinfo path="" pageInherit="0" footnoteInherit="0"/></hh:docOption><hh:trackchageConfig flags="56"/></hh:head>`;
+  return `${HEAD}<hh:head ${nsAttrs} version="1.4" secCnt="1"><hh:beginNum page="1" footnote="1" endnote="1" pic="1" tbl="1" equation="1"/><hh:refList><hh:fontfaces itemCnt="7">${langs.map(fontface).join("")}</hh:fontfaces><hh:borderFills itemCnt="2">${border(1)}${border(2)}</hh:borderFills><hh:charProperties itemCnt="${CHARS.length}">${CHARS.map((c, i) => charPr(i, c)).join("")}</hh:charProperties><hh:tabProperties itemCnt="2"><hh:tabPr id="0" autoTabLeft="0" autoTabRight="0"/><hh:tabPr id="1" autoTabLeft="0" autoTabRight="0"><hh:tabItem pos="${mmToHwp(bodyBox(l.margins).width)}" type="RIGHT" leader="DOT"/></hh:tabPr></hh:tabProperties><hh:numberings itemCnt="1"><hh:numbering id="1" start="0"><hh:paraHead start="1" level="1" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0">^1.</hh:paraHead></hh:numbering></hh:numberings><hh:paraProperties itemCnt="${PARAS.length}">${PARAS.map((p, i) => paraPr(i, p)).join("")}</hh:paraProperties><hh:styles itemCnt="1"><hh:style id="0" type="PARA" name="바탕글" engName="Normal" paraPrIDRef="0" charPrIDRef="0" nextStyleIDRef="0" langID="1042" lockForm="0"/></hh:styles></hh:refList><hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument><hh:docOption><hh:linkinfo path="" pageInherit="0" footnoteInherit="0"/></hh:docOption><hh:trackchageConfig flags="56"/></hh:head>`;
 }
 
 function secPr(book: Book) {
@@ -132,18 +148,41 @@ class Writer {
   private pictureCount = 0;
   first = true;
   notes = 0;
+  /** 다음 문단 앞에 넣을 컨트롤 (쪽 번호 시작·감추기) */
+  private ctrls = "";
   constructor(private book: Book, private assets: Map<string, Loaded> = new Map()) {}
 
   p(runs: string, paraPrId = 0, pageBreak = false) {
     let lead = "";
     if (this.first) {
-      // 첫 문단에 구역 정의 + 쪽 번호(바깥쪽 아래)
-      lead = `<hp:run charPrIDRef="0">${secPr(this.book)}<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl><hp:ctrl><hp:pageNum pos="OUTSIDE_BOTTOM" formatType="DIGIT" sideChar=""/></hp:ctrl></hp:run>`;
+      // 첫 문단에 구역 정의 (쪽 번호는 pageNumbersFromHere()에서 — 첫 면부터 세되 머리말부터 보인다)
+      lead = `<hp:run charPrIDRef="0">${secPr(this.book)}<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl></hp:run>`;
       this.first = false;
+    }
+    if (this.ctrls) {
+      lead += `<hp:run charPrIDRef="0">${this.ctrls}</hp:run>`;
+      this.ctrls = "";
     }
     this.paras.push(
       `<hp:p id="${this.pid++}" paraPrIDRef="${paraPrId}" styleIDRef="0" pageBreak="${pageBreak ? 1 : 0}" columnBreak="0" merged="0">${lead}${runs || '<hp:run charPrIDRef="0"/>'}</hp:p>`,
     );
+  }
+  /** 다음 문단이 놓인 쪽부터 쪽 번호(바깥쪽 아래)를 보인다 — 번호는 구역 시작(1쪽)부터 센다 */
+  pageNumbersFromHere() {
+    this.ctrls += `<hp:ctrl><hp:pageNum pos="OUTSIDE_BOTTOM" formatType="DIGIT" sideChar=""/></hp:ctrl>`;
+  }
+  /** 다음 문단이 놓인 쪽만 쪽 번호를 감춘다 (본문 장 제목 쪽) */
+  hidePageNumberHere() {
+    this.ctrls += `<hp:ctrl><hp:pageHiding hideHeader="0" hideFooter="0" hideMasterPage="0" hideBorder="0" hideFill="0" hidePageNum="1"/></hp:ctrl>`;
+  }
+  /** 다음 문단이 놓인 쪽의 번호를 n으로 새로 시작한다 (차례 쪽 번호와 맞추려고 절·장 첫 쪽마다) */
+  newPageNumber(n: number | undefined) {
+    if (n && n > 0) this.ctrls += `<hp:ctrl><hp:newNum num="${n}" numType="PAGE"/></hp:ctrl>`;
+  }
+  /** 차례 한 줄 — 제목, 오른쪽 탭(점선), 쪽 번호. 번호를 모르면 제목만 */
+  tocLine(text: string, page: number | undefined, charPrId: number) {
+    const tab = page ? `<hp:tab width="0" leader="DOT" type="RIGHT"/>${page}` : "";
+    this.p(`<hp:run charPrIDRef="${charPrId}"><hp:t>${x(text)}${tab}</hp:t></hp:run>`, 9);
   }
   run(text: string, charPrId = 0) {
     return text ? `<hp:run charPrIDRef="${charPrId}"><hp:t>${x(text)}</hp:t></hp:run>` : "";
@@ -226,58 +265,89 @@ class Writer {
   }
 }
 
-/** 순서: 표제지 · 판권면 · 속표지 · 차례 · 앞붙이 · 본문 · 뒷붙이 · 참고문헌. 찾아보기는 쪽 번호가 조판(PDF)에서만 정해져 HWPX에는 넣지 않는다 */
-export async function buildHwpx(book: Book, back: { biblio?: { enabled: boolean; entries: { text: string }[] } | null } = {}): Promise<Buffer> {
+/** 차례 쪽 번호 — 장·절 id(참고문헌은 "bm-biblio") → 쪽 번호. 편집 화면이 PDF와 같은 조판으로 잰 값 */
+export type HwpxPages = Record<string, number>;
+export const BIBLIO_PAGE_KEY = "bm-biblio";
+
+/**
+ * 순서: 표제지 · 판권면 · 속표지 · 차례 · 앞붙이 · 본문 · 뒷붙이 · 참고문헌. 찾아보기는 쪽 번호가 조판(PDF)에서만 정해져 HWPX에는 넣지 않는다.
+ * pages가 있으면 차례에 쪽 번호를 싣고, 장·절 첫 쪽마다 그 번호로 쪽 번호를 새로 시작한다 —
+ * 한글이 쪽을 다시 나눠도(또는 한글에서 글을 고쳐도) 장·절이 늘 새 쪽에서 시작하므로 차례 번호와 실제 쪽 번호가 맞는다.
+ */
+export async function buildHwpx(book: Book, back: { biblio?: { enabled: boolean; entries: { text: string }[] } | null } = {}, pages: HwpxPages = {}): Promise<Buffer> {
   const { project, layout } = book;
   const docs = new Map(book.chapters.flatMap((c) => c.sections.map((s) => [s, parseDoc(s.content)] as const)));
   const w = new Writer(book, await loadAssets([...docs.values()]));
   // 표제지(1쪽)
   w.p(w.run(project.title, 8), 1);
   if (project.subtitle) w.p(w.run(project.subtitle, 4), 1);
-  w.p(w.run(project.author, 0), 1);
-  // 판권면(2쪽)
+  w.p(w.run(project.author, 0), 7);
+  // 판권면(2쪽) — 글을 모두 쪽 아래에 모은다: 첫 줄의 위 간격 = 본문 높이 − 판권 글 높이(어림) − 여유
   const cp = layout.colophon;
-  const line = (k: string, v: string) => v && w.p(w.run(`${k}  ${v}`, 7), 4);
-  w.p(w.run(project.title, 4), 4, true);
-  line("지은이", project.author);
-  line("발  행", cp.publishDate);
-  line("펴낸이", cp.publisher);
-  line("펴낸곳", cp.publisherName);
-  line("출판사등록", cp.registration);
-  line("주  소", cp.address);
-  line("전  화", cp.phone);
-  line("이메일", cp.email);
-  line("ISBN", cp.isbn);
-  line("", cp.website);
-  w.p(w.run(`ⓒ ${project.author} ${cp.copyrightYear}`, 7), 4);
-  w.p(w.run(cp.notice, 7), 4);
+  const rows: { text: string; pt: number }[] = [
+    ...(
+      [
+        ["지은이", project.author],
+        ["발  행", cp.publishDate],
+        ["펴낸이", cp.publisher],
+        ["펴낸곳", cp.publisherName],
+        ["출판사등록", cp.registration],
+        ["주  소", cp.address],
+        ["전  화", cp.phone],
+        ["이메일", cp.email],
+        ["ISBN", cp.isbn],
+        ["", cp.website],
+      ] as const
+    )
+      .filter(([, v]) => v)
+      .map(([k, v]) => ({ text: `${k}  ${v}`, pt: 8.5 })),
+    { text: `ⓒ ${project.author} ${cp.copyrightYear}`, pt: 8.5 },
+    { text: cp.notice, pt: 8.5 },
+  ];
+  const box = bodyBox(layout.margins);
+  const COLOPHON_SLACK_MM = 6; // 어림이 빗나가도 다음 쪽으로 넘치지 않게
+  const colophonTopMm = Math.max(0, box.height - colophonHeightMm([{ text: project.title, pt: 10.5 }, ...rows], box.width) - COLOPHON_SLACK_MM);
+  // 빈 줄 하나 = 8.5pt × 100% = 3mm (한글 실측)
+  const SPACER_LINE_MM = (8.5 * 25.4) / 72;
+  const spacers = Math.floor(colophonTopMm / SPACER_LINE_MM);
+  for (let i = 0; i < spacers; i++) w.p('<hp:run charPrIDRef="7"/>', 8, i === 0);
+  w.p(w.run(project.title, 4), 4, !spacers);
+  for (const r of rows) w.p(w.run(r.text, 7), 4);
   // 속표지(3쪽) — 제목만 가운데
   w.p(w.run(project.title, 2), 6, true);
   if (project.subtitle) w.p(w.run(project.subtitle, 4), 2);
-  // 차례(4쪽~) — HWPX는 쪽 번호를 정할 수 없어 제목만 싣는다
+  // 차례(4쪽~) — 쪽 번호는 pages에 있을 때만
+  const biblio = back.biblio?.enabled && back.biblio.entries.length ? back.biblio : null;
   w.p(w.run("차례", 2), 1, true);
   for (const c of book.chapters) {
-    w.p(w.run(`${c.label ? c.label + " " : ""}${c.title}`, 1), 4);
-    if (c.kind === "body") for (const s of c.sections) w.p(w.run(`    ${s.label ? s.label + " " : ""}${s.title}`, 0), 4);
+    w.tocLine(`${c.label ? c.label + " " : ""}${c.title}`, pages[c.id], 1);
+    if (c.kind === "body") for (const s of c.sections) w.tocLine(`    ${s.label ? s.label + " " : ""}${s.title}`, pages[s.id], 0);
   }
-  if (back.biblio?.enabled && back.biblio.entries.length) w.p(w.run("참고문헌", 1), 4);
-  // 머리말 등 앞붙이 · 본문 · 뒷붙이
-  for (const c of book.chapters) {
+  if (biblio) w.tocLine("참고문헌", pages[BIBLIO_PAGE_KEY], 1);
+  // 머리말 등 앞붙이 · 본문 · 뒷붙이 — 쪽 번호는 머리말(없으면 본문)부터 보인다
+  for (const [ci, c] of book.chapters.entries()) {
     const fig = { ch: c.no, n: 0 };
-    // 본문 장: 제목만 있는 독립된 쪽 / 앞붙이·뒷붙이: 새 쪽 맨 위에 제목
+    if (ci === 0) w.pageNumbersFromHere();
+    // 본문 장: 제목만 있는 독립된 쪽(쪽 번호 감춤) / 앞붙이·뒷붙이: 새 쪽 맨 위에 제목
+    if (c.kind === "body") w.hidePageNumberHere();
+    w.newPageNumber(pages[c.id]);
     if (c.kind === "body") w.p(w.run(c.title, 10), 6, true);
     else w.p(w.run(c.title, 2), 1, true);
     const single = c.kind !== "body" && c.sections.length === 1 && c.sections[0].title === c.title;
     for (const [i, s] of c.sections.entries()) {
       // 절은 항상 새 쪽에서 시작 (앞붙이·뒷붙이의 첫 절은 장 제목 바로 아래)
-      if (!single) w.p(w.run(`${s.label ? s.label + " " : ""}${s.title}`, 3), 1, c.kind === "body" || i > 0);
+      const newPage = c.kind === "body" || i > 0;
+      if (!single && newPage) w.newPageNumber(pages[s.id]);
+      if (!single) w.p(w.run(`${s.label ? s.label + " " : ""}${s.title}`, 3), 1, newPage);
       await w.blocks(docs.get(s)!, fig);
     }
   }
   // 참고문헌
-  if (back.biblio?.enabled && back.biblio.entries.length) {
+  if (biblio) {
+    if (!book.chapters.length) w.pageNumbersFromHere();
+    w.newPageNumber(pages[BIBLIO_PAGE_KEY]);
     w.p(w.run("참고문헌", 2), 1, true);
-    for (const e of back.biblio.entries) w.p(w.run(e.text, 7), 4);
+    for (const e of biblio.entries) w.p(w.run(e.text, 7), 4);
   }
 
   const section = `${HEAD}<hs:sec ${nsAttrs}>${w.paras.join("")}</hs:sec>`;

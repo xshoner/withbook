@@ -546,7 +546,7 @@ export default function Workspace() {
         }}
         onEdited={onServerEdited}
       />
-      {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} onOpenChecks={onOpenChecks} />}
+      {exportOpen && <ExportDialog projectId={id} title={tree.title} chapterId={cur?.c.id} sectionId={cur?.s.id} onClose={() => setExportOpen(false)} onOpenChecks={onOpenChecks} pageInfo={info} />}
     </div>
   );
 }
