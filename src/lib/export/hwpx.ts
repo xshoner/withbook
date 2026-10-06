@@ -196,7 +196,10 @@ export function splitInline(n: JNode, cuts: number[]): JNode[] {
   let c = 0;
   for (const node of n.content ?? []) {
     if (node.type !== "text") {
-      pieces[pieces.length - 1].push(node);
+      // 끊은 자리 바로 뒤의 각주 번호는 앞 조각(앞 쪽)에 둔다 — "다.¹ 다음 문장"에서 ¹이 다음 쪽으로 가지 않게
+      const cur = pieces[pieces.length - 1];
+      const fresh = pieces.length > 1 && cur.every((x) => x.type !== "text" || !(x.text ?? "").trim());
+      (fresh && node.type === "footnote" ? pieces[pieces.length - 2] : cur).push(node);
       continue;
     }
     const text = node.text ?? "";

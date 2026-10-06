@@ -153,6 +153,8 @@ p { margin: 0; text-indent: ${TYPO.indentEm}em; }
 p + p { margin-top: ${layout.paraSpacingMm}mm; }
 /* Paged.js가 쪽을 넘어가는 요소에 주는 text-align-last:justify가 제목 등에 상속되지 않게 */
 p:not([data-split-to]), h1, h2, h3, h4, li, figure, figcaption, th, td, .toc-ch, .toc-sec { text-align-last: auto !important; }
+/* 문장째 다음 쪽으로 넘긴 문단 조각 — 쪽 끝 줄은 문장이 끝난 짧은 줄이라 양쪽으로 늘리지 않는다 */
+[data-sentence-break] { text-align-last: auto !important; }
 strong { font-weight: 700; }
 .chapter { break-before: ${breakChapter}; }
 .chapter.front, .chapter.back { break-before: ${breakChapter}; }
@@ -300,11 +302,85 @@ window.PagedConfig = {
 };
 </script>
 <script src="/pagedjs?v=0.4.3"></script>
+<script>${SENTENCE_BREAK_SCRIPT}</script>
 <script>${AFTER_SCRIPT}</script>
 </head><body class="${bodyCls}">
 ${html}
 </body></html>`;
 }
+
+/**
+ * 쪽 끝에서 문장이 잘리면 그 문장을 통째로 다음 쪽으로 넘긴다 (Paged.js onOverflow — 넘치기 시작한 자리를 문장 첫 글자로 당긴다).
+ *  - 이 쪽에 남을 문장 조각이 MAX_LINES줄 이하일 때만 (긴 문장까지 옮기면 쪽이 너무 빈다)
+ *  - 문장이 문단 첫머리부터면 문단째 넘긴다. 앞 쪽에서 이어진 문단 조각이면 그 쪽 첫 줄까지만 본다
+ *  - 옮길 부분에 각주 번호가 있거나, 문장이 이 쪽 첫 줄에서 시작하면 그대로 둔다(각주가 엉키거나 쪽이 비지 않게)
+ * 주의: 템플릿 문자열 안이라 역슬래시를 쓰지 않는다.
+ */
+const SENTENCE_BREAK_SCRIPT = `
+(function () {
+  if (!window.Paged || !window.Paged.Handler) return;
+  var MAX_LINES = 3;
+  var ENDS = '.?!。…';
+  var CLOSERS = '"' + "'" + '”’)」』]';
+  var isSpace = function (c) { return c !== undefined && c.trim() === ''; };
+  class SentenceBreak extends window.Paged.Handler {
+    onOverflow(overflow) {
+      try {
+        if (!overflow || overflow.startContainer.nodeType !== 3) return;
+        var sc = overflow.startContainer, so = overflow.startOffset;
+        var block = sc.parentElement && sc.parentElement.closest('p, li');
+        if (!block || block.closest('.fn, .toc, .colophon, figure')) return;
+        // 블록의 글자(각주 내용 제외)를 이어 붙이고 넘침 자리까지의 위치를 찾는다
+        var nodes = [], walker = document.createTreeWalker(block, 4, { acceptNode: function (n) { return n.parentElement && n.parentElement.closest('.fn, [data-footnote-call]') ? 2 : 1; } });
+        for (var n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+        var text = '', starts = [], pos = -1;
+        for (var i = 0; i < nodes.length; i++) { starts.push(text.length); if (nodes[i] === sc) pos = text.length + so; text += nodes[i].data; }
+        if (pos <= 0) return;
+        // 넘침 자리 앞에서 가장 가까운 문장 끝(마침표 등 + 닫는 따옴표 + 빈칸)
+        var s = -1;
+        for (var j = pos - 1; j > 0; j--) {
+          if (!isSpace(text[j])) continue;
+          var k = j - 1;
+          while (k >= 0 && CLOSERS.indexOf(text[k]) >= 0) k--;
+          if (k >= 0 && ENDS.indexOf(text[k]) >= 0) { s = j + 1; break; }
+        }
+        var whole = false;
+        if (s < 0) {
+          // 문단 첫 문장 — 앞 쪽에서 이어진 조각이면 옮기지 않는다
+          if (block.hasAttribute('data-split-from')) return;
+          whole = true; s = 0;
+        }
+        while (s < pos && isSpace(text[s])) s++;
+        if (s >= pos) return;
+        // 문장 시작 자리 (글자 노드, 위치)
+        var ni = 0;
+        while (ni + 1 < starts.length && starts[ni + 1] <= s) ni++;
+        var range = document.createRange();
+        range.setStart(nodes[ni], s - starts[ni]);
+        range.setEnd(sc, so);
+        // 옮길 부분에 각주 번호가 있으면 그대로
+        var calls = block.querySelectorAll('[data-footnote-call]');
+        for (var c = 0; c < calls.length; c++) if (range.intersectsNode(calls[c])) return;
+        var lh = parseFloat(getComputedStyle(block).lineHeight) || 20;
+        var first = range.getClientRects()[0];
+        var area = block.closest('.pagedjs_page_content');
+        if (!first || !area) return;
+        var startTop = first.top, endBottom = range.getBoundingClientRect().bottom;
+        if (startTop < area.getBoundingClientRect().top + lh * 0.5) return; // 이 쪽 첫 줄에서 시작한 문장
+        if (endBottom - startTop > lh * MAX_LINES + 1) return; // 남을 조각이 너무 길다
+        if (whole) {
+          overflow.setStart(block.parentNode, Array.prototype.indexOf.call(block.parentNode.childNodes, block));
+        } else {
+          overflow.setStart(nodes[ni], s - starts[ni]);
+          block.setAttribute('data-sentence-break', '');
+        }
+        return overflow;
+      } catch (e) { console.warn('sentence break', e); }
+    }
+  }
+  window.Paged.registerHandlers(SentenceBreak);
+})();
+`;
 
 /** 조판 후처리: 쪽 번호, 차례 쪽수, 가이드, 측정 결과 보고 */
 const AFTER_SCRIPT = `

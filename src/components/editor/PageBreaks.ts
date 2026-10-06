@@ -222,6 +222,14 @@ function afterChars(node: PMNode, pos: number, n: number): Planned | null {
     return false;
   });
   if (hit < 0) return null;
+  // 끊는 자리 바로 뒤의 각주 번호·빈칸은 앞 쪽에 남긴다 (문장 끝 "다.¹ 다음 문장"에서 ¹이 다음 쪽 맨 앞으로 가지 않게)
+  for (let guard = 0; guard < 20 && hit < tbEnd; guard++) {
+    const after = node.resolve(hit - pos - 1).nodeAfter;
+    const lead = after?.isText ? (after.text ?? "").length - (after.text ?? "").trimStart().length : 0;
+    if (after?.type.name === "footnote") hit += after.nodeSize;
+    else if (lead > 0) hit += lead;
+    else break;
+  }
   if (hit < tbEnd) return { pos: hit, kind: "mid" };
   return nextStart >= 0 ? { pos: nextStart, kind: "start" } : null;
 }

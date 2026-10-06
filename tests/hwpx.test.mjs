@@ -98,3 +98,11 @@ test('a paragraph the PDF split across pages is split at the same character (spa
   assert.deepEqual(c.content.map((n) => n.text ?? n.type), ['바 사아']);
   assert.deepEqual(c.content[0].marks, [{ type: 'bold' }]);
 });
+
+test('a footnote right after the sentence end stays with the earlier piece', async () => {
+  const { splitInline } = await import(await moduleUrl(new URL('../src/lib/export/hwpx.ts', import.meta.url)));
+  const para = { type: 'paragraph', content: [{ type: 'text', text: '가나다.' }, { type: 'footnote', attrs: { note: '주' } }, { type: 'text', text: ' 라마바' }] };
+  const [a, b] = splitInline(para, [4]);
+  assert.deepEqual(a.content.map((n) => n.text ?? n.type), ['가나다.', 'footnote']);
+  assert.deepEqual(b.content.map((n) => n.text ?? n.type), ['라마바']);
+});
