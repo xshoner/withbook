@@ -3,6 +3,7 @@
 import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
+import type { Node as PMNode } from "@tiptap/pm/model";
 
 /**
  * 편집 화면 쪽 나눔 — 실제 조판처럼 본문 영역 높이(160mm)마다 쪽을 끊고, 쪽과 쪽 사이에 빈 공간을 둔다.
@@ -11,7 +12,7 @@ import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
  *  - mid: 문단 중간 — 쪽을 넘는 줄의 맨 앞에 전체 폭 인라인 블록
  *  - start: 블록 첫 줄부터 넘칠 때 — 문단 맨 앞(들여쓰기는 빈칸으로 흉내)
  *  - block: 그림·구분선처럼 글자가 없는 블록 앞
- * 실제 조판(Paginator가 잰 Paged.js 결과)이 지금 원고와 맞으면 그 쪽 번호를 따라 끊는다(hints) — 그림이 미리보기와 같은 쪽에 놓이게.
+ * 실제 조판(Paginator가 잰 Paged.js 결과)이 지금 원고와 맞으면 그 끊음 자리(블록 앞·문단 속 글자 자리)를 그대로 따른다(hints) — PDF와 같은 쪽 나눔.
  */
 
 export type PageGeom = {
@@ -175,33 +176,112 @@ type Crossing = { pos: number; kind: PageBreak["kind"]; top: number; indent: num
  * 실제 조판에서 최상위 블록마다 놓인 쪽(이 절 첫 쪽 = 0) — pageMap.matchPrintLayout 결과. null이면 화면 계산만 쓴다.
  * 인쇄되지 않는 블록(빈 문단)은 null.
  */
-export type PrintHints = ({ start: number; end: number } | null)[] | null;
+export type PrintHints = ({ start: number; end: number; cuts?: number[] } | null)[] | null;
+
+type Planned = { pos: number; kind: PageBreak["kind"] };
+
+/** 블록 앞에서 끊는 자리 — 글 블록은 첫 글자 앞, 그림·구분선은 블록 앞, 목록·인용은 첫 글 블록 앞 */
+function beforeBlock(node: PMNode, pos: number): Planned | null {
+  if (node.isTextblock) return { pos: pos + 1, kind: "start" };
+  if (node.isAtom || node.isLeaf) return { pos, kind: "block" };
+  let at = -1;
+  node.descendants((n, p) => {
+    if (at >= 0) return false;
+    if (n.isTextblock) at = pos + 1 + p + 1;
+    return at < 0;
+  });
+  return at >= 0 ? { pos: at, kind: "start" } : null;
+}
+
+/** 블록 안에서 공백을 뺀 n번째 글자 바로 뒤(다음 쪽 첫 글자 앞) — 글 블록 끝이면 다음 글 블록 앞 */
+function afterChars(node: PMNode, pos: number, n: number): Planned | null {
+  let count = 0;
+  let hit = -1;
+  let tbEnd = -1;
+  let nextStart = -1;
+  node.descendants((child, p) => {
+    if (nextStart >= 0) return false;
+    const abs = pos + 1 + p;
+    if (hit >= 0 && child.isTextblock) {
+      nextStart = abs + 1;
+      return false;
+    }
+    if (child.isTextblock) tbEnd = abs + child.nodeSize - 1;
+    if (hit >= 0 || !child.isText) return hit < 0;
+    const t = child.text ?? "";
+    for (let i = 0; i < t.length; i++) {
+      if (/\s/.test(t[i])) continue;
+      if (++count === n) {
+        let j = i + 1;
+        while (j < t.length && /\s/.test(t[j])) j++;
+        hit = abs + j;
+        break;
+      }
+    }
+    return false;
+  });
+  if (hit < 0) return null;
+  if (hit < tbEnd) return { pos: hit, kind: "mid" };
+  return nextStart >= 0 ? { pos: nextStart, kind: "start" } : null;
+}
 
 /**
- * from 위치 이후에서 본문 영역 끝(bottom)을 처음 넘는 줄·블록을 찾는다.
- * k: 지금 쪽(이 절 첫 쪽 = 0). hints가 있으면 실제 조판과 같은 쪽에 두도록 끊는다:
- *  - 조판에서 다음 쪽 이후에 시작하는 블록(문단·소제목·그림)은 이 쪽에 들어가도 그 앞에서 끊는다
- *  - 조판에서 이 쪽에 놓인 그림은 조금 넘쳐도 이 쪽에 두고 그 뒤에서 끊는다
+ * 실제 조판과 똑같이 끊을 자리 — 조판에서 새 쪽에 놓인 블록 앞, 쪽을 넘은 블록은 조판이 끊은 글자 자리.
+ * 화면 높이 계산과 상관없이 이 자리에서만 끊어 편집 화면 쪽 나눔이 PDF와 같게 한다.
+ */
+function plannedBreaks(doc: PMNode, hints: NonNullable<PrintHints>): Planned[] {
+  const out: Planned[] = [];
+  let prevEnd = 0;
+  doc.forEach((node, pos, index) => {
+    const h = hints[index];
+    if (!h) return;
+    if (h.start > prevEnd) {
+      const b = beforeBlock(node, pos);
+      if (b && b.pos > 1) out.push(b);
+    }
+    for (const n of h.cuts ?? []) {
+      const b = afterChars(node, pos, n);
+      if (b) out.push(b);
+    }
+    prevEnd = Math.max(prevEnd, h.end);
+  });
+  return out.sort((a, b) => a.pos - b.pos);
+}
+
+/** 정해 둔 자리 중 from 다음 끊음 — 화면 위치(채움 높이 계산용)를 잰다 */
+function nextPlanned(view: EditorView, plan: Planned[], from: number, zoom: number): Crossing | null {
+  const b = plan.find((p) => p.pos > from);
+  if (!b) return null;
+  if (b.kind === "block") {
+    const dom = view.nodeDOM(b.pos) as HTMLElement | null;
+    if (!dom?.getBoundingClientRect) return null;
+    const mt = parseFloat(getComputedStyle(dom).marginTop) || 0;
+    return { pos: b.pos, kind: "block", top: dom.getBoundingClientRect().top - mt * zoom, indent: 0, mb: mt };
+  }
+  if (b.kind === "start") {
+    const dom = view.nodeDOM(b.pos - 1) as HTMLElement | null;
+    if (!dom?.getBoundingClientRect) return null;
+    return { pos: b.pos, kind: "start", top: dom.getBoundingClientRect().top, indent: parseFloat(getComputedStyle(dom).textIndent) || 0, mb: 0 };
+  }
+  return { pos: b.pos, kind: "mid", top: view.coordsAtPos(b.pos, 1).top, indent: 0, mb: 0 };
+}
+
+/**
+ * from 위치 이후에서 본문 영역 끝(bottom)을 처음 넘는 줄·블록을 찾는다 (실제 조판 결과가 없을 때의 화면 계산).
  * 풀페이지·풀블리드 그림은 인쇄처럼 한 쪽을 혼자 쓴다(앞뒤에서 끊는다).
  */
-function findCrossing(view: EditorView, from: number, pageTop: number, bottom: number, zoom: number, k = 0, hints: PrintHints = null): Crossing | null {
+function findCrossing(view: EditorView, from: number, pageTop: number, bottom: number, zoom: number): Crossing | null {
   let res: Crossing | null = null;
   let heading: { pos: number; top: number } | null = null; // 쪽 끝에 홀로 남을 소제목
   const EPS = 0.5;
   const doc = view.state.doc;
-  doc.nodesBetween(Math.min(from, doc.content.size), doc.content.size, (node, pos, parent, index) => {
+  doc.nodesBetween(Math.min(from, doc.content.size), doc.content.size, (node, pos) => {
     if (res) return false;
     if (pos + node.nodeSize <= from) return false;
-    const hint = parent === doc && hints ? hints[index] : null;
     if (node.isTextblock) {
       const dom = view.nodeDOM(pos) as HTMLElement | null;
       if (!dom?.getBoundingClientRect) return false;
       const r = dom.getBoundingClientRect();
-      if (hint && hint.start > k && r.top > pageTop + 1) {
-        // 조판에서는 다음 쪽에서 시작한다 — 이 블록 앞에서 끊는다
-        res = { pos: pos + 1, kind: "start", top: r.top, indent: parseFloat(getComputedStyle(dom).textIndent) || 0, mb: 0 };
-        return false;
-      }
       if (r.bottom <= bottom + EPS) {
         heading = node.type.name === "heading" && r.top > pageTop + 1 ? { pos, top: r.top } : null;
         return false;
@@ -239,11 +319,6 @@ function findCrossing(view: EditorView, from: number, pageTop: number, bottom: n
       const mb = parseFloat(cs.marginBottom) || 0;
       const atTop = r.top - mt * zoom <= pageTop + 1;
       const whole = node.type.name === "figure" && (node.attrs.layout === "fullpage" || node.attrs.layout === "fullbleed");
-      if (hint && hint.start > k && !atTop) {
-        // 조판에서는 다음 쪽에 놓인다 — 이 쪽에 들어가도 앞에서 끊는다
-        res = { pos, kind: "block", top: r.top - mt * zoom, indent: 0, mb: mt };
-        return false;
-      }
       if (whole) {
         // 한 쪽을 혼자 쓰는 그림 — 쪽 맨 위가 아니면 앞에서, 맨 위면 뒤에서 끊는다
         if (!atTop) res = { pos, kind: "block", top: r.top - mt * zoom, indent: 0, mb: mt };
@@ -252,11 +327,6 @@ function findCrossing(view: EditorView, from: number, pageTop: number, bottom: n
       }
       if (r.bottom <= bottom + EPS) {
         heading = null;
-        return false;
-      }
-      if (hint && hint.start === k && node.type.name === "figure") {
-        // 조판에서는 이 쪽에 들어간다(편집 화면에서 조금 넘치더라도) — 그림 뒤에서 끊는다
-        res = { pos: pos + node.nodeSize, kind: "block", top: r.bottom + mb * zoom, indent: 0, mb: 0 };
         return false;
       }
       if (heading) res = { pos: heading.pos + 1, kind: "start", top: heading.top, indent: 0, mb: 0 };
@@ -346,6 +416,8 @@ export function paginate(
   }
   let lastNotes: PageNote[] = [];
   const allRefs = footnoteRefs(view);
+  // 조판 결과가 지금 원고와 맞으면 그 끊음 자리를 그대로 따른다
+  const plan = opts.hints ? plannedBreaks(view.state.doc, opts.hints) : null;
   try {
     for (let k = breaks.length; k < 400; k++) {
       const top0 = pageTop + (k === 0 ? opts.leadMm * mm : 0);
@@ -355,9 +427,10 @@ export function paginate(
       let c: Crossing | null = null;
       let notes: PageNote[] = [];
       for (let it = 0; it < 6; it++) {
-        c = findCrossing(view, from, top0, bottom - fnH, zoom, k, opts.hints ?? null);
+        c = plan ? nextPlanned(view, plan, from, zoom) : findCrossing(view, from, top0, bottom - fnH, zoom);
         const upto = c ? c.pos : Infinity;
         notes = refs.filter((f) => f.pos < upto).map(({ n, text }) => ({ n, text }));
+        if (plan) break;
         const h = notesHeight(notes);
         if (h <= fnH + 0.5) break;
         fnH = h;

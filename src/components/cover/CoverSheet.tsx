@@ -6,7 +6,6 @@ import {
   type CoverEl,
   type CoverLayout,
   FONTS,
-  FOLD_EXTEND,
   PANEL_LABEL,
   REGION_ORDER,
   SAFE_INSET,
@@ -149,7 +148,7 @@ export default function CoverSheet({ design, assetSrc, guides, selectedId, editi
   );
 }
 
-/** 편집기 안내선 — 재단 여백(붉은 띠), 재단선, 접는 선, 안전 영역, 날개 연장 영역, 패널 이름 */
+/** 편집기 안내선 — 재단 여백(붉은 띠), 재단선, 접는 선, 안전 영역, 패널 이름 */
 function GuideLayer({ l, g }: { l: CoverLayout; g: Guides }) {
   const b = l.bleed;
   const ids = panelsOf(l);
@@ -163,12 +162,6 @@ function GuideLayer({ l, g }: { l: CoverLayout; g: Guides }) {
           {/* 재단되어 잘리는 바깥 3mm */}
           <div style={{ position: "absolute", inset: 0, boxShadow: `inset 0 0 0 ${mm(b)} rgba(239, 68, 68, .28)` }} />
           <div style={{ position: "absolute", left: mm(b), top: mm(b), width: mm(l.sheetW - 2 * b), height: mm(l.sheetH - 2 * b), border: `${HAIR} solid rgba(220, 38, 38, .9)` }} />
-          {l.flap > 0 && (
-            <>
-              <div style={{ position: "absolute", left: mm(l.panels.back.x - FOLD_EXTEND), top: 0, width: mm(FOLD_EXTEND), height: mm(l.sheetH), background: "rgba(239, 68, 68, .18)" }} />
-              <div style={{ position: "absolute", left: mm(l.panels.frontFlap.x), top: 0, width: mm(FOLD_EXTEND), height: mm(l.sheetH), background: "rgba(239, 68, 68, .18)" }} />
-            </>
-          )}
         </>
       )}
       {g.fold && l.folds.map((x, i) => line(x, true, "rgba(37, 99, 235, .85)", `f${i}`))}

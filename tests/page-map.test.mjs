@@ -24,7 +24,7 @@ test('paged DOM fragments become per-section block pages relative to the section
   ];
   const m = buildPrintLayouts(frags);
   assert.deepEqual(m.s1.blocks, [
-    { kind: 'p', len: 420, start: 0, end: 1 },
+    { kind: 'p', len: 420, start: 0, end: 1, cuts: [300] }, // 300자가 앞 쪽, 나머지는 다음 쪽
     { kind: 'fig', len: 4, asset: 'img1', start: 1, end: 1 },
     { kind: 'p', len: 50, start: 2, end: 2 },
   ]);
@@ -62,12 +62,12 @@ test('matching gives each top-level editor block its printed page, and refuses s
   const doc = { type: 'doc', content: [p('가'.repeat(420)), p(''), fig('img1', '그림 설명'), p('나'.repeat(50))] };
   const layout = {
     blocks: [
-      { kind: 'p', len: 420, start: 0, end: 1 },
+      { kind: 'p', len: 420, start: 0, end: 1, cuts: [300] }, // 300자가 앞 쪽, 나머지는 다음 쪽
       { kind: 'fig', len: 4, asset: 'img1', start: 1, end: 1 },
       { kind: 'p', len: 50, start: 2, end: 2 },
     ],
   };
-  assert.deepEqual(matchPrintLayout(editorBlocks(doc), layout), [{ start: 0, end: 1 }, null, { start: 1, end: 1 }, { start: 2, end: 2 }]);
+  assert.deepEqual(matchPrintLayout(editorBlocks(doc), layout), [{ start: 0, end: 1, cuts: [300] }, null, { start: 1, end: 1 }, { start: 2, end: 2 }]);
   // 조판 뒤에 글을 고쳤다 → 쓰지 않는다 (화면 계산으로)
   const edited = { ...doc, content: [p('가'.repeat(421)), ...doc.content.slice(1)] };
   assert.equal(matchPrintLayout(editorBlocks(edited), layout), null);

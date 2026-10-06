@@ -210,7 +210,8 @@ hr::after { content: "* * *"; font-size: 9pt; }
 .toc-ch .t, .toc-sec .t { flex: 1; overflow: hidden; }
 .toc-ch .t::after, .toc-sec .t::after { content: ""; }
 .pn { min-width: 8mm; text-align: right; }
-.colophon { break-before: page; padding-top: 70mm; font-size: 8.5pt; line-height: 1.7; text-align: left; }
+/* 판권면은 쪽 아래에 붙인다 (HWPX도 같다) */
+.colophon { break-before: page; height: ${H - top - bottom - 2}mm; display: flex; flex-direction: column; justify-content: flex-end; font-size: 8.5pt; line-height: 1.7; text-align: left; }
 .colophon p { text-indent: 0; }
 .cp-title { font-family: ${TYPO.headingFontCss}, sans-serif; font-size: 11pt; margin-bottom: 4mm; }
 .colophon table { border-collapse: collapse; margin-bottom: 3mm; }

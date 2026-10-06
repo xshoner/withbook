@@ -69,8 +69,15 @@ export async function makeFigure(sectionId: string, input: MakeInput & { editOf?
     prompt = input.customPrompt?.trim() || buildFigurePrompt({ ...input, bookTitle: project.title, sectionTitle: title });
     buffer = (await generateImage({ prompt, size, fallbackSize, projectId: project.id, signal, purpose: "figure" })).buffer;
   }
-  // 흰 바탕으로 굳혀 인쇄용 JPEG (투명 PNG가 인쇄에서 검게 나오지 않게)
-  const jpeg = await sharp(buffer, { limitInputPixels: 100_000_000 }).flatten({ background: "#ffffff" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4", mozjpeg: true }).withMetadata({ density: 300 }).toBuffer();
+  // 흰 바탕으로 굳혀 인쇄용 JPEG (투명 PNG가 인쇄에서 검게 나오지 않게).
+  // 긴 변을 판형+재단 여백 높이(216mm)의 300 DPI 이상으로 — 쪽 가득·풀블리드로 넣어도 300 DPI가 된다
+  const m = await sharp(buffer).metadata();
+  const longEdge = Math.max(m.width ?? 0, m.height ?? 0);
+  const minEdge = Math.ceil((216 / 25.4) * 300);
+  const k = longEdge && longEdge < minEdge ? minEdge / longEdge : 1;
+  const jpeg = await sharp(buffer, { limitInputPixels: 100_000_000 })
+    .resize(Math.round((m.width ?? 1) * k), Math.round((m.height ?? 1) * k), { fit: "fill", kernel: "lanczos3" })
+    .flatten({ background: "#ffffff" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4", mozjpeg: true }).withMetadata({ density: 300 }).toBuffer();
   const saved = await saveProjectImage(project.id, jpeg, `figure-ai-${input.editOf ? "edit-" : ""}${Date.now()}.jpg`);
   const item: MadeFigure = { assetId: saved.id, src: saved.src, widthPx: saved.widthPx, heightPx: saved.heightPx, prompt, paragraph: input.paragraph.slice(0, 80), at: new Date().toISOString(), ...(input.editOf ? { edit: true } : {}) };
   const history = [item, ...(await loadFigureHistory(sectionId))].slice(0, MAX_HISTORY);

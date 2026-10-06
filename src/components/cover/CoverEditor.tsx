@@ -39,6 +39,8 @@ import {
   panelsOf,
   placeImage,
   pxAt300,
+  pxForAi,
+  AI_DPI,
   reflowSpine,
   regionBox,
   requestSize,
@@ -70,7 +72,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
   const [guides, setGuides] = useState<Guides>({ bleed: true, fold: true, safe: true, labels: true, barcode: true });
   const [zoom, setZoom] = useState<number | null>(null); // null = 화면에 맞춤
   const [fitZoom, setFitZoom] = useState(0.5);
-  const [busy, setBusy] = useState<"" | "save" | "export" | "ai" | "edit" | "upload">("");
+  const [busy, setBusy] = useState<"" | "save" | "export" | "exportJpg" | "ai" | "edit" | "upload">("");
   // 그림 수정 — 수정 요청과, 바꿀 부분(펼침면 mm, 선택)
   const [editPrompt, setEditPrompt] = useState("");
   const [maskMode, setMaskMode] = useState(false);
@@ -424,21 +426,23 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     }
   };
 
-  const exportPdf = async () => {
+  const exportCover = async (format: "pdf" | "jpg") => {
+    const kind = format === "jpg" ? "JPG" : "PDF";
     if (!design || !project) return;
     const errors = issues.filter((i) => i.level === "error");
     if (errors.length) return toast.error("출력 전에 고칠 것이 있습니다:\n" + errors.map((i) => "· " + i.message).join("\n"));
     const warns = issues.filter((i) => i.level === "warn");
-    if (warns.length && !(await confirmDialog(`인쇄 점검에서 확인할 것이 ${warns.length}개 있습니다.\n\n${warns.slice(0, 6).map((i) => "· " + i.message).join("\n")}\n\n그대로 PDF를 만들까요?`, { okLabel: "PDF 만들기" }))) return;
+    if (warns.length && !(await confirmDialog(`인쇄 점검에서 확인할 것이 ${warns.length}개 있습니다.\n\n${warns.slice(0, 6).map((i) => "· " + i.message).join("\n")}\n\n그대로 ${kind}를 만들까요?`, { okLabel: `${kind} 만들기` }))) return;
     if ((dirty || !savedJson) && !(await save(true))) return;
-    setBusy("export");
+    setBusy(format === "jpg" ? "exportJpg" : "export");
     try {
-      const h = await download(`/api/projects/${projectId}/cover/export`, {}, `${project.title}_표지.pdf`);
+      const h = await download(`/api/projects/${projectId}/cover/export`, { format }, `${project.title}_표지.${format}`);
+      if (format === "jpg") return void toast.success("JPG(300 DPI)를 만들었습니다.");
       const c = h.get("x-pdf-check");
       const check = c ? JSON.parse(decodeURIComponent(c)) : null;
       toast.success(check ? `PDF를 만들었습니다 — ${check.widthMm} × ${check.heightMm}mm${check.sizeOk ? "" : " (크기 확인 필요)"}` : "PDF를 만들었습니다.");
     } catch (e) {
-      toastError(e, "PDF 내보내기 실패: ");
+      toastError(e, `${kind} 내보내기 실패: `);
     } finally {
       setBusy("");
     }
@@ -754,9 +758,11 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
             onChange={(e) => setLayout({ spineOverride: e.target.value === "" ? null : Math.max(1, Number(e.target.value) || 1) }, "spineOverride")}
           />
         </label>
-        <label className="flex items-center gap-1">
-          <input type="checkbox" checked={design.flaps} onChange={(e) => setLayout({ flaps: e.target.checked }, "flaps")} />
-          날개(100mm)
+        <label className="flex items-center gap-1" title="날개 없음을 고르면 날개만큼 작업 사이즈가 줄어듭니다">
+          <select className="input py-1" value={design.flaps ? "1" : "0"} onChange={(e) => setLayout({ flaps: e.target.value === "1" }, "flaps")}>
+            <option value="1">날개 있음</option>
+            <option value="0">날개 없음</option>
+          </select>
         </label>
         <div className="ml-auto flex items-center gap-2 text-xs">
           {(
@@ -853,7 +859,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                     <span className="font-mono text-stone-500">→ {requestSize(rbox, design.ai.requestSize)}</span>
                   </div>
                   <p className="mb-1 text-[11px] leading-4 text-stone-500">
-                    {`${design.ai.requestSize === "auto" ? "auto: 영역 비율에 맞춘 최대 크기 · " : ""}거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxAt300(rbox.w)}×${pxAt300(rbox.h)}px(300 DPI)로 저장`}
+                    {`${design.ai.requestSize === "auto" ? "auto: 영역 비율에 맞춘 최대 크기 · " : ""}거부되면 ${rbox.w >= rbox.h ? "1536x1024" : "1024x1536"}로 다시 요청 · 받은 그림은 ${pxForAi(rbox.w)}×${pxForAi(rbox.h)}px(${AI_DPI} DPI — 쪽수가 늘어도 300 DPI 이상)로 저장`}
                   </p>
                   <textarea
                     className={`input h-56 resize-y font-mono text-[11px] leading-4 ${ownPrompt ? "border-amber-400 bg-amber-50/40 text-stone-800" : "bg-stone-50 text-stone-600"}`}
@@ -1127,7 +1133,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
                 </tbody>
               </table>
               <p className="mt-2 text-[11px] leading-4 text-stone-500">
-                붉은 띠는 재단되어 잘리는 여백이라 그림을 끝까지 채웁니다. 날개 쪽 연한 붉은 띠는 표지 그림을 3mm 더 연장하는 부분입니다. 초록 점선 안쪽에 글을 두세요.
+                붉은 띠는 재단되어 잘리는 여백이라 그림을 끝까지 채웁니다{l.flap > 0 ? " (날개 바깥 끝과 위·아래만)" : ""}. 초록 점선 안쪽에 글을 두세요.
               </p>
               <h3 className="mb-2 mt-5 font-semibold">
                 인쇄 점검 {issues.length ? <span className={errorCount ? "text-red-600" : "text-amber-600"}>{issues.length}</span> : <span className="text-emerald-600">통과</span>}
@@ -1152,7 +1158,10 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
         <button className="btn" disabled={!!busy || (!dirty && !!savedJson)} onClick={() => save()} title="Ctrl+S">
           {busy === "save" ? "저장 중…" : "저장"}
         </button>
-        <button className="btn-primary" disabled={!!busy} onClick={exportPdf} title="재단 여백 포함 인쇄용 PDF (TrimBox·BleedBox 포함)">
+        <button className="btn" disabled={!!busy} onClick={() => exportCover("jpg")} title="재단 여백 포함 300 DPI JPG 한 장">
+          {busy === "exportJpg" ? "JPG 만드는 중…" : "내보내기 (JPG)"}
+        </button>
+        <button className="btn-primary" disabled={!!busy} onClick={() => exportCover("pdf")} title="재단 여백 포함 인쇄용 PDF (TrimBox·BleedBox 포함)">
           {busy === "export" ? "PDF 만드는 중…" : "내보내기 (PDF)"}
         </button>
       </div>

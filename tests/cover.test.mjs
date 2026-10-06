@@ -14,24 +14,27 @@ test('spine follows the 미색모조 100g formula {(pages/2) x 0.11} + 1.6mm', (
   assert.equal(spineWidth(0), 1.6);
 });
 
-test('spread layout matches the bookk guide (flaps 100mm, bleed 3mm)', () => {
+test('spread layout matches the bookk guide total; covers 151mm, flaps 97mm, bleed only on flap ends and top/bottom', () => {
   // cover guide.jpg: 책등 15.3mm → 전체 517.3 × 216.0
   const l = coverLayout({ size: 'A5', pages: 2, paper: 'ivory100', spineOverride: 15.3, flaps: true });
   assert.equal(l.sheetW, 517.3);
   assert.equal(l.sheetH, 216);
-  assert.deepEqual([l.panels.backFlap.x, l.panels.back.x, l.panels.spine.x, l.panels.front.x, l.panels.frontFlap.x], [3, 103, 251, 266.3, 414.3]);
+  assert.deepEqual([l.panels.backFlap.x, l.panels.back.x, l.panels.spine.x, l.panels.front.x, l.panels.frontFlap.x], [3, 100, 251, 266.3, 417.3]);
+  assert.equal(l.panels.front.w, 151);
+  assert.equal(l.panels.back.w, 151);
+  assert.equal(l.panels.frontFlap.w, 97);
   assert.equal(l.folds.length, 4);
   const noFlap = coverLayout({ size: 'A5', pages: 200, paper: 'ivory100', spineOverride: null, flaps: false });
   assert.equal(noFlap.sheetW, 3 + 148 + 12.6 + 148 + 3);
   assert.equal(noFlap.folds.length, 2);
 });
 
-test('image regions extend to the bleed on outer edges and 3mm into the flaps', () => {
+test('image regions extend to the bleed on outer edges only', () => {
   const l = coverLayout({ size: 'A5', pages: 200, paper: 'ivory100', spineOverride: null, flaps: true });
   assert.deepEqual(regionBox(l, 'full'), { x: 0, y: 0, w: l.sheetW, h: 216 });
   assert.equal(regionBox(l, 'backFlap').x, 0);
-  assert.equal(regionBox(l, 'front').w, 148 + 3);
-  assert.equal(regionBox(l, 'back').x, l.panels.back.x - 3);
+  assert.equal(regionBox(l, 'front').w, 151);
+  assert.equal(regionBox(l, 'back').x, l.panels.back.x);
   const ff = regionBox(l, 'frontFlap');
   assert.equal(ff.x + ff.w, l.sheetW);
 });
@@ -143,11 +146,28 @@ test('edit frame letterboxes the original ratio inside a different request size'
 test('edit prompt keeps everything but the request', async () => {
   const { buildEditPrompt } = await import('../src/lib/cover/spec.ts');
   const d = defaultCover({ targetPages: 200 });
-  const p = buildEditPrompt(d, 'full', '하늘을 노을빛으로', true);
-  assert.match(p, /요청하지 않은 부분.*그대로 유지/);
-  assert.match(p, /투명하게 지정한 부분만/);
-  assert.match(p, /\[수정 요청\]\n하늘을 노을빛으로$/);
-  assert.match(p, /책등/);
+  const whole = buildEditPrompt(d, 'full', '하늘을 노을빛으로', false);
+  assert.match(whole, /요청하지 않은 부분.*그대로 유지/);
+  assert.match(whole, /책등/);
+  assert.match(whole, /\[수정 요청\]\n하늘을 노을빛으로$/);
+  const part = buildEditPrompt(d, 'front', '꽃을 노랗게', true);
+  assert.match(part, /마스크의 투명한 부분/);
+  assert.match(part, /비우거나 단색/);
+  assert.match(part, /테두리·선·틀·선택 표시/);
+  assert.match(part, /\[수정 요청\]\n꽃을 노랗게$/);
+});
+
+test('partial edit crops around the hole and feathers only outward', async () => {
+  const { editCrop, featherAlpha } = await import('../src/lib/cover/spec.ts');
+  const { hole, crop, feather } = editCrop(1000, 500, { x: 0.4, y: 0.4, w: 0.2, h: 0.2 });
+  assert.deepEqual(hole, { left: 400, top: 200, width: 200, height: 100 });
+  assert.ok(crop.left < hole.left && crop.left + crop.width > hole.left + hole.width);
+  assert.ok(crop.left >= 0 && crop.top >= 0 && crop.left + crop.width <= 1000 && crop.top + crop.height <= 500);
+  const a = featherAlpha(1000, 500, hole, feather);
+  assert.equal(a[250 * 1000 + 500], 255); // 안쪽
+  assert.equal(a[200 * 1000 + 400], 255); // 모서리도 온전히
+  assert.ok(a[250 * 1000 + 399] > 0 && a[250 * 1000 + 399] < 255); // 경계 바로 밖은 녹는 띠
+  assert.equal(a[250 * 1000 + 400 - feather - 1], 0); // 띠 밖은 원본 그대로
 });
 
 test('text background keeps padding and radius within limits', () => {

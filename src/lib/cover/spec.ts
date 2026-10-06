@@ -2,14 +2,17 @@
  * 표지(펼침면) 규격과 디자인 데이터 — 편집기·조판(PDF)·AI 이미지 요청이 모두 이 파일만 참조한다.
  * 브라우저·서버·테스트 공용이라 다른 모듈을 불러오지 않는다.
  *
- * 펼침면(왼쪽 → 오른쪽): 뒷날개 | 뒷표지 | 책등 | 앞표지 | 앞날개, 사방 재단 여백 3mm.
+ * 펼침면(왼쪽 → 오른쪽): 뒷날개 | 뒷표지 | 책등 | 앞표지 | 앞날개.
  * 출처: 부크크 표지 규격 자동 확인(https://bookk.co.kr/auto-size-preview.html) — 날개 100mm, 재단 여백 3mm.
+ * 날개 있는 책: 앞·뒤표지는 판형 폭 + 3mm(날개 쪽으로 연장, 예: A5 151mm), 날개는 그만큼 줄어 97mm.
+ *   재단 여백은 날개 바깥 끝과 위·아래에만 둔다. 전체 폭은 부크크 안내와 같다(책등 15.3mm → 517.3mm).
+ * 날개 없는 책: 앞·뒤표지 = 판형 폭, 재단 여백은 사방.
  */
 
 export const COVER_BLEED = 3; // 재단 여백 사방 mm
 export const FLAP_WIDTH = 100; // 날개 폭 mm
 export const SAFE_INSET = 5; // 글·중요 요소는 재단선·접는 선에서 이만큼 안쪽 mm
-/** 앞·뒤표지 그림을 날개 쪽으로 연장해야 하는 폭 (접을 때 밀려도 흰 틈이 보이지 않게) */
+/** 날개 있는 책에서 앞·뒤표지가 날개 쪽으로 더 넓은 폭 (접을 때 밀려도 흰 틈이 보이지 않게) — 표지 패널에 포함된다 */
 export const FOLD_EXTEND = 3;
 export const PRINT_DPI = 300;
 
@@ -148,7 +151,7 @@ export function googleFontsHref() {
 export type Box = { x: number; y: number; w: number; h: number };
 export type CoverLayout = {
   bleed: number;
-  trimW: number; // 앞표지 한 면 폭
+  trimW: number; // 앞표지 한 면 폭 (날개 있으면 판형 + 3mm)
   trimH: number;
   spine: number;
   flap: number; // 날개 없으면 0
@@ -168,8 +171,8 @@ export function coverLayout(d: Pick<CoverDesign, "size" | "pages" | "paper" | "s
   const b = COVER_BLEED;
   const size = BOOK_SIZES[d.size] ?? BOOK_SIZES.A5;
   const spine = coverSpine(d);
-  const flap = d.flaps ? FLAP_WIDTH : 0;
-  const W = size.width;
+  const flap = d.flaps ? FLAP_WIDTH - FOLD_EXTEND : 0;
+  const W = size.width + (d.flaps ? FOLD_EXTEND : 0);
   const H = size.height;
   let x = b;
   const box = (w: number): Box => {
@@ -189,8 +192,7 @@ export function panelsOf(l: CoverLayout): PanelId[] {
 
 /**
  * 그림이 채울 영역 (재단 여백 포함).
- * - 바깥 가장자리(위·아래, 펼침면 양 끝)는 재단 여백까지 늘린다.
- * - 앞·뒤표지는 날개 쪽으로 3mm 더 연장한다(부크크 안내의 붉은 영역).
+ * 바깥 가장자리(위·아래, 펼침면 양 끝)는 재단 여백까지 늘린다.
  */
 export function regionBox(l: CoverLayout, r: Region): Box {
   const b = l.bleed;
@@ -202,8 +204,6 @@ export function regionBox(l: CoverLayout, r: Region): Box {
   const last = l.flap ? "frontFlap" : "front";
   if (r === first) x0 -= b;
   if (r === last) x1 += b;
-  if (l.flap && r === "back") x0 -= FOLD_EXTEND;
-  if (l.flap && r === "front") x1 += FOLD_EXTEND;
   return { x: x0, y: 0, w: x1 - x0, h: l.sheetH };
 }
 
@@ -225,6 +225,12 @@ export function placeImage(img: Pick<CoverImage, "widthPx" | "heightPx" | "fit" 
 
 /** 300 DPI로 인쇄할 때 필요한 픽셀 */
 export const pxAt300 = (mm: number) => Math.ceil((mm / 25.4) * PRINT_DPI);
+/**
+ * AI 그림을 저장할 해상도 — 300 DPI보다 조금 높게 둔다. 쪽수가 늘어 책등·펼침면이 몇 mm 넓어져도
+ * (그림이 그만큼 더 늘어나도) 300 DPI 아래로 떨어지지 않게 (예: 펼침면 517mm → 534mm까지 300 DPI 유지)
+ */
+export const AI_DPI = 310;
+export const pxForAi = (mm: number) => Math.ceil((mm / 25.4) * AI_DPI);
 
 /** 요소의 펼침면 절대 위치 */
 export function elAbs(l: CoverLayout, el: Pick<CoverEl, "panel" | "x" | "y">) {
@@ -567,16 +573,65 @@ export function editFrame(size: string, iw: number, ih: number) {
   return { RW, RH, cw, ch, ox: Math.floor((RW - cw) / 2), oy: Math.floor((RH - ch) / 2) };
 }
 
+type PxRect = { left: number; top: number; width: number; height: number };
+
+/**
+ * 부분 수정 — 원본 픽셀 기준 지정 영역(hole)과, 모델에 보낼 주변 포함 잘라 낸 부분(crop), 경계를 녹일 폭(feather).
+ * 지정 부분만 크게 보내야 모델이 자세히 고치고, 받은 그림은 hole(+feather)만 원본에 다시 붙여 나머지는 한 픽셀도 바뀌지 않는다.
+ */
+export function editCrop(iw: number, ih: number, f: { x: number; y: number; w: number; h: number }) {
+  const hole: PxRect = { left: Math.floor(f.x * iw), top: Math.floor(f.y * ih), width: Math.max(1, Math.ceil(f.w * iw)), height: Math.max(1, Math.ceil(f.h * ih)) };
+  const feather = Math.max(8, Math.round(Math.min(hole.width, hole.height) * 0.06));
+  const pad = Math.max(feather * 2, Math.round(Math.max(hole.width, hole.height) * 0.5)); // 주변 맥락
+  const x0 = Math.max(0, hole.left - pad);
+  const y0 = Math.max(0, hole.top - pad);
+  const x1 = Math.min(iw, hole.left + hole.width + pad);
+  const y1 = Math.min(ih, hole.top + hole.height + pad);
+  return { hole, feather, crop: { left: x0, top: y0, width: x1 - x0, height: y1 - y0 } };
+}
+
+/**
+ * w×h 크기의 알파(0~255): hole 안 255, 밖으로 feather 픽셀에 걸쳐 0까지 부드럽게 — 이음매(사각형 자국)가 남지 않게.
+ * grow만큼 hole을 넓혀 잰다(모델에 보낼 마스크는 grow = feather로 녹이는 띠까지 포함).
+ */
+export function featherAlpha(w: number, h: number, hole: PxRect, feather: number, grow = 0) {
+  const a = new Uint8Array(w * h);
+  const l = hole.left - grow, t = hole.top - grow, r = hole.left + hole.width + grow, b = hole.top + hole.height + grow;
+  for (let y = 0; y < h; y++) {
+    const dy = y < t ? t - y : y >= b ? y - b + 1 : 0;
+    for (let x = 0; x < w; x++) {
+      const dx = x < l ? l - x : x >= r ? x - r + 1 : 0;
+      const d = Math.hypot(dx, dy);
+      a[y * w + x] = d <= 0 ? 255 : d >= feather ? 0 : Math.round(255 * (1 - d / feather));
+    }
+  }
+  return a;
+}
+
 /** 수정 프롬프트 — 바꿀 것만 바꾸고 나머지(구도·색·글자·영역 배치)는 그대로 두게 한다 */
 export function buildEditPrompt(d: CoverDesign, region: Region, request: string, masked: boolean) {
   const l = coverLayout(d);
-  const lines = [
-    "너는 전문적인 책 표지 디자이너다. 주어진 표지 그림을 아래 [수정 요청]대로만 고친다.",
-    "- 요청하지 않은 부분(전체 구도, 색감, 그림체, 인물·사물, 글자, 여백)은 원본 그대로 유지한다.",
-    "- 그림의 크기·비율·영역 배치를 바꾸지 않는다. 테두리·액자·목업을 더하지 않는다.",
-    masked ? "- 투명하게 지정한 부분만 바꾸고, 그 경계가 주변과 자연스럽게 이어지게 한다." : "- 바꾼 부분이 주변과 자연스럽게 이어지게 한다.",
-  ];
-  if (region === "full") {
+  const lines = ["너는 전문적인 책 표지 디자이너이자 리터칭 전문가다. 주어진 그림을 아래 [수정 요청]대로만 고친다."];
+  if (masked) {
+    lines.push(
+      "- 입력 그림은 표지 그림의 일부를 잘라 낸 것이다. 마스크의 투명한 부분이 '수정 영역'이다.",
+      "- 수정 영역 안만 다시 그린다. 수정 영역 밖은 원본 그대로 둔다.",
+      "- 수정 영역 안에서도 요청과 관계없는 배경·색감·질감·조명·원근은 바로 옆 원본과 똑같이 이어서 그린다.",
+      "- 요청이 '지우기·없애기'가 아니면 수정 영역을 비우거나 단색·흐림·회색으로 채우지 않는다. 원래 있던 것을 요청대로 바꾼 모습으로 채운다.",
+      "- 수정 영역의 경계가 보이면 안 된다. 사각형 테두리·선·틀·선택 표시·박스·그림자 띠를 절대 그리지 않는다.",
+      "- 그림체(일러스트·사진 등)와 해상도·선명도를 주변과 같게 맞춘다.",
+    );
+  } else {
+    lines.push(
+      "- 요청하지 않은 부분(전체 구도, 색감, 그림체, 인물·사물, 글자, 여백)은 원본 그대로 유지한다.",
+      "- 그림의 크기·비율·영역 배치를 바꾸지 않는다. 테두리·액자·목업을 더하지 않는다.",
+      "- 바꾼 부분이 주변과 자연스럽게 이어지게 한다.",
+    );
+  }
+  lines.push("- 글자를 넣거나 고치라는 요청이면 한글 철자를 그대로 정확하게 쓴다. 요청하지 않은 글자는 더하지 않는다.");
+  if (masked) {
+    lines.push("", `[위치] 이 부분은 ${REGION_LABEL[region]}에 있다.`);
+  } else if (region === "full") {
     lines.push("", "[배치 — 그대로 유지]", `- 펼친 표지 ${l.sheetW} × ${l.sheetH}mm, 왼쪽부터:`);
     for (const p of panelsOf(l)) lines.push(`  · ${PANEL_LABEL[p]}: ${pct(l.panels[p].x, l.sheetW)} ~ ${pct(l.panels[p].x + l.panels[p].w, l.sheetW)}`);
     lines.push("- 책등의 세로 제목은 책등 띠 안에 둔다.");

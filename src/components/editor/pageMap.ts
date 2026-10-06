@@ -10,10 +10,13 @@ import type { JNode } from "@/lib/doc/doc";
 
 export type BlockKind = "p" | "h" | "quote" | "ul" | "ol" | "hr" | "fig";
 
-/** 조판 결과의 본문 블록 하나 — start/end: 그 절 첫 쪽을 0으로 센 쪽 (문단이 쪽을 넘으면 end > start) */
-export type PrintedBlock = { kind: BlockKind; len: number; asset?: string; start: number; end: number };
+/**
+ * 조판 결과의 본문 블록 하나 — start/end: 그 절 첫 쪽을 0으로 센 쪽 (문단이 쪽을 넘으면 end > start)
+ * cuts: 쪽을 넘은 블록이 쪽마다 끊긴 자리 — 앞 쪽까지 놓인 글자 수(공백 제외, 누적)
+ */
+export type PrintedBlock = { kind: BlockKind; len: number; asset?: string; start: number; end: number; cuts?: number[] };
 export type SectionPrintLayout = { blocks: PrintedBlock[] };
-export type PageSpan = { start: number; end: number };
+export type PageSpan = { start: number; end: number; cuts?: number[] };
 
 /** 조판 DOM에서 읽은 조각 — 절 요소(.sec) 하나 또는 그 바로 아래 자식 하나. 쪽을 넘은 문단은 같은 ref로 여러 조각 */
 export type RawFragment = { sid: string; ref: string; tag: string; cls: string; page: number; len: number; asset?: string };
@@ -51,7 +54,8 @@ export function buildPrintLayouts(frags: RawFragment[]): Record<string, SectionP
     const key = `${f.sid}\u0000${f.ref || `#${i}`}`;
     const seen = byRef.get(key);
     if (seen) {
-      // 쪽을 넘어 이어지는 조각 — 글자 수를 더하고 끝 쪽을 늘린다
+      // 쪽을 넘어 이어지는 조각 — 끊긴 자리를 적고, 글자 수를 더하고 끝 쪽을 늘린다
+      if (f.page - b0 > seen.end) (seen.cuts ??= []).push(seen.len);
       seen.len += f.len;
       seen.end = Math.max(seen.end, f.page - b0);
       return;
@@ -105,7 +109,7 @@ export function matchPrintLayout(ed: EditorBlock[], layout: SectionPrintLayout |
     }
     const p = layout.blocks[k++];
     if (p.kind !== b.kind || p.len !== b.len || (b.kind === "fig" && (p.asset ?? "") !== (b.asset ?? ""))) return null;
-    out.push({ start: p.start, end: p.end });
+    out.push({ start: p.start, end: p.end, ...(p.cuts ? { cuts: p.cuts } : {}) });
   }
   return out;
 }

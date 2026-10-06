@@ -53,3 +53,48 @@ test('HWPX reuses image bytes while preserving every figure, size and caption', 
   assert.equal([...manifest.matchAll(/isEmbeded="1"/g)].length, 2);
   assert.equal(await zip.file('mimetype').async('string'), 'application/hwp+zip');
 });
+
+test('HWPX follows the PDF layout: TOC page numbers, PDF page breaks/blank pages, body numbering from 1, colophon at the bottom', async () => {
+  const { buildHwpx, colophonTopMm } = await import(await moduleUrl(new URL('../src/lib/export/hwpx.ts', import.meta.url)));
+  const { parseLayout } = await import(await moduleUrl(new URL('../src/lib/layout.ts', import.meta.url)));
+  const p = (t) => ({ type: 'paragraph', content: [{ type: 'text', text: t }] });
+  const book = {
+    project: { title: '책', author: '지은이', subtitle: '' }, layout: parseLayout(null),
+    chapters: [{ id: 'c1', title: '첫 장', label: '1장', kind: 'body', no: 1, sections: [{ id: 's1', title: '첫 절', label: '1', content: JSON.stringify({ type: 'doc', content: [p('가'), p('나'), p('다')] }) }] }],
+  };
+  // PDF: 0 표제지, 1 판권면, 2 속표지, 3 차례, 4 장 제목(1쪽), 5 절(2쪽) — 셋째 문단은 6쪽
+  const frag = (ref, page) => ({ sid: 's1', ref, tag: 'P', cls: '', page, len: 1 });
+  const paging = {
+    info: { sections: { s1: { start: 2, startIdx: 6, endIdx: 7 } }, chapters: { c1: { start: 1 } } },
+    frags: [{ sid: 's1', ref: '', tag: 'SECTION', cls: '', page: 5, len: 0 }, frag('a', 5), frag('b', 5), frag('c', 6)],
+    chapters: { c1: 4 }, toc: [3, 3], colophon: 1, inner: 2,
+  };
+  const zip = await JSZip.loadAsync(await buildHwpx(book, { paging }));
+  const xml = await zip.file('Contents/section0.xml').async('string');
+  assert.match(xml, /첫 절<\/hp:t><\/hp:run><hp:run charPrIDRef="0"><hp:t><hp:tab\/>2<\/hp:t>/); // 차례: 절 2쪽
+  assert.match(xml, /첫 장<\/hp:t><\/hp:run><hp:run charPrIDRef="4"><hp:t><hp:tab\/>1<\/hp:t>/);
+  assert.equal([...xml.matchAll(/<hp:newNum num="1" numType="PAGE"\/>/g)].length, 1);
+  // 쪽 수: 표제지 + 새 쪽 6번 = 7쪽 (PDF와 같다)
+  assert.equal([...xml.matchAll(/pageBreak="1"/g)].length, 6);
+  const paras = [...xml.matchAll(/<hp:p [^>]*pageBreak="(\d)"[^>]*>(.*?)<\/hp:p>/g)];
+  const third = paras.findIndex((m) => m[2].includes('>다<'));
+  assert.equal(paras[third][1], '1'); // PDF에서 새 쪽에 놓인 문단
+  assert.equal(paras.find((m) => m[2].includes('>나<'))[1], '0');
+  assert.match(xml, /paraPrIDRef="9"[^>]*pageBreak="1"/); // 판권면 첫 줄
+  const header = await zip.file('Contents/header.xml').async('string');
+  assert.match(header, /autoTabRight="1"/);
+  assert.ok(colophonTopMm(book) > 60 && colophonTopMm(book) < 160);
+  // 조판을 재지 못해도 차례는 들어간다
+  const plain = await (await JSZip.loadAsync(await buildHwpx(book))).file('Contents/section0.xml').async('string');
+  assert.match(plain, />차례</);
+});
+
+test('a paragraph the PDF split across pages is split at the same character (spaces not counted, footnotes kept)', async () => {
+  const { splitInline } = await import(await moduleUrl(new URL('../src/lib/export/hwpx.ts', import.meta.url)));
+  const para = { type: 'paragraph', content: [{ type: 'text', text: '가나 다라' }, { type: 'footnote', attrs: { note: '주' } }, { type: 'text', text: ' 마바 사아', marks: [{ type: 'bold' }] }] };
+  const [a, b, c] = splitInline(para, [3, 5]);
+  assert.deepEqual(a.content.map((n) => n.text ?? n.type), ['가나 다']);
+  assert.deepEqual(b.content.map((n) => n.text ?? n.type), ['라', 'footnote', ' 마']);
+  assert.deepEqual(c.content.map((n) => n.text ?? n.type), ['바 사아']);
+  assert.deepEqual(c.content[0].marks, [{ type: 'bold' }]);
+});

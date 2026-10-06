@@ -93,7 +93,10 @@ const isTimeout = (e: any) => e?.name === "TimeoutError" || /Timeout .*exceeded/
 /** 책 본문이 아닌 용지(표지 펼침면 등): 재단 여백 포함 크기와 재단 여백 */
 export type PdfSheet = { widthMm: number; heightMm: number; bleedMm: number };
 
-export async function renderPdf(url: string, opts: { projectId?: string; budgetMs?: number; sheet?: PdfSheet; extraOrigins?: string[]; startedAt?: number } = {}): Promise<PdfResult> {
+type RenderOpts = { projectId?: string; budgetMs?: number; sheet?: PdfSheet; extraOrigins?: string[]; startedAt?: number };
+
+/** 조판 페이지를 Chromium으로 열고 window.__PAGED_DONE까지 기다린 뒤 fn(page)을 부른다 (PDF·그림 공용) */
+async function withPagedPage<T>(url: string, opts: RenderOpts, viewport: { scale: number } | null, fn: (page: import("playwright-core").Page, printDeadline: number) => Promise<T>): Promise<T> {
   const startedAt = opts.startedAt ?? getRequestContext()?.startedAt ?? Date.now();
   const { layout: deadline, print: printDeadline } = pdfDeadlines(startedAt, opts.budgetMs);
   if (deadline - Date.now() < MIN_LAYOUT_MS) throw new PdfTimeoutError("layout");
@@ -102,7 +105,7 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
     const origin = new URL(url).origin;
     // 글꼴은 Supabase Storage 공개 주소로 넘어가므로 그 출처도 허용한다
     const fontOrigin = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).origin : "";
-    const page = await browser.newPage();
+    const page = await browser.newPage(viewport && opts.sheet ? { viewport: { width: Math.ceil((opts.sheet.widthMm / 25.4) * 96), height: Math.ceil((opts.sheet.heightMm / 25.4) * 96) }, deviceScaleFactor: viewport.scale } : undefined);
     const token = makeRenderToken(5 * 60_000, opts.projectId ?? "");
     await page.route("**/*", (route) => {
       const req = route.request();
@@ -125,9 +128,28 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
     } catch (e) {
       throw isTimeout(e) ? new PdfTimeoutError("layout") : e;
     }
-    const info = await page.evaluate("window.__PAGED_INFO");
     const err = await page.evaluate("window.__PAGED_ERROR");
     if (err) throw new PdfLayoutError("출력할 수 없습니다: " + String(err));
+    return await fn(page, printDeadline);
+  } finally {
+    await browser.close();
+  }
+}
+
+/** 용지(표지 펼침면) 한 장을 dpi 해상도 PNG로 찍는다 — CSS 1in = 96px이므로 배율 dpi/96 */
+export async function renderImage(url: string, opts: RenderOpts & { sheet: PdfSheet; dpi: number }): Promise<Buffer> {
+  return withPagedPage(url, opts, { scale: opts.dpi / 96 }, async (page, printDeadline) => {
+    await page.emulateMedia({ media: "print" });
+    // 픽셀 수는 올림 — 용지보다 작게(300 DPI 미만으로) 찍히지 않게
+    const px = (mm: number) => Math.ceil((mm / 25.4) * opts.dpi) / (opts.dpi / 96);
+    const shot = page.screenshot({ type: "png", fullPage: false, clip: { x: 0, y: 0, width: px(opts.sheet.widthMm), height: px(opts.sheet.heightMm) } });
+    return withTimeout(shot, printDeadline - Date.now(), () => new PdfTimeoutError("print"));
+  });
+}
+
+export async function renderPdf(url: string, opts: RenderOpts = {}): Promise<PdfResult> {
+  return withPagedPage(url, opts, null, async (page, printDeadline) => {
+    const info = await page.evaluate("window.__PAGED_INFO");
     const trim = url.includes("size=trim");
     const sheet: PdfSheet = opts.sheet ?? (trim ? { widthMm: TRIM.width, heightMm: TRIM.height, bleedMm: 0 } : { widthMm: DOC.width, heightMm: DOC.height, bleedMm: BLEED });
     // 인쇄도 남은 시간 안에서만 — 넘으면 브라우저를 닫고(finally) 504로 알린다
@@ -148,9 +170,7 @@ export async function renderPdf(url: string, opts: { projectId?: string; budgetM
     if (!opts.sheet && !check.kopubEmbedded)
       throw new PdfLayoutError(`출력할 수 없습니다: PDF에 KoPub 글꼴이 들어가지 않았습니다(들어간 글꼴: ${check.fontsEmbedded.slice(0, 5).join(", ") || "없음"}). 글꼴 파일을 확인한 뒤 다시 출력하세요.`);
     return { pdf, info, check };
-  } finally {
-    await browser.close();
-  }
+  });
 }
 
 /**
@@ -194,4 +214,46 @@ export async function checkPdf(pdf: Buffer, trim: boolean, sheet?: PdfSheet): Pr
   const fontsEmbedded = [...names];
   const kopubEmbedded = fontsEmbedded.some((n) => /KoPub/i.test(n)) && /\/FontFile[23]?/.test(latin);
   return { pages: doc.numPages, widthMm, heightMm, sizeOk, fontsEmbedded, kopubEmbedded };
+}
+
+/**
+ * 책 조판 결과(쪽 배치) — PDF와 같은 조판을 열어 쪽 번호·절/장/차례/판권면이 놓인 쪽과
+ * 절마다 본문 블록 조각(쪽·data-ref)을 읽는다. HWPX가 PDF와 같은 자리에서 쪽을 넘기고 차례에 쪽 번호를 넣는 데 쓴다.
+ */
+export type BookPaging = {
+  info: any;
+  frags: { sid: string; ref: string; tag: string; cls: string; page: number; len: number; asset?: string }[];
+  chapters: Record<string, number>;
+  toc: [number, number];
+  colophon: number;
+  inner: number;
+  total: number;
+};
+
+const MEASURE_JS = `(() => {
+  const pages = [...document.querySelectorAll('.pagedjs_page')];
+  const idx = (el) => pages.indexOf(el.closest('.pagedjs_page'));
+  const all = (sel) => [...document.querySelectorAll(sel)];
+  // 인쇄 글자 수(공백 제외) — 쪽 아래로 옮겨진 각주·각주 번호는 뺀다 (편집기 Paginator와 같은 규칙)
+  const visibleLen = (el) => {
+    let s = '';
+    const w = document.createTreeWalker(el, 4, { acceptNode: (t) => (t.parentElement && t.parentElement.closest('.fn, [data-footnote-call], [data-footnote-marker], .pagedjs_footnote_call') ? 2 : 1) });
+    for (let n = w.nextNode(); n; n = w.nextNode()) s += n.nodeValue || '';
+    return s.replace(/\\s+/g, '').length;
+  };
+  const frags = [];
+  pages.forEach((pg, page) => pg.querySelectorAll('.sec[data-sid]').forEach((sec) => {
+    const sid = sec.getAttribute('data-sid') || '';
+    frags.push({ sid, ref: '', tag: 'SECTION', cls: '', page, len: 0 });
+    for (const el of sec.children) frags.push({ sid, ref: el.getAttribute('data-ref') || '', tag: el.tagName, cls: el.getAttribute('class') || '', page, len: el.tagName === 'FIGURE' ? 0 : visibleLen(el), asset: el.getAttribute('data-asset') || undefined });
+  }));
+  const chapters = {};
+  all('[data-cid]').forEach((el) => { const id = el.getAttribute('data-cid'); if (!(id in chapters)) chapters[id] = idx(el); });
+  const toc = all('.toc');
+  const cp = all('.colophon');
+  return { info: window.__PAGED_INFO, frags, chapters, toc: toc.length ? [idx(toc[0]), idx(toc[toc.length - 1])] : [-1, -1], colophon: cp.length ? idx(cp[0]) : -1, inner: (() => { const e = document.querySelector('.title-page.inner'); return e ? idx(e) : -1; })(), total: pages.length };
+})()`;
+
+export async function measureBook(url: string, opts: RenderOpts = {}): Promise<BookPaging> {
+  return withPagedPage(url, opts, null, (page) => page.evaluate(MEASURE_JS) as Promise<BookPaging>);
 }
