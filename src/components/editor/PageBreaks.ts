@@ -197,7 +197,8 @@ function beforeBlock(node: PMNode, pos: number): Planned | null {
 function afterChars(node: PMNode, pos: number, n: number): Planned | null {
   let count = 0;
   let hit = -1;
-  let tbEnd = -1;
+  // 최상위 블록이 문단 자체면 그 끝이 글 블록 끝이다 (descendants는 자기 자신을 돌지 않는다)
+  let tbEnd = node.isTextblock ? pos + node.nodeSize - 1 : -1;
   let nextStart = -1;
   node.descendants((child, p) => {
     if (nextStart >= 0) return false;
@@ -427,10 +428,11 @@ export function paginate(
       let c: Crossing | null = null;
       let notes: PageNote[] = [];
       for (let it = 0; it < 6; it++) {
-        c = plan ? nextPlanned(view, plan, from, zoom) : findCrossing(view, from, top0, bottom - fnH, zoom);
+        // 정해 둔 끊음이 더 없는데 화면에서는 넘치면(자리를 못 찾은 끊음) 화면 계산으로 끊는다 — 각주가 본문에 겹치지 않게
+        c = (plan && nextPlanned(view, plan, from, zoom)) || findCrossing(view, from, top0, bottom - fnH, zoom);
         const upto = c ? c.pos : Infinity;
         notes = refs.filter((f) => f.pos < upto).map(({ n, text }) => ({ n, text }));
-        if (plan) break;
+        if (plan && c && plan.some((b) => b.pos === c!.pos)) break;
         const h = notesHeight(notes);
         if (h <= fnH + 0.5) break;
         fnH = h;
@@ -444,7 +446,8 @@ export function paginate(
         id: `pg${k}`,
         pos: c.pos,
         kind: c.kind,
-        fill: Math.max(0, (bottom - c.top) / mm),
+        // 각주 칸은 각주 높이보다 작아지지 않게 (본문이 쪽 끝을 조금 넘어도 각주가 본문에 겹치지 않게)
+        fill: Math.max(0, (bottom - c.top) / mm, notesHeight(notes) / mm),
         indent: c.indent,
         mb: c.mb,
         foot: lab.foot,
@@ -458,7 +461,7 @@ export function paginate(
       let top = box.getBoundingClientRect().top;
       if (Math.abs(top - c.top) > 1.5) {
         // 예상과 다른 자리에 놓였다(여백 겹침 등) → 실제 위치로 채움 높이를 고친다
-        b.fill = Math.max(0, (bottom - top) / mm);
+        b.fill = Math.max(0, (bottom - top) / mm, notesHeight(b.notes) / mm);
         apply(view, breaks, geom);
         const again = view.dom.querySelector(`[data-pg="${b.id}"] .pg-box`) as HTMLElement | null;
         top = again?.getBoundingClientRect().top ?? top;

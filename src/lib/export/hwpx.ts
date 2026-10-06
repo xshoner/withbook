@@ -70,7 +70,7 @@ const chars = (l: LayoutSettings): CharDef[] => [
   { size: 22, font: 1 },
   { size: l.bodySizePt, font: 0, italic: true, ratio: BODY_RATIO },
   { size: 24, font: 1 },
-  { size: 8, font: 0, ratio: BODY_RATIO },
+  { size: NOTE_PT, font: 0, ratio: BODY_RATIO },
   { size: 9, font: 0 },
 ];
 // paraPr: 0 본문(양쪽, 들여쓰기 1em, 줄 간격·문단 간격은 책 설정), 1 제목(왼쪽, 들여쓰기 없음), 2 가운데(그림·캡션), 3 인용, 4 판권(왼쪽 170%), 5 각주, 6 장 제목 쪽(가운데, 위 60mm),
@@ -80,6 +80,14 @@ const chars = (l: LayoutSettings): CharDef[] => [
 // line: 줄 간격 %(그림 문단), css: PDF(bookHtml.ts)의 CSS line-height — 한글의 "글자에 따라 N%"는 CSS line-height와 같은 줄 높이다
 //   (한글 2020에서 잰 값: KoPub바탕 10pt 160% → 5.63mm, KoPub돋움 13pt 124% → 5.67mm)
 const PT_MM = 25.4 / 72;
+/**
+ * 각주와 각주 사이 간격(HWPUNIT) — 한글은 줄 간격의 여유(줄 높이 − 글자 크기)를 문단 마지막 줄 아래에 붙이지 않아
+ * 0이면 각주끼리 각주 안 줄보다 좁게 붙는다(한글 2020에서 잰 값: 0 → 2.83mm, 각주 안 줄 4.10mm). 그 여유만큼 띄운다.
+ */
+const NOTE_PT = 8;
+// PDF 각주 줄 높이는 1.45 — URL이 많은 긴 각주는 한글이 한 줄쯤 더 쓰므로 2% 좁혀 PDF 쪽에 담는다(눈으로는 같다)
+const NOTE_LH = 1.42;
+const NOTE_GAP = Math.round(NOTE_PT * (NOTE_LH - 1) * 100);
 const SLACK_LINES = 1;
 type ParaDef = { align: string; indent: number; line?: number; css?: number; left?: number; prev?: number; next?: number; keepNext?: boolean; tab?: number };
 const paras = (l: LayoutSettings, colophonTopMm = 0): ParaDef[] => {
@@ -94,7 +102,7 @@ const paras = (l: LayoutSettings, colophonTopMm = 0): ParaDef[] => {
     { align: "CENTER", indent: 0, line: 100, prev: mmToHwp(4), next: mmToHwp(4) },
     { align: "JUSTIFY", indent: 0, css: body, left: mmToHwp(8) },
     { align: "LEFT", indent: 0, css: 1.7 },
-    { align: "JUSTIFY", indent: 0, css: 1.45 * 0.95 }, // 각주: URL이 많은 긴 각주는 한글이 한두 줄 더 쓰므로 5% 여유
+    { align: "JUSTIFY", indent: 0, css: NOTE_LH },
     { align: "CENTER", indent: 0, css: 1.35, prev: mmToHwp(60) },
     { align: "LEFT", indent: 0, css: 1.55, prev: mmToHwp(4), tab: 1 },
     { align: "LEFT", indent: 0, css: 1.55, left: mmToHwp(5), tab: 1 },
@@ -151,7 +159,7 @@ function secPr(book: Book) {
   const m = book.layout.margins;
   const pb = (type: string) =>
     `<hp:pageBorderFill type="${type}" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>`;
-  return `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0"><hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/><hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/><hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="1" hideFirstEmptyLine="0" showLineNumber="0"/><hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/><hp:pagePr landscape="WIDELY" width="${mmToHwp(DOC.width)}" height="${mmToHwp(DOC.height)}" gutterType="LEFT_RIGHT"><hp:margin header="${mmToHwp(m.header)}" footer="${mmToHwp(m.footer)}" gutter="0" left="${mmToHwp(m.inner)}" right="${mmToHwp(m.outer)}" top="${mmToHwp(m.top)}" bottom="${mmToHwp(m.bottom)}"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar="" supscript="1"/><hp:noteLine length="-1" type="SOLID" width="0.12 mm" color="#000000"/><hp:noteSpacing betweenNotes="0" belowLine="${2 * Math.round(mmToHwp(1.5) / 2)}" aboveLine="${2 * Math.round(mmToHwp(3) / 2)}"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="EACH_COLUMN" beneathText="0"/></hp:footNotePr><hp:endNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/><hp:noteLine length="14692344" type="SOLID" width="0.12 mm" color="#000000"/><hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="END_OF_DOCUMENT" beneathText="0"/></hp:endNotePr>${pb("BOTH")}${pb("EVEN")}${pb("ODD")}</hp:secPr>`;
+  return `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0"><hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/><hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/><hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="1" hideFirstEmptyLine="0" showLineNumber="0"/><hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/><hp:pagePr landscape="WIDELY" width="${mmToHwp(DOC.width)}" height="${mmToHwp(DOC.height)}" gutterType="LEFT_RIGHT"><hp:margin header="${mmToHwp(m.header)}" footer="${mmToHwp(m.footer)}" gutter="0" left="${mmToHwp(m.inner)}" right="${mmToHwp(m.outer)}" top="${mmToHwp(m.top)}" bottom="${mmToHwp(m.bottom)}"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar="" supscript="1"/><hp:noteLine length="-1" type="SOLID" width="0.12 mm" color="#000000"/><hp:noteSpacing betweenNotes="${NOTE_GAP}" belowLine="${2 * Math.round(mmToHwp(1.5) / 2)}" aboveLine="${2 * Math.round(mmToHwp(3) / 2)}"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="EACH_COLUMN" beneathText="0"/></hp:footNotePr><hp:endNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/><hp:noteLine length="14692344" type="SOLID" width="0.12 mm" color="#000000"/><hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="END_OF_DOCUMENT" beneathText="0"/></hp:endNotePr>${pb("BOTH")}${pb("EVEN")}${pb("ODD")}</hp:secPr>`;
 }
 
 /* ---------- 본문 문단 ---------- */
