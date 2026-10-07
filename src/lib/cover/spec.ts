@@ -608,6 +608,94 @@ export function featherAlpha(w: number, h: number, hole: PxRect, feather: number
   return a;
 }
 
+/**
+ * 수정 결과(ai)의 색을 원본(orig)에 맞추는 채널별 a·x+b — AI는 고치지 않은 곳도 밝기·색감을 조금씩 바꿔 그려
+ * 바뀐 곳만 붙이면 이음매가 보이고 바뀐 곳을 찾을 때도 전체가 바뀐 것처럼 보인다.
+ * 두 그림 모두 같은 크기의 RGB raw. 바뀐 픽셀이 섞여도 휘지 않게 채널 차이가 작은 픽셀(중앙값 기준)로만 맞춘다.
+ */
+export function colorFit(orig: Uint8Array, ai: Uint8Array) {
+  const n = orig.length / 3;
+  const fit = (use: (i: number) => boolean) =>
+    [0, 1, 2].map((c) => {
+      let k = 0, so = 0, sa = 0, soo = 0, saa = 0;
+      for (let i = 0; i < n; i++) {
+        if (!use(i)) continue;
+        const o = orig[i * 3 + c], a = ai[i * 3 + c];
+        k++; so += o; sa += a; soo += o * o; saa += a * a;
+      }
+      if (k < 16) return { a: 1, b: 0 };
+      const mo = so / k, ma = sa / k;
+      const vo = Math.max(0, soo / k - mo * mo), va = Math.max(1, saa / k - ma * ma);
+      const g = Math.min(1.25, Math.max(0.8, Math.sqrt(vo / va) || 1));
+      return { a: g, b: Math.min(40, Math.max(-40, mo - g * ma)) };
+    });
+  const first = fit(() => true);
+  const d = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    for (let c = 0; c < 3; c++) m = Math.max(m, Math.abs(orig[i * 3 + c] - (first[c].a * ai[i * 3 + c] + first[c].b)));
+    d[i] = m;
+  }
+  const cut = Math.max(12, [...d].sort((x, y) => x - y)[Math.floor(n * 0.5)] * 2);
+  return fit((i) => d[i] <= cut);
+}
+
+/**
+ * 원본과 수정 결과(색을 맞춘 뒤)를 견줘 실제로 바뀐 곳만 1(255)인 부드러운 알파 — 둘 다 작게 줄이고 살짝 흐린 w×h RGB raw.
+ * 차이가 threshold보다 큰 픽셀 → 점 잡음 걷어 내기(열기) → 바뀐 것 둘레까지 넓히기(grow) → 경계 녹이기(soft).
+ * 반환 fraction: 바뀐 넓이 비율 (0이면 바뀐 곳이 없다, 크면 그림 전체를 바꾼 요청).
+ */
+export function changeAlpha(orig: Uint8Array, ai: Uint8Array, w: number, h: number, fitc = colorFit(orig, ai), opts: { threshold?: number; grow?: number; soft?: number } = {}) {
+  const T = opts.threshold ?? 26;
+  const grow = opts.grow ?? Math.max(2, Math.round(Math.max(w, h) / 120));
+  const soft = opts.soft ?? Math.max(2, Math.round(Math.max(w, h) / 160));
+  let m = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    let d = 0;
+    for (let c = 0; c < 3; c++) d = Math.max(d, Math.abs(orig[i * 3 + c] - (fitc[c].a * ai[i * 3 + c] + fitc[c].b)));
+    m[i] = d > T ? 1 : 0;
+  }
+  // 정사각형 이웃(r)으로 줄이기·넓히기
+  const morph = (src: Uint8Array, r: number, dilate: boolean) => {
+    const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        let v = dilate ? 0 : 1;
+        for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) if (dilate ? src[y * w + k] : !src[y * w + k]) { v = dilate ? 1 : 0; break; }
+        tmp[y * w + x] = v;
+      }
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        let v = dilate ? 0 : 1;
+        for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) if (dilate ? tmp[k * w + x] : !tmp[k * w + x]) { v = dilate ? 1 : 0; break; }
+        out[y * w + x] = v;
+      }
+    return out;
+  };
+  m = morph(morph(m, 1, false), 1, true); // 열기: 흩어진 점(재생성 잡음)은 버린다
+  let changed = 0;
+  for (const v of m) changed += v;
+  m = morph(m, grow, true);
+  // 상자 흐림 두 번(가로·세로)으로 경계를 녹인다 — ×2로 넓힌 곳 안쪽은 255, 바깥으로 0까지
+  const box = (src: Float32Array, len: number, stride: number, lines: number, step: number) => {
+    const out = new Float32Array(src.length);
+    for (let l = 0; l < lines; l++) {
+      const base = l * step;
+      for (let i = 0; i < len; i++) {
+        let s = 0, k = 0;
+        for (let j = Math.max(0, i - soft); j <= Math.min(len - 1, i + soft); j++) { s += src[base + j * stride]; k++; }
+        out[base + i * stride] = s / k;
+      }
+    }
+    return out;
+  };
+  let a = Float32Array.from(m, (v) => v * 255);
+  for (let pass = 0; pass < 2; pass++) a = box(box(a, w, 1, h, w), h, w, w, 1);
+  const alpha = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) alpha[i] = Math.min(255, Math.round(a[i] * 2));
+  return { alpha, fraction: changed / (w * h) };
+}
+
 /** 수정 프롬프트 — 바꿀 것만 바꾸고 나머지(구도·색·글자·영역 배치)는 그대로 두게 한다 */
 export function buildEditPrompt(d: CoverDesign, region: Region, request: string, masked: boolean) {
   const l = coverLayout(d);

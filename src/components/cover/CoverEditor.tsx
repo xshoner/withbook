@@ -519,7 +519,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
     const ctrl = new AbortController();
     aiAbort.current = ctrl;
     try {
-      const r = await api<{ assetId: string; widthPx: number; heightPx: number; masked: boolean; history: CoverDesign["ai"]["history"] }>(
+      const r = await api<{ assetId: string; widthPx: number; heightPx: number; masked: boolean; whole: boolean; history: CoverDesign["ai"]["history"] }>(
         `/api/projects/${projectId}/cover/edit`,
         { method: "POST", json: { design, region, prompt: editPrompt, rect: maskRect }, signal: ctrl.signal },
       );
@@ -529,7 +529,7 @@ export default function CoverEditor({ projectId }: { projectId: string }) {
       });
       // 고친 뒤에는 지정한 부분(보라 테두리)을 치운다 — 실패하면 그대로 두어 다시 요청할 수 있게
       setMaskRect(null);
-      toast.success(`${r.masked ? "지정한 부분을" : "그림을"} 고쳤습니다. 마음에 들지 않으면 되돌리기(Ctrl+Z)나 [만든 그림]에서 이전 그림을 고르세요.`);
+      toast.success(`${r.masked ? "지정한 부분에서" : "그림에서"} ${r.whole ? "그림 전체를 새로 그렸습니다" : "바뀐 곳만 고치고 나머지는 원본 그대로 두었습니다"}. 마음에 들지 않으면 되돌리기(Ctrl+Z)나 [만든 그림]에서 이전 그림을 고르세요.`);
     } catch (e: any) {
       if (!ctrl.signal.aborted) toastError(e, "그림 수정 실패: ");
     } finally {

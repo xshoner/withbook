@@ -6,9 +6,9 @@ import { getObject, putObject, removeObjects } from "../storage";
 import { addCoverHistory, updateCover } from "./store";
 import type { Region } from "./spec";
 
-/** 인쇄용 JPEG (품질 92, 색 번짐 없는 4:4:4, 300 DPI 표시) */
-export const printJpeg = (img: Sharp, bg: string) =>
-  img.flatten({ background: bg }).jpeg({ quality: 92, chromaSubsampling: "4:4:4", mozjpeg: true }).withMetadata({ density: 300 }).toBuffer();
+/** 인쇄용 JPEG (기본 품질 92, 색 번짐 없는 4:4:4, 300 DPI 표시) */
+export const printJpeg = (img: Sharp, bg: string, quality = 92) =>
+  img.flatten({ background: bg }).jpeg({ quality, chromaSubsampling: "4:4:4", mozjpeg: true }).withMetadata({ density: 300 }).toBuffer();
 
 /** AI로 만든·고친 표지 그림을 이 책의 이미지로 저장하고 [만든 그림] 기록에 더한다 */
 export async function storeCoverImage(projectId: string, jpeg: Buffer, w: number, h: number, region: Region, edit = false) {

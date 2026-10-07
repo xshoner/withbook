@@ -170,6 +170,34 @@ test('partial edit crops around the hole and feathers only outward', async () =>
   assert.equal(a[250 * 1000 + 400 - feather - 1], 0); // 띠 밖은 원본 그대로
 });
 
+test('edit keeps the original where the model only redrew (tone drift + noise) and takes just the changed object', async () => {
+  const { changeAlpha, colorFit } = await import('../src/lib/cover/spec.ts');
+  const w = 320, h = 200;
+  const orig = new Uint8Array(w * h * 3), ai = new Uint8Array(w * h * 3);
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 3;
+      const base = [40 + x / 2, 60 + y / 2, 120 + ((x + y) % 40)];
+      const inObj = x >= 200 && x < 260 && y >= 60 && y < 120; // 모델이 실제로 바꾼 물체
+      for (let c = 0; c < 3; c++) {
+        orig[i + c] = base[c];
+        const v = inObj ? [230, 30, 30][c] : base[c] * 1.04 + 6 + (rnd() - 0.5) * 12; // 다시 그린 배경: 색 밀림 + 잡음
+        ai[i + c] = Math.max(0, Math.min(255, Math.round(v)));
+      }
+    }
+  const fit = colorFit(orig, ai);
+  assert.ok(Math.abs(fit[0].a - 1 / 1.04) < 0.03 && Math.abs(fit[0].b + 6) < 4); // 색 밀림을 되돌린다
+  const { alpha, fraction } = changeAlpha(orig, ai, w, h, fit);
+  assert.ok(fraction > 0.04 && fraction < 0.08, `fraction ${fraction}`); // 물체 넓이(약 5.6%)만
+  assert.equal(alpha[90 * w + 230], 255); // 바뀐 물체 안쪽은 새 그림
+  assert.equal(alpha[30 * w + 40], 0); // 배경은 원본 그대로
+  assert.equal(alpha[180 * w + 300], 0);
+  // 아무것도 안 바뀌면 붙일 곳이 없다
+  assert.equal(changeAlpha(orig, orig, w, h).fraction, 0);
+});
+
 test('text background keeps padding and radius within limits', () => {
   const d = normalizeCover({ elements: [{ id: 't1', kind: 'text', panel: 'back', bg: '#000000', bgOpacity: 0.5, bgPad: 99, bgRadius: -3 }] });
   const el = d.elements[0];

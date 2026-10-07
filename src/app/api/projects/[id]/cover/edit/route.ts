@@ -2,17 +2,21 @@ import sharp from "sharp";
 import { fail, handle, ok } from "@/lib/api";
 import { editImage } from "@/lib/ai/image";
 import { printJpeg, readProjectAsset, storeCoverImage } from "@/lib/cover/image-store";
-import { type Rect, type Region, buildEditPrompt, coverLayout, editCrop, editFrame, featherAlpha, maskFraction, placeImage, PRINT_DPI, AI_DPI, normalizeCover, regionBox, requestSize } from "@/lib/cover/spec";
+import { type Rect, type Region, buildEditPrompt, changeAlpha, colorFit, coverLayout, editCrop, editFrame, featherAlpha, maskFraction, placeImage, PRINT_DPI, AI_DPI, normalizeCover, regionBox, requestSize } from "@/lib/cover/spec";
 
 export const maxDuration = 300;
 
 const REGIONS: Region[] = ["full", "backFlap", "back", "spine", "front", "frontFlap"];
 const LIMIT = { limitInputPixels: 200_000_000 };
+/** 고친 그림 JPEG 품질 — 고치지 않은 곳도 다시 압축되므로, 여러 번 고쳐도 압축 손실이 쌓이지 않게 높게 */
+const EDIT_QUALITY = 97;
 
 /**
  * [그림 수정] — 지금 영역의 그림을 수정 프롬프트대로 고친다 (처음부터 다시 만들지 않는다).
  * rect(펼침면 mm)가 있으면 그 둘레만 잘라 크게 보내고(마스크 = 지정 부분 + 녹이는 띠),
  * 받은 그림에서 지정 부분만 경계를 부드럽게 녹여 원본에 다시 붙인다 — 지정 밖은 한 픽셀도 바뀌지 않고 사각형 자국이 남지 않는다.
+ * 지정이 있든 없든 받은 그림을 원본과 견줘 실제로 바뀐 곳만 붙인다(색감은 원본에 맞춤) — 모델이 다시 그린 배경으로
+ * 원본을 덮지 않아 여러 번 고쳐도 배경 화질이 그대로다. 그림 전체를 바꾸는 요청(바뀐 곳이 절반 넘음)만 통째로 쓴다.
  * 결과는 원본과 같은 픽셀 크기로 저장해 편집기의 위치·확대 설정이 그대로 맞는다.
  */
 export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects/[id]/cover/edit">) => {
@@ -83,17 +87,42 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
   const f = editFrame(gen.size, crop.width, crop.height);
   const meta = await sharp(gen.buffer).metadata();
   const framed = await sharp(gen.buffer, LIMIT).resize(f.RW, f.RH, { fit: "fill" }).extract({ left: f.ox, top: f.oy, width: f.cw, height: f.ch }).toBuffer();
-  const back = sharp(framed, LIMIT).resize(crop.width, crop.height, { fit: "fill", kernel: "lanczos3" });
+  const back = await sharp(framed, LIMIT).resize(crop.width, crop.height, { fit: "fill", kernel: "lanczos3" }).removeAlpha().png().toBuffer();
+
+  // 모델은 고치지 않은 곳도 다시 그려 화질·색이 조금씩 바뀐다 → 원본과 견줘 실제로 바뀐 곳만 붙이고 나머지는 원본 픽셀 그대로 둔다
+  const CMP = 640;
+  const s = Math.min(1, CMP / Math.max(crop.width, crop.height));
+  const sw = Math.max(8, Math.round(crop.width * s));
+  const sh = Math.max(8, Math.round(crop.height * s));
+  const small = (b: Buffer) => sharp(b, LIMIT).flatten({ background: design.bgColor }).resize(sw, sh, { fit: "fill" }).blur(1).removeAlpha().raw().toBuffer();
+  const [o, a] = await Promise.all([small(cropBuf), small(back)]);
+  const fitc = colorFit(o, a);
+  const change = changeAlpha(o, a, sw, sh, fitc);
+  // 그림 전체를 바꾸라는 요청(화풍·색감 전체 등)이면 바뀐 곳만 고를 수 없으니 통째로 쓴다
+  const whole = !part && change.fraction > 0.55;
   let out: Buffer;
-  if (part) {
-    // 지정 부분만, 경계는 feather 폭으로 녹여 원본 위에 붙인다
-    const local = { ...part.hole, left: part.hole.left - crop.left, top: part.hole.top - crop.top };
-    const alpha = Buffer.from(featherAlpha(crop.width, crop.height, local, part.feather));
-    const patch = await back.removeAlpha().joinChannel(alpha, { raw: { width: crop.width, height: crop.height, channels: 1 } }).png().toBuffer();
-    out = await printJpeg(sharp(src.buffer, LIMIT).composite([{ input: patch, left: crop.left, top: crop.top }]), design.bgColor);
+  if (whole) {
+    out = await printJpeg(sharp(back, LIMIT), design.bgColor, EDIT_QUALITY);
   } else {
-    out = await printJpeg(back, design.bgColor);
+    const n = crop.width * crop.height;
+    const up = await sharp(Buffer.from(change.alpha), { raw: { width: sw, height: sh, channels: 1 } }).resize(crop.width, crop.height, { fit: "fill", kernel: "cubic" }).extractChannel(0).raw().toBuffer(); // (sharp는 키우면서 3채널로 바꾼다)
+    // 부분 수정이면 지정 부분(경계는 feather 폭으로 녹임) 안에서만
+    const local = part ? { ...part.hole, left: part.hole.left - crop.left, top: part.hole.top - crop.top } : null;
+    const hole = local ? featherAlpha(crop.width, crop.height, local, part!.feather) : null;
+    const alpha = Buffer.alloc(n);
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = hole ? Math.round((up[i] * hole[i]) / 255) : up[i];
+      alpha[i] = v;
+      sum += v;
+    }
+    if (sum / 255 < n * 0.0005) return fail("요청한 수정이 그림에 반영되지 않았습니다. 무엇을 어떻게 바꿀지 더 구체적으로 적어 다시 요청하세요.");
+    // 붙일 부분은 원본 색감에 맞춰 이음매가 보이지 않게
+    // (색 맞춤은 따로 한 번 — 알파를 붙인 뒤에 linear를 걸면 채널 수가 달라 sharp가 거부한다)
+    const tuned = await sharp(back, LIMIT).removeAlpha().linear(fitc.map((c) => c.a), fitc.map((c) => c.b)).png().toBuffer();
+    const patch = await sharp(tuned, LIMIT).joinChannel(alpha, { raw: { width: crop.width, height: crop.height, channels: 1 } }).png().toBuffer();
+    out = await printJpeg(sharp(src.buffer, LIMIT).composite([{ input: patch, left: crop.left, top: crop.top }]), design.bgColor, EDIT_QUALITY);
   }
   const saved = await storeCoverImage(id, out, iw, ih, region, true);
-  return ok({ ...saved, spineMm: l.spine, model: gen.model, requested: gen.size, masked: Boolean(part), native: { width: meta.width ?? 0, height: meta.height ?? 0 } });
+  return ok({ ...saved, spineMm: l.spine, model: gen.model, requested: gen.size, masked: Boolean(part), whole, changed: Math.round(change.fraction * 1000) / 10, native: { width: meta.width ?? 0, height: meta.height ?? 0 } });
 });
