@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { fail, handle, ok } from "@/lib/api";
 import type { TocDesign } from "@/lib/ai/tasks";
 import { clearExtras, clearPartials, trashChapter } from "@/lib/trash";
+import { stripChapterNo } from "@/lib/layout";
 
 /** 본문이나 스케치가 있는 절 — 목차를 바꾸기 전에 확인을 받고, 그 장은 휴지통에 담는다 */
 const hasWork = { OR: [{ charCount: { gt: 0 } }, { sketch: { not: "" } }] };
@@ -47,7 +48,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/projects
           projectId: id,
           kind: "body",
           order: ++order,
-          title: c.title,
+          title: stripChapterNo(c.title),
           promise: c.promise ?? "",
           sections: {
             create: c.sections.map((s, i) => ({

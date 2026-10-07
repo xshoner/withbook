@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api, fmtDate } from "@/lib/client";
 import { confirmDialog } from "@/components/ui/feedback";
+import { stripChapterNo } from "@/lib/layout";
 import { TOC_DETAIL_CONCURRENCY, pendingChapters, runLimited } from "@/lib/ai/toc-steps";
 
 type Report = {
@@ -367,7 +368,7 @@ export default function TocDesign() {
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="font-bookhead text-lg">
-                        {ci + 1}장 {c.title}
+                        {ci + 1}장 {stripChapterNo(c.title)}
                       </div>
                       {c.promise && <div className="text-sm text-stone-600">→ {c.promise}</div>}
                       {rep.detailPending?.includes(ci + 1) && <div className="text-xs text-stone-400">{busy ? "절 요지·설계 근거 채우는 중…" : "절 요지·설계 근거를 아직 채우지 못했습니다"}</div>}

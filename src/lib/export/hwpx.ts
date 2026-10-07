@@ -8,19 +8,18 @@ import type { LayoutSettings } from "../layout";
 import { parseDoc, type JNode } from "../doc/doc";
 import { printWidthMm, type FigureLayout } from "../print/figure";
 import { DOC, TYPO, mmToHwp } from "../print/spec";
-import { buildPrintLayouts, editorBlocks, type RawFragment } from "../../components/editor/pageMap";
 
 /**
  * HWPX(OWPML) 생성 — 부크크 A5 서식과 같은 용지·여백, PDF와 같은 순서(표제지 → 판권면/빈 쪽 → 앞붙이 → 차례 → 본문 → 판권면).
- * paging(PDF와 같은 조판을 잰 결과)이 있으면 PDF가 새 쪽을 시작한 자리에서 쪽을 넘기고(빈 쪽 포함),
- * 차례에 PDF와 같은 쪽 번호를 넣는다. 쪽 번호는 PDF처럼 본문 첫 장부터 1로 센다.
- * 문단 속 줄 나눔은 한글이 다시 하므로 쪽 안의 줄 위치는 조금 다를 수 있다.
+ * 장·절 안의 글은 한글이 책 설정(줄 간격·문단 간격)대로 흘린다 — PDF의 쪽 끊김 자리를 억지로 따르면 쪽 아래가 비거나
+ * 글을 좁혀 담아야 해서. 그래서 쪽 수는 PDF와 조금 다를 수 있고, 차례 쪽 번호는 한글이 장·절 책갈피를 보고 계산한다(상호 참조).
+ * paging(PDF와 같은 조판을 잰 결과)이 있으면 PDF의 빈 쪽을 넣고, 차례 쪽 번호의 처음 값으로 PDF 번호를 쓴다.
+ * 쪽 번호는 PDF처럼 본문 첫 장부터 1로 센다.
  */
 
-/** PDF 조판에서 잰 쪽 배치 (export/pdf.ts measureBook) — 쪽 번호는 0부터 센 물리 쪽 */
+/** PDF 조판에서 잰 쪽 배치 (export/pdf.ts measureBook) — chapters·toc·colophon·inner는 0부터, startIdx·endIdx는 1부터 센 물리 쪽, start는 찍히는 쪽 번호 */
 export type HwpxPaging = {
   info: { sections: Record<string, { start: number; startIdx: number; endIdx: number }>; chapters: Record<string, { start: number }> };
-  frags: RawFragment[];
   chapters: Record<string, number>;
   toc: [number, number];
   colophon: number;
@@ -55,12 +54,10 @@ const HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>';
 
 /* ---------- 글자 모양 / 문단 모양 표 ---------- */
 // charPr: 0 본문, 1 본문 굵게, 2 장 제목, 3 절 제목, 4 소제목, 5 장 번호, 6 캡션, 7 판권, 8 표제, 9 기울임, 10 장 제목 쪽, 11 각주(PDF와 같은 8pt), 12 참고문헌
-// 본문·각주는 장평 97% — 한글의 양쪽 정렬 줄 나눔이 Chromium보다 가끔 한 줄 더 늘어나 PDF 쪽에 다 못 담는 일을 막는다(눈으로는 거의 같다)
-type CharDef = { size: number; font: 0 | 1; bold?: boolean; italic?: boolean; ratio?: number };
-const BODY_RATIO = 97;
+type CharDef = { size: number; font: 0 | 1; bold?: boolean; italic?: boolean };
 const chars = (l: LayoutSettings): CharDef[] => [
-  { size: l.bodySizePt, font: 0, ratio: BODY_RATIO },
-  { size: l.bodySizePt, font: 0, bold: true, ratio: BODY_RATIO },
+  { size: l.bodySizePt, font: 0 },
+  { size: l.bodySizePt, font: 0, bold: true },
   { size: 16, font: 1 },
   { size: 13, font: 1 },
   { size: 10.5, font: 1 },
@@ -68,34 +65,29 @@ const chars = (l: LayoutSettings): CharDef[] => [
   { size: 8.5, font: 0 },
   { size: 8.5, font: 0 },
   { size: 22, font: 1 },
-  { size: l.bodySizePt, font: 0, italic: true, ratio: BODY_RATIO },
+  { size: l.bodySizePt, font: 0, italic: true },
   { size: 24, font: 1 },
-  { size: NOTE_PT, font: 0, ratio: BODY_RATIO },
+  { size: NOTE_PT, font: 0 },
   { size: 9, font: 0 },
 ];
 // paraPr: 0 본문(양쪽, 들여쓰기 1em, 줄 간격·문단 간격은 책 설정), 1 제목(왼쪽, 들여쓰기 없음), 2 가운데(그림·캡션), 3 인용, 4 판권(왼쪽 170%), 5 각주, 6 장 제목 쪽(가운데, 위 60mm),
 //         7 차례 장(오른쪽 끝 탭에 쪽 번호), 8 차례 절(왼쪽 5mm), 9 판권 첫 줄(위 간격으로 쪽 아래에 붙인다), 10 차례 제목,
-//         11 쪽을 넘어 이어지는 본문 문단(들여쓰기 없음), 12 절 제목, 13 소제목, 14 앞붙이·뒷붙이 장 제목,
+//         11 (쓰지 않음 — 번호를 지키려고 남긴다), 12 절 제목, 13 소제목, 14 앞붙이·뒷붙이 장 제목,
 //         15 캡션 있는 그림, 16 캡션, 17 위 간격 없는 소제목, 18 참고문헌(내어쓰기) — 여백은 PDF(bookHtml.ts)와 같게
 // line: 줄 간격 %(그림 문단), css: PDF(bookHtml.ts)의 CSS line-height — 한글의 "글자에 따라 N%"는 CSS line-height와 같은 줄 높이다
 //   (한글 2020에서 잰 값: KoPub바탕 10pt 160% → 5.63mm, KoPub돋움 13pt 124% → 5.67mm)
-const PT_MM = 25.4 / 72;
 /**
  * 각주와 각주 사이 간격(HWPUNIT) — 한글은 줄 간격의 여유(줄 높이 − 글자 크기)를 문단 마지막 줄 아래에 붙이지 않아
  * 0이면 각주끼리 각주 안 줄보다 좁게 붙는다(한글 2020에서 잰 값: 0 → 2.83mm, 각주 안 줄 4.10mm). 그 여유만큼 띄운다.
  */
 const NOTE_PT = 8;
-// PDF 각주 줄 높이는 1.45 — URL이 많은 긴 각주는 한글이 한 줄쯤 더 쓰므로 2% 좁혀 PDF 쪽에 담는다(눈으로는 같다)
-const NOTE_LH = 1.42;
+// 각주 줄 높이 — PDF와 같다
+const NOTE_LH = 1.45;
 const NOTE_GAP = Math.round(NOTE_PT * (NOTE_LH - 1) * 100);
-const SLACK_LINES = 1;
 type ParaDef = { align: string; indent: number; line?: number; css?: number; left?: number; prev?: number; next?: number; keepNext?: boolean; tab?: number };
 const paras = (l: LayoutSettings, colophonTopMm = 0): ParaDef[] => {
-  // 본문은 PDF와 같은 내용을 한 쪽에 담되(PDF 쪽 자리에서 넘긴다) 한글 줄바꿈이 한 줄 더 생겨도 넘치지 않게 한 줄 여유를 둔다
-  // ponytail: 한 쪽에 두 줄 이상 더 늘어나는 쪽은 그래도 넘친다 — 그러면 SLACK_LINES를 올린다
-  const bodyH = DOC.height - l.margins.top - l.margins.bottom - l.margins.header - l.margins.footer;
-  const pitch = l.bodySizePt * PT_MM * l.lineHeight;
-  const body = Math.min(l.lineHeight, bodyH / ((Math.floor(bodyH / pitch) + SLACK_LINES) * l.bodySizePt * PT_MM));
+  // 본문 줄 간격·문단 간격은 책 설정 그대로 (PDF와 같다 — 장·절 길이가 PDF와 같아야 차례 쪽 번호가 맞는다)
+  const body = l.lineHeight;
   return [
     { align: "JUSTIFY", indent: l.bodySizePt * 100, css: body, next: mmToHwp(l.paraSpacingMm) },
     { align: "LEFT", indent: 0, css: 1.35, prev: 1200, next: 1200, keepNext: true },
@@ -125,12 +117,12 @@ function charPr(id: number, c: CharDef) {
   const f = c.font;
   const seven = (tag: string, v: string | number) =>
     `<hh:${tag} hangul="${v}" latin="${v}" hanja="${v}" japanese="${v}" other="${v}" symbol="${v}" user="${v}"/>`;
-  return `<hh:charPr id="${id}" height="${h}" textColor="#000000" shadeColor="none" useFontSpace="1" useKerning="1" symMark="NONE" borderFillIDRef="2">${seven("fontRef", f)}${seven("ratio", c.ratio ?? 100)}${seven("spacing", 0)}${seven("relSz", 100)}${seven("offset", 0)}${c.italic ? "<hh:italic/>" : ""}${c.bold ? "<hh:bold/>" : ""}<hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/><hh:outline type="NONE"/><hh:shadow type="NONE" color="#B2B2B2" offsetX="10" offsetY="10"/></hh:charPr>`;
+  return `<hh:charPr id="${id}" height="${h}" textColor="#000000" shadeColor="none" useFontSpace="1" useKerning="1" symMark="NONE" borderFillIDRef="2">${seven("fontRef", f)}${seven("ratio", 100)}${seven("spacing", 0)}${seven("relSz", 100)}${seven("offset", 0)}${c.italic ? "<hh:italic/>" : ""}${c.bold ? "<hh:bold/>" : ""}<hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/><hh:outline type="NONE"/><hh:shadow type="NONE" color="#B2B2B2" offsetX="10" offsetY="10"/></hh:charPr>`;
 }
 
 /**
  * 문단 모양. 줄 나눔은 PDF(word-break: keep-all)처럼 한글도 어절 단위 — 한글 2020에서 breakNonLatinWord="BREAK_WORD"가 어절,
- * "KEEP_WORD"는 글자 단위로 나뉜다(잰 값). 쪽 나눔은 PDF 자리를 따르므로 외톨이줄 보호는 끈다.
+ * "KEEP_WORD"는 글자 단위로 나뉜다(잰 값). 외톨이줄 보호는 끈다 — 켜면 한 줄을 다음 쪽으로 미느라 쪽 아래가 빈다.
  */
 function paraPr(id: number, p: ParaDef) {
   const u = (tag: string, v: number) => `<hc:${tag} value="${v}" unit="HWPUNIT"/>`;
@@ -187,42 +179,6 @@ async function loadAssets(docs: JNode[]) {
   return map;
 }
 
-/**
- * 문단을 글자 자리(공백 뺀 누적 글자 수)에서 나눈다 — 나뉜 뒤 조각 앞 공백은 지운다. 각주·줄바꿈은 그 자리 조각에 둔다.
- */
-export function splitInline(n: JNode, cuts: number[]): JNode[] {
-  const pieces: JNode[][] = [[]];
-  let count = 0;
-  let c = 0;
-  for (const node of n.content ?? []) {
-    if (node.type !== "text") {
-      // 끊은 자리 바로 뒤의 각주 번호는 앞 조각(앞 쪽)에 둔다 — "다.¹ 다음 문장"에서 ¹이 다음 쪽으로 가지 않게
-      const cur = pieces[pieces.length - 1];
-      const fresh = pieces.length > 1 && cur.every((x) => x.type !== "text" || !(x.text ?? "").trim());
-      (fresh && node.type === "footnote" ? pieces[pieces.length - 2] : cur).push(node);
-      continue;
-    }
-    const text = node.text ?? "";
-    let from = 0;
-    for (let i = 0; i < text.length && c < cuts.length; i++) {
-      if (/\s/.test(text[i])) continue;
-      if (++count === cuts[c]) {
-        if (i + 1 > from) pieces[pieces.length - 1].push({ ...node, text: text.slice(from, i + 1) });
-        pieces.push([]);
-        from = i + 1;
-        c++;
-      }
-    }
-    const rest = text.slice(from);
-    if (rest) pieces[pieces.length - 1].push({ ...node, text: rest });
-  }
-  return pieces.map((content) => {
-    const first = content[0];
-    if (first?.type === "text") content[0] = { ...first, text: (first.text ?? "").replace(/^\s+/, "") };
-    return { ...n, content };
-  });
-}
-
 class Writer {
   paras: string[] = [];
   pid = 0;
@@ -261,6 +217,21 @@ class Writer {
   hide = '<hp:run charPrIDRef="0"><hp:ctrl><hp:pageHiding hideHeader="0" hideFooter="0" hideMasterPage="0" hideBorder="0" hideFill="0" hidePageNum="1"/></hp:ctrl></hp:run>';
   /** 여기서부터 쪽 번호를 1로 다시 세고 바깥쪽 아래에 넣는다 (PDF처럼 본문 첫 장 = 1쪽) */
   numberFromHere = '<hp:run charPrIDRef="0"><hp:ctrl><hp:newNum num="1" numType="PAGE"/></hp:ctrl><hp:ctrl><hp:pageNum pos="OUTSIDE_BOTTOM" formatType="DIGIT" sideChar=""/></hp:ctrl></hp:run>';
+  /** 차례가 가리킬 책갈피 (장·절 제목 문단 앞) */
+  bookmark(id: string) {
+    return `<hp:run charPrIDRef="0"><hp:ctrl><hp:bookmark name="${x(bookmarkName(id))}"/></hp:ctrl></hp:run>`;
+  }
+  private fields = 0;
+  /**
+   * 책갈피가 놓인 쪽 번호를 한글이 계산해 넣는 상호 참조 — 한글이 쪽을 다시 나누거나 한글에서 글을 고쳐도 차례 번호가 실제 쪽 번호와 맞는다.
+   * Command "?이름;6;0;0" = 책갈피(6)의 쪽 번호(0) — 한글 2020이 저장한 꼴. 처음 보이는 값(shown)은 한글이 열면서 고친다.
+   */
+  pageRef(id: string, shown: number | undefined, charPrId: number) {
+    const fid = 1214200000 + ++this.fields;
+    const name = x(bookmarkName(id));
+    const params = `<hp:parameters cnt="8" name=""><hp:booleanParam name="Fiexde">1</hp:booleanParam><hp:integerParam name="Prop">0</hp:integerParam><hp:stringParam name="Command">?${name};6;0;0</hp:stringParam><hp:stringParam name="RefPath">?${name};</hp:stringParam><hp:stringParam name="RefType">TARGET_BOOKMARK</hp:stringParam><hp:stringParam name="RefContentType">OBJECT_TYPE_PAGE</hp:stringParam><hp:booleanParam name="RefHyperLink">false</hp:booleanParam><hp:stringParam name="RefOpenType">HWPHYPERLINK_JUMP_CURRENTTAB</hp:stringParam></hp:parameters>`;
+    return `<hp:run charPrIDRef="${charPrId}"><hp:ctrl><hp:fieldBegin id="${fid}" type="CROSSREF" name="" editable="0" dirty="0" zorder="-1" fieldid="628650598">${params}</hp:fieldBegin></hp:ctrl><hp:t>${shown && shown > 0 ? shown : ""}</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="${fid}" fieldid="628650598"/></hp:ctrl></hp:run>`;
+  }
   /**
    * 다음 문단을 PDF의 target쪽에서 시작하게 한다 — 사이에 PDF의 빈 쪽이 있으면 빈 쪽도 만든다.
    * target을 모르면(조판을 재지 못함) force일 때만 새 쪽. 이미 그 쪽이면 넘기지 않는다.
@@ -323,23 +294,8 @@ class Writer {
     this.p((layout === "fullbleed" ? this.hide : "") + pic, a.caption ? 15 : 2, layout === "fullpage" || layout === "fullbleed");
     if (a.caption) this.p(this.run(`${label} `, 6) + this.run(String(a.caption), 6), 16);
   }
-  /**
-   * spans: 최상위 블록마다 PDF에서 놓인 쪽(시작·끝, 0부터 센 물리 쪽)과 쪽을 넘은 자리(cuts) — 모르면 null.
-   * PDF에서 쪽을 넘은 본문 문단은 같은 글자 자리에서 나눠 다음 쪽에 이어 쓴다 → 쪽마다 PDF와 같은 내용.
-   */
-  async blocks(doc: JNode, fig: { ch: number; n: number }, spans: ({ start: number; end: number; cuts?: number[] } | null)[] | null = null) {
-    for (const [i, n] of (doc.content ?? []).entries()) {
-      const sp = spans?.[i];
-      if (sp) this.startAt(sp.start, false);
-      if (sp?.cuts?.length && n.type === "paragraph") {
-        splitInline(n, sp.cuts).forEach((piece, k) => {
-          if (k) this.startAt(sp.start + k, true);
-          const runs = this.inlineRuns(piece);
-          if (runs) this.p(runs, k ? 11 : 0);
-        });
-      } else await this.block(n, fig);
-      if (sp) this.reach(sp.end);
-    }
+  async blocks(doc: JNode, fig: { ch: number; n: number }) {
+    for (const n of doc.content ?? []) await this.block(n, fig);
   }
   async block(n: JNode, fig: { ch: number; n: number }, prefix = ""): Promise<void> {
     switch (n.type) {
@@ -408,11 +364,15 @@ export function colophonTopMm(book: Book) {
 }
 
 type Biblio = { enabled: boolean; entries: { text: string }[] } | null;
+/** 참고문헌의 조판 id (pdf.ts의 장 id와 같다) */
+const BIBLIO_ID = "bm-biblio";
+/** 장·절 id → 한글 책갈피 이름 */
+const bookmarkName = (id: string) => `toc_${id}`;
 
 /**
  * 순서(PDF와 같다): 표제지 · 판권면 · 속표지 · 차례 · 앞붙이 · 본문 · 뒷붙이 · 참고문헌.
  * 찾아보기는 쪽 번호가 조판(PDF)에서만 정해져 HWPX에는 넣지 않는다.
- * paging(PDF 조판을 잰 결과)이 있으면 PDF와 같은 쪽에서 넘기고 차례에 같은 쪽 번호를 넣는다.
+ * paging(PDF 조판을 잰 결과)이 있으면 장·절을 PDF와 같은 쪽 순서(빈 쪽 포함)로 놓는다.
  */
 export async function buildHwpx(book: Book, opts: { paging?: HwpxPaging | null; biblio?: Biblio } = {}): Promise<Buffer> {
   const paging = opts.paging ?? null;
@@ -420,7 +380,6 @@ export async function buildHwpx(book: Book, opts: { paging?: HwpxPaging | null; 
   const { project, layout } = book;
   const docs = new Map(book.chapters.flatMap((c) => c.sections.map((s) => [s, parseDoc(s.content)] as const)));
   const w = new Writer(book, await loadAssets([...docs.values()]));
-  const printed = paging ? buildPrintLayouts(paging.frags) : {};
   const sec = (sid: string) => paging?.info.sections[sid];
 
   // 판권면 — 쪽 아래에 붙이고 쪽 번호는 감춘다
@@ -430,20 +389,20 @@ export async function buildHwpx(book: Book, opts: { paging?: HwpxPaging | null; 
     for (const t of colophonLines(book)) w.p(w.run(t, 7), 4);
   };
 
-  // 차례 — PDF와 같은 쪽 번호 (오른쪽 끝 탭)
+  // 차례 — 쪽 번호(오른쪽 끝 탭)는 한글이 계산하는 상호 참조, 처음 값은 PDF 쪽 번호
   const bodyChapters = book.chapters.filter((c) => c.kind === "body");
   const toc = () => {
     if (!bodyChapters.length) return;
     w.startAt(paging ? paging.toc[0] : undefined, true);
     w.p(w.run("차례", 2), 10);
-    const row = (title: string, n: number | undefined, charPr: number, paraPr: number) =>
-      w.p(`${w.run(title, charPr)}<hp:run charPrIDRef="${charPr}"><hp:t><hp:tab/>${n && n > 0 ? n : ""}</hp:t></hp:run>`, paraPr);
+    const row = (title: string, ref: { id: string; n: number | undefined } | null, charPr: number, paraPr: number) =>
+      w.p(`${w.run(title, charPr)}<hp:run charPrIDRef="${charPr}"><hp:t><hp:tab/></hp:t></hp:run>${ref ? w.pageRef(ref.id, ref.n, charPr) : ""}`, paraPr);
     // 머리말 같은 앞붙이도 싣는다(차례 뒤에 오므로) — 앞붙이는 쪽 번호가 없어 번호 칸은 비운다
     for (const c of book.chapters) {
-      row(`${c.label ? c.label + " " : ""}${c.title}`, paging?.info.chapters[c.id]?.start, 4, 7);
-      if (c.kind === "body") for (const s of c.sections) row(`${s.label} ${s.title}`, sec(s.id)?.start, 0, 8);
+      row(`${c.label ? c.label + " " : ""}${c.title}`, c.kind === "front" ? null : { id: c.id, n: paging?.info.chapters[c.id]?.start }, 4, 7);
+      if (c.kind === "body") for (const s of c.sections) row(`${s.label} ${s.title}`, { id: s.id, n: sec(s.id)?.start }, 0, 8);
     }
-    if (biblio) row("참고문헌", paging?.info.chapters["bm-biblio"]?.start, 4, 7);
+    if (biblio) row("참고문헌", { id: BIBLIO_ID, n: paging?.info.chapters[BIBLIO_ID]?.start }, 4, 7);
     if (paging) w.reach(paging.toc[1]);
   };
 
@@ -452,34 +411,20 @@ export async function buildHwpx(book: Book, opts: { paging?: HwpxPaging | null; 
   const chapter = async (c: Book["chapters"][number]) => {
     const fig = { ch: c.no, n: 0 };
     w.startAt(paging?.chapters[c.id], true);
+    const mark = w.bookmark(c.id);
     if (c.kind === "body") {
       // PDF처럼 본문 첫 장 제목 쪽을 1쪽으로 센다
       const num = bodyStarted ? "" : w.numberFromHere;
       bodyStarted = true;
-      w.p(num + w.hide + w.run(c.title, 10), 6);
-    } else w.p(w.run(c.title, 2), 14);
+      w.p(num + w.hide + mark + w.run(c.title, 10), 6);
+    } else w.p(mark + w.run(c.title, 2), 14);
     const single = c.kind !== "body" && c.sections.length === 1 && c.sections[0].title === c.title;
     for (const [i, s] of c.sections.entries()) {
       const info = sec(s.id);
       // 절은 항상 새 쪽에서 시작 (앞붙이·뒷붙이의 첫 절은 장 제목 바로 아래)
       w.startAt(info ? info.startIdx - 1 : undefined, c.kind === "body" || i > 0);
-      if (!single) w.p(w.run(`${s.label ? s.label + " " : ""}${s.title}`, 3), 12);
-      const doc = docs.get(s)!;
-      const layoutOf = printed[s.id];
-      const eb = editorBlocks(doc);
-      // 인쇄되는 블록 수가 같을 때만 PDF 쪽을 블록에 맞춘다 (절 시작 쪽 기준 → 물리 쪽)
-      const spans =
-        info && layoutOf && eb.filter((b) => b.kind).length === layoutOf.blocks.length
-          ? (() => {
-              let k = 0;
-              return eb.map((b) => {
-                if (!b.kind) return null;
-                const pb = layoutOf.blocks[k++];
-                return { start: info.startIdx - 1 + pb.start, end: info.startIdx - 1 + pb.end, cuts: pb.cuts };
-              });
-            })()
-          : null;
-      await w.blocks(doc, fig, spans);
+      if (!single) w.p(w.bookmark(s.id) + w.run(`${s.label ? s.label + " " : ""}${s.title}`, 3), 12);
+      await w.blocks(docs.get(s)!, fig);
       if (info) w.reach(info.endIdx - 1);
     }
   };
@@ -500,8 +445,8 @@ export async function buildHwpx(book: Book, opts: { paging?: HwpxPaging | null; 
   for (const c of book.chapters) if (c.kind !== "front") await chapter(c);
   // 참고문헌
   if (biblio) {
-    w.startAt(paging?.chapters["bm-biblio"], true);
-    w.p(w.run("참고문헌", 2), 14);
+    w.startAt(paging?.chapters[BIBLIO_ID], true);
+    w.p(w.bookmark(BIBLIO_ID) + w.run("참고문헌", 2), 14);
     for (const e of biblio.entries) w.p(w.run(e.text, 12), 18);
   }
 

@@ -94,6 +94,25 @@ export function sectionLabel(fmt: NumberFormat, ch: number, sec: number) {
   return fmt === "formal" ? String(sec).padStart(2, "0") : `${ch}.${sec}`;
 }
 
+/**
+ * 본문 장 제목 앞에 들어간 번호를 뗀다 — "#1. 제목", "# 1 제목", "1. 제목", "1장 제목", "제1장: 제목", "Chapter 1 제목".
+ * 장 번호(1장·제1장)는 label로 따로 붙으므로 제목에 번호가 남으면 "1장 #1. 제목"처럼 겹친다. 번호만 있는 제목은 그대로 둔다.
+ */
+export function stripChapterNo(title: string) {
+  const t = title.trim();
+  let out = t;
+  // "1장 #1. 제목"처럼 번호가 겹쳐 들어간 것도 떼도록 더 바뀌지 않을 때까지
+  for (let prev = ""; prev !== out; ) {
+    prev = out;
+    out = out
+      .replace(/^#+\s*\d+\s*[.:)·\-–—]?\s*/, "")
+      .replace(/^제?\s*\d+\s*장(?![가-힣])\s*[.:·\-–—]?\s*/, "")
+      .replace(/^chapter\s+\d+\b\s*[.:\-–—]?\s*/i, "")
+      .replace(/^\d+\s*[.)]\s+/, "");
+  }
+  return out || t;
+}
+
 const KIND_ORDER: Record<string, number> = { front: 0, body: 1, back: 2 };
 
 /** 앞붙이 → 본문 → 뒷붙이 순서로 정렬하고 본문 장·절에만 번호를 붙인다 (편집 화면·서버 공통) */
@@ -108,8 +127,10 @@ export function numberChapters<C extends { kind: string; order: number; sections
   let n = 0;
   return sorted.map((c) => {
     const no = c.kind === "body" ? ++n : 0;
+    const title = (c as { title?: unknown }).title;
     return {
       ...c,
+      ...(no && typeof title === "string" ? { title: stripChapterNo(title) } : {}),
       no,
       label: no ? chapterLabel(fmt, no) : "",
       sections: c.sections.map((s, i) => ({ ...s, no: i + 1, label: no ? sectionLabel(fmt, no, i + 1) : "" })),
