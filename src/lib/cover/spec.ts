@@ -771,7 +771,8 @@ export function textInkBox(el: TextEl): Box {
   const sizeMm = el.sizePt * 0.3528;
   const lineMm = sizeMm * el.lineHeight;
   const spacing = el.letterSpacing * sizeMm;
-  const widthOf = (s: string) => [...s].reduce((a, ch) => a + charEm(ch) * sizeMm + spacing, 0);
+  // 세로쓰기(upright)는 영문·숫자도 한 자가 한 칸(1em)을 차지한다
+  const widthOf = (s: string) => [...s].reduce((a, ch) => a + (el.vertical && ch !== " " ? 1 : charEm(ch)) * sizeMm + spacing, 0);
   const avail = el.w; // 가로쓰기면 상자 폭, 세로쓰기면 상자 높이(한 줄의 길이)
   const lines: number[] = [];
   for (const para of el.text.split("\n")) {
