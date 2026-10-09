@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import { numberChapters, type LayoutSettings } from "@/lib/layout";
 import { buildPlan, type AutoItem, type AutoOptions, type PlanSection } from "@/lib/autowrite";
 import { confirmDialog, toastError } from "../ui/feedback";
+import { canPickFolder, clearLocalFolder, loadLocalFiles, pickLocalFolder, restoreLocalFolder, storedFolderName, useLocalFolder } from "./localFolder";
 
 type Project = {
   title: string;
@@ -49,6 +50,10 @@ export default function AutoWriteDialog(props: {
   const [range, setRange] = useState<Range>("sections");
   const [picked, setPicked] = useState<string[]>([props.currentSectionId]);
   const [chapterId, setChapterId] = useState(props.currentChapterId);
+  const lf = useLocalFolder();
+  const folder = lf.info?.projectId === props.projectId ? lf.info : null;
+  const [lastFolder, setLastFolder] = useState<string | null>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     api<Project>(`/api/projects/${props.projectId}`).then(setP).catch((e) => setErr(e.message));
@@ -61,6 +66,7 @@ export default function AutoWriteDialog(props: {
           warned = true;
           toastError(e, "AI 연결 상태를 확인하지 못했습니다: ");
         });
+    void storedFolderName(props.projectId).then(setLastFolder);
   }, [props.projectId]);
 
   const numbered = useMemo(() => (p ? numberChapters(p.chapters, p.layout.numberFormat) : []), [p]);
@@ -73,7 +79,7 @@ export default function AutoWriteDialog(props: {
     () => (range === "sections" ? picked : range === "chapter" ? (numbered.find((c) => c.id === chapterId)?.sections.map((s) => s.id) ?? []) : undefined),
     [range, picked, chapterId, numbered],
   );
-  const options: AutoOptions = { extraInstruction: noExtra ? "" : extra.trim(), factcheck, review, reviewLevel: level, rewrite, charsPerPage: p?.charsPerPage };
+  const options: AutoOptions = { extraInstruction: noExtra ? "" : extra.trim(), factcheck, review, reviewLevel: level, rewrite, charsPerPage: p?.charsPerPage, folder: folder ? { name: folder.name, files: folder.files } : undefined };
   const plan = useMemo(() => buildPlan(sections, options, matter, only), [sections, rewrite, matter, factcheck, review, level, extra, noExtra, only]); // eslint-disable-line react-hooks/exhaustive-deps
   const togglePick = (id: string) => setPicked((xs) => (xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]));
   const toWrite = plan.filter((x) => x.write === "pending");
@@ -112,12 +118,19 @@ export default function AutoWriteDialog(props: {
           : []),
       ]
     : [];
-  const ready = !!p && checks.every((c) => c.ok) && plan.length > 0;
+  const ready = !!p && checks.every((c) => c.ok) && plan.length > 0 && !lf.reading;
+  const pickFolder = () => {
+    if (!canPickFolder()) return folderInput.current?.click();
+    pickLocalFolder(props.projectId)
+      .then((ok) => ok && setLastFolder(null))
+      .catch((e) => toastError(e, "폴더를 읽지 못했습니다: "));
+  };
 
   const start = async () => {
     if (!ready) return;
     const msg = [
       `${range === "book" ? "책 전체" : range === "chapter" ? "이 장" : "고른 절"} ${plan.length}개 절을 책 순서대로 자동 진행합니다 (집필 ${toWrite.length}개, 약 ${Math.round(pages)}쪽).`,
+      folder ? `내 폴더 '${folder.name}'(파일 ${folder.files}개)에서 절마다 가까운 대목을 참고합니다.` : "",
       overwrite.length ? `이미 본문이 있는 ${overwrite.length}개 절은 지금 본문을 버전 기록에 보관한 뒤 새로 씁니다.` : "",
       "진행 중에는 이 창(탭)을 열어 두세요. 닫히거나 연결이 끊겨도 다시 열면 이어서 진행합니다.",
     ]
@@ -235,6 +248,68 @@ export default function AutoWriteDialog(props: {
                     </button>
                   ))}
                 </div>
+              </section>
+
+              <section>
+                <h3 className="mb-1 text-xs font-semibold text-stone-700">
+                  내 폴더 자료 참고 <span className="font-normal text-stone-400">— 선택</span>
+                </h3>
+                <p className="mb-1.5 text-[11px] leading-4 text-stone-500">
+                  이 PC의 폴더(하위 폴더 포함)에 있는 txt·md·pdf·docx·hwpx 파일을 브라우저에서 바로 읽습니다. 파일은 서버에 올리지 않고, 절마다 제목·요지·스케치와 가까운 대목(약 8,000자까지)만 집필 AI에 함께 보냅니다.
+                </p>
+                <input
+                  ref={folderInput}
+                  type="file"
+                  className="hidden"
+                  {...({ webkitdirectory: "" } as object)}
+                  multiple
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (files?.length) loadLocalFiles(props.projectId, files).catch((err) => toastError(err, "폴더를 읽지 못했습니다: "));
+                    e.target.value = "";
+                  }}
+                />
+                {lf.reading ? (
+                  <p className="truncate rounded-lg border border-stone-200 px-3 py-1.5 text-xs text-stone-500">{lf.reading}</p>
+                ) : folder ? (
+                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate">
+                        📁 <b>{folder.name}</b> — 파일 {folder.files}개 · 약 {folder.chars.toLocaleString()}자
+                      </span>
+                      <button className="shrink-0 underline" onClick={pickFolder}>
+                        다른 폴더
+                      </button>
+                      <button className="shrink-0 text-stone-500 underline" onClick={() => clearLocalFolder(props.projectId)}>
+                        쓰지 않기
+                      </button>
+                    </div>
+                    {folder.skipped.length > 0 && (
+                      <details className="mt-0.5 text-[11px] text-stone-500">
+                        <summary>읽지 않은 파일 {folder.skipped.length}개</summary>
+                        <ul className="max-h-24 overflow-auto">
+                          {folder.skipped.map((x) => (
+                            <li key={x}>{x}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    <button className="btn py-1 text-xs" onClick={pickFolder}>
+                      📁 폴더 고르기
+                    </button>
+                    {lastFolder && (
+                      <button
+                        className="btn py-1 text-xs"
+                        onClick={() => restoreLocalFolder(props.projectId).then((ok) => ok || toastError(new Error("폴더 읽기를 허락받지 못했습니다. [폴더 고르기]로 다시 고르세요.")))}
+                      >
+                        지난 폴더 다시 열기 ({lastFolder})
+                      </button>
+                    )}
+                  </div>
+                )}
               </section>
 
               <section className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">

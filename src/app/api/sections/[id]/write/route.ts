@@ -18,7 +18,7 @@ export const POST = handle(async (req: Request, ctx: RouteContext<"/api/sections
   const prev = b.resume ? await loadPartial(id).catch(() => null) : null;
   return ndjson(
     withPartialSave(
-      writeSection(id, { targetPages, mode, extraInstruction: b.extraInstruction, resume: b.resume, signal: AbortSignal.any([req.signal, ctrl.signal]) }),
+      writeSection(id, { targetPages, mode, extraInstruction: b.extraInstruction, folderRefs: b.folderRefs, resume: b.resume, signal: AbortSignal.any([req.signal, ctrl.signal]) }),
       partialStore(id),
       { mode, initialText: b.resume?.written, startedAt: prev?.startedAt },
     ),

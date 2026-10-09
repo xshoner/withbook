@@ -421,6 +421,8 @@ export type WriteOptions = {
   targetPages: number;
   mode: "overwrite" | "continue" | "newVersion";
   extraInstruction?: string;
+  /** 내 폴더 자료에서 고른 대목 (자동 집필) */
+  folderRefs?: { name: string; text: string }[];
   signal?: AbortSignal;
   /** 긴 절 자동 이어 쓰기 (같은 개요로 fromPart부터) */
   resume?: WriteResume;
@@ -555,7 +557,7 @@ async function writeContext(sectionId: string, opts: WriteOptions, clock: WriteC
   const next = flat[idx + 1];
   // 본문은 이 절과 앞 절만 읽는다 (앞 내용 요약에 필요한 절은 previousSummaries가 가까운 순으로 읽는다)
   await fillContent(prev ? [section, prev.section] : [section]);
-  const refs = await loadSectionReferences(sectionId);
+  const refs = await loadSectionReferences(sectionId, opts.folderRefs);
   const sketch = typeof override.sketch === "string" ? override.sketch : section.sketch;
 
   clock.loadMs = Date.now() - loadStarted;

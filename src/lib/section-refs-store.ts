@@ -2,7 +2,8 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma, rawTable } from "./db";
-import { buildReferencesBlock, cleanRefName, cleanRefText, REF_MAX_COUNT, refKey, refPrefix, type RefItem, type RefRow } from "./ai/section-refs";
+import { buildReferencesBlock, cleanRefName, cleanRefText, REF_MAX_COUNT, REF_PROMPT_BUDGET, refKey, refPrefix, type RefItem, type RefRow } from "./ai/section-refs";
+import { FOLDER_PROMPT_BUDGET } from "./ai/folder-refs";
 import { editedOutlineKey, outlineCacheKey } from "./ai/outline-text";
 
 /** 절 참고 자료 저장소 — AppSetting `ref:{절 id}:{자료 id}` (규칙은 ai/section-refs.ts) */
@@ -35,12 +36,13 @@ export async function loadRefRows(sectionId: string): Promise<RefRow[]> {
 }
 
 /** 집필 프롬프트에 넣을 참고 자료 묶음과 자료 id (개요 입력 해시용) */
-export async function loadSectionReferences(sectionId: string): Promise<{ block: string; ids: string[] }> {
+/** extra: 내 폴더 자료에서 고른 대목 — 있으면 예산을 그만큼 늘려 함께 넣는다 */
+export async function loadSectionReferences(sectionId: string, extra: { name: string; text: string }[] = []): Promise<{ block: string; ids: string[] }> {
   const rows = await loadRefRows(sectionId).catch((e) => {
     console.warn("[refs] 참고 자료를 읽지 못함", e?.message);
     return [] as RefRow[];
   });
-  return { block: buildReferencesBlock(rows), ids: rows.map((r) => r.id) };
+  return { block: buildReferencesBlock([...rows, ...extra], REF_PROMPT_BUDGET + (extra.length ? FOLDER_PROMPT_BUDGET : 0)), ids: rows.map((r) => r.id) };
 }
 
 export async function addRef(sectionId: string, name: string, text: string): Promise<{ item: RefItem; truncated: boolean }> {

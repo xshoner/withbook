@@ -10,6 +10,7 @@ import { registerJobKind, sectionBusyWith } from "./jobStore";
 import { clearPartial, runJob } from "./aiJobs";
 import { flushAllPending, saveViaQueue, settleSection, unsavedLabels } from "./useAutosave";
 import { saveProofResult } from "./proofJobs";
+import { localFolderReady, localFolderRefs, restoreLocalFolder } from "./localFolder";
 import type { AppliedChange } from "./ProofPanel";
 
 /** 저장하지 못한 절 이름을 붙인 오류 문구 */
@@ -212,16 +213,24 @@ const onPageHide = () => {
 
 /* ---------- 단계 ---------- */
 
+/** 내 폴더 자료 중 이 절(제목·요지·스케치)과 가까운 대목 — 폴더를 쓰지 않으면 undefined */
+async function folderRefsOf(it: AutoItem) {
+  if (!state.run?.options.folder) return undefined;
+  const s = await api<{ title: string; gist: string; sketch: string }>(`/api/sections/${it.sectionId}`);
+  return localFolderRefs(state.projectId!, [s.title, s.title, s.gist, s.sketch, it.chapterTitle].join("\n"));
+}
+
 async function writeOne(it: AutoItem, i: number, n: number) {
   const opts = state.run!.options;
   // 그 절이 열려 있으면 마지막으로 친 입력까지 먼저 저장한다 — 서버가 남기는 'AI 집필 전' 버전에 들어가게 (직접 집필과 같게)
   if (!(await settleSection(it.sectionId))) throw new Error("편집 중인 원고를 저장하지 못했습니다.");
+  const folderRefs = await folderRefsOf(it);
   const job = await runJob({
     sectionId: it.sectionId,
     label: it.label,
     mode: "overwrite",
     url: `/api/sections/${it.sectionId}/write`,
-    body: { targetPages: it.targetPages, mode: "overwrite", extraInstruction: opts.extraInstruction },
+    body: { targetPages: it.targetPages, mode: "overwrite", extraInstruction: opts.extraInstruction, folderRefs },
     target: Math.round(it.targetPages * (opts.charsPerPage || 700)),
     batch: { i, n },
     signal: ctrl!.signal,
@@ -261,7 +270,7 @@ async function continueOne(it: AutoItem) {
     // 남은 분량(최소 반 쪽) — 거의 다 썼으면 마무리만
     const pages = Math.min(60, Math.max(0.5, Math.round(((target - have) / cpp) * 2) / 2));
     const note = "[자동 이어쓰기] 앞 본문이 한도에 걸려 중간에 끊겼다. 이미 쓴 내용을 되풀이하지 말고 바로 이어서 쓰고, 이 절을 자연스럽게 마무리한다.";
-    const base = { targetPages: pages, mode: "continue", extraInstruction: [opts.extraInstruction, note].filter(Boolean).join("\n\n") };
+    const base = { targetPages: pages, mode: "continue", extraInstruction: [opts.extraInstruction, note].filter(Boolean).join("\n\n"), folderRefs: await folderRefsOf(it) };
     let md = "";
     let truncated = false;
     type Resume = { fromPart: number; parts: NonNullable<StreamEvent["parts"]> };
@@ -559,6 +568,10 @@ export async function resumeAutoRun(projectId: string, retryFailed = false) {
   if (state.projectId !== projectId || !state.run) await loadAutoRun(projectId);
   if (!state.run) throw new Error("이어 갈 자동 집필이 없습니다.");
   if (state.foreign) throw new Error("다른 창에서 자동 집필을 진행하고 있습니다.");
+  // 내 폴더 자료는 이 탭 메모리에만 있다 — 새로 고친 뒤면 폴더를 다시 연다(읽기 허락은 [이어서 진행]을 누른 직후에만 물을 수 있다)
+  const folder = state.run.options.folder;
+  if (folder && !localFolderReady(projectId) && !(await restoreLocalFolder(projectId)))
+    throw new Error(`내 폴더 '${folder.name}'를 다시 열지 못했습니다. [이어서 진행]을 눌러 폴더 읽기를 허락하거나, [⚡ 자동 집필] 창에서 폴더를 다시 고른 뒤 이어 가세요.`);
   if (!(await flushAllPending())) throw unsavedError("저장을 완료하지 못했습니다. 연결을 확인하고 다시 시도하세요.");
   set({ run: { ...prepareResume(state.run, retryFailed), owner: OWNER } });
   void drive();

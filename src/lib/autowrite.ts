@@ -31,6 +31,8 @@ export type AutoOptions = {
   rewrite: boolean;
   /** 진행 표시용 1쪽당 글자 수 */
   charsPerPage?: number;
+  /** 내 폴더 자료를 참고한다 (폴더는 브라우저가 읽는다 — 이어 갈 때 다시 열어야 한다) */
+  folder?: { name: string; files: number };
 };
 
 export type AutoRun = {
