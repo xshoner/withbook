@@ -96,7 +96,7 @@ export type PdfSheet = { widthMm: number; heightMm: number; bleedMm: number };
 type RenderOpts = { projectId?: string; budgetMs?: number; sheet?: PdfSheet; extraOrigins?: string[]; startedAt?: number };
 
 /** 조판 페이지를 Chromium으로 열고 window.__PAGED_DONE까지 기다린 뒤 fn(page)을 부른다 (PDF·그림 공용) */
-async function withPagedPage<T>(url: string, opts: RenderOpts, viewport: { scale: number } | null, fn: (page: import("playwright-core").Page, printDeadline: number) => Promise<T>): Promise<T> {
+async function withPagedPage<T>(url: string, opts: RenderOpts, viewport: { width: number; height: number; scale: number } | null, fn: (page: import("playwright-core").Page, printDeadline: number) => Promise<T>): Promise<T> {
   const startedAt = opts.startedAt ?? getRequestContext()?.startedAt ?? Date.now();
   const { layout: deadline, print: printDeadline } = pdfDeadlines(startedAt, opts.budgetMs);
   if (deadline - Date.now() < MIN_LAYOUT_MS) throw new PdfTimeoutError("layout");
@@ -105,7 +105,7 @@ async function withPagedPage<T>(url: string, opts: RenderOpts, viewport: { scale
     const origin = new URL(url).origin;
     // 글꼴은 Supabase Storage 공개 주소로 넘어가므로 그 출처도 허용한다
     const fontOrigin = process.env.NEXT_PUBLIC_SUPABASE_URL ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).origin : "";
-    const page = await browser.newPage(viewport && opts.sheet ? { viewport: { width: Math.ceil((opts.sheet.widthMm / 25.4) * 96), height: Math.ceil((opts.sheet.heightMm / 25.4) * 96) }, deviceScaleFactor: viewport.scale } : undefined);
+    const page = await browser.newPage(viewport ? { viewport: { width: viewport.width, height: viewport.height }, deviceScaleFactor: viewport.scale } : undefined);
     const token = makeRenderToken(5 * 60_000, opts.projectId ?? "");
     await page.route("**/*", (route) => {
       const req = route.request();
@@ -136,14 +136,35 @@ async function withPagedPage<T>(url: string, opts: RenderOpts, viewport: { scale
   }
 }
 
-/** 용지(표지 펼침면) 한 장을 dpi 해상도 PNG로 찍는다 — CSS 1in = 96px이므로 배율 dpi/96 */
+/**
+ * 용지(표지 펼침면) 한 장을 dpi 해상도 PNG로 찍는다 — CSS 1in = 96px이므로 배율 dpi/96.
+ * 창을 용지 크기 그대로 띄우면 300 DPI 화면 버퍼가 수십 MB인데, Vercel의 Chromium은 /dev/shm이 없어 공유 메모리를 /tmp(남은 공간 수십 MB)에 잡다가
+ * 죽는다(ERR_INSUFFICIENT_RESOURCES·Target closed). 그래서 창은 작게(TILE) 두고 용지를 옮겨 가며 조각으로 찍어 이어 붙인다.
+ */
+const TILE = { width: 512, height: 256 };
+
 export async function renderImage(url: string, opts: RenderOpts & { sheet: PdfSheet; dpi: number }): Promise<Buffer> {
-  return withPagedPage(url, opts, { scale: opts.dpi / 96 }, async (page, printDeadline) => {
+  const scale = opts.dpi / 96;
+  // 픽셀 수는 내림 — 올리면 용지 밖 1px(흰 바탕)이 재단 여백 끝에 섞인다 (차이는 0.1mm 미만)
+  const W = Math.floor((opts.sheet.widthMm / 25.4) * opts.dpi);
+  const H = Math.floor((opts.sheet.heightMm / 25.4) * opts.dpi);
+  const tw = Math.round(TILE.width * scale);
+  const th = Math.round(TILE.height * scale);
+  const sharp = (await import("sharp")).default;
+  return withPagedPage(url, opts, { ...TILE, scale }, async (page, printDeadline) => {
     await page.emulateMedia({ media: "print" });
-    // 픽셀 수는 올림 — 용지보다 작게(300 DPI 미만으로) 찍히지 않게
-    const px = (mm: number) => Math.ceil((mm / 25.4) * opts.dpi) / (opts.dpi / 96);
-    const shot = page.screenshot({ type: "png", fullPage: false, clip: { x: 0, y: 0, width: px(opts.sheet.widthMm), height: px(opts.sheet.heightMm) } });
-    return withTimeout(shot, printDeadline - Date.now(), () => new PdfTimeoutError("print"));
+    const tiles: { input: Buffer; left: number; top: number }[] = [];
+    for (let top = 0; top < H; top += th) {
+      for (let left = 0; left < W; left += tw) {
+        await page.evaluate(([x, y]) => {
+          document.querySelector<HTMLElement>(".cover-sheet")!.style.transform = `translate(${-x}px, ${-y}px)`;
+        }, [left / scale, top / scale]);
+        const shot = await withTimeout(page.screenshot({ type: "png" }), printDeadline - Date.now(), () => new PdfTimeoutError("print"));
+        const input = await sharp(shot).extract({ left: 0, top: 0, width: Math.min(tw, W - left), height: Math.min(th, H - top) }).toBuffer();
+        tiles.push({ input, left, top });
+      }
+    }
+    return sharp({ create: { width: W, height: H, channels: 3, background: "#ffffff" } }).composite(tiles).png().toBuffer();
   });
 }
 
